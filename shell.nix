@@ -1,3 +1,5 @@
+# Nix dev-shell for building Celeste on NixOS without a global toolchain
+# install. Enter with `nix-shell` (or `nix-shell --run 'just build'`).
 { pkgs ? import <nixpkgs> { } }:
 
 pkgs.mkShell {
