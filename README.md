@@ -1,6 +1,13 @@
 > [!WARNING]
 > makedeb is currently unmaintained: https://hunterwittenborn.com/blog/stepping-back-from-open-source/
 
+> [!NOTE]
+> This is a personal fork of the original project at
+> [hwittenborn/celeste](https://github.com/hwittenborn/celeste), maintained by
+> Alexander Menzel. See [`NOTICE`](./NOTICE) for the list of modifications
+> relative to upstream. The fork is distributed under the same
+> [GPL-3.0-or-later](./LICENSE) terms as the original.
+
 # Celeste
 <a href="https://flathub.org/apps/details/com.hunterwittenborn.Celeste"><img width="150" src="https://flathub.org/assets/badges/flathub-badge-i-en.svg" /></a>
 <a href="https://snapcraft.io/celeste"><img width="150" src="https://snapcraft.io/static/images/badges/en/snap-store-black.svg" /></a>
