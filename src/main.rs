@@ -1,8 +1,3 @@
-#![feature(let_chains)]
-#![feature(arc_unwrap_or_clone)]
-#![feature(panic_info_message)]
-#![feature(async_closure)]
-#![feature(trait_alias)]
 #![feature(exit_status_error)]
 
 pub mod about;
@@ -103,7 +98,9 @@ fn main() {
         }
     } else {
         // Set `RUST_BACKTRACE` so we get a better backtrace for reporting.
-        env::set_var("RUST_BACKTRACE", "1");
+        unsafe {
+            env::set_var("RUST_BACKTRACE", "1");
+        }
 
         // Run the command and get the stderr, checking for a backtrace.
         let mut args = vec!["run-gui"];
