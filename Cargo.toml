@@ -2,6 +2,12 @@
 name = "celeste"
 version = "0.8.3"
 edition = "2024"
+license = "GPL-3.0-or-later"
+authors = [
+    "Hunter Wittenborn <hunter@hunterwittenborn.com>",
+    "Alexander Menzel <menzel.alexander@proton.me>",
+]
+repository = "https://github.com/hwittenborn/celeste"
 
 [dependencies]
 adw = { package = "libadwaita", version = "0.2.1", features = ["v1_2"] }
