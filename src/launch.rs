@@ -182,6 +182,9 @@ pub fn launch(app: &Application, background: bool) {
     // REFRESH_REQUESTS whenever a file under their sync_dirs changes.
     crate::infrastructure::fs_watcher::spawn(db.clone(), REFRESH_REQUESTS.clone());
 
+    // Adapter the sync routines talk to instead of calling librclone directly.
+    let rclone_client = crate::infrastructure::rclone::LibrcloneClient::new();
+
     // Get our remotes.
     let mut remotes = util::await_future(RemotesEntity::find().all(&db)).unwrap();
 
@@ -1859,6 +1862,7 @@ pub fn launch(app: &Application, background: bool) {
                     &remote,
                     &sync_dir,
                     &db,
+                    &rclone_client,
                     &directory_map,
                     &synced_items,
                     &add_error,
@@ -1870,6 +1874,7 @@ pub fn launch(app: &Application, background: bool) {
                     &remote,
                     &sync_dir,
                     &db,
+                    &rclone_client,
                     &directory_map,
                     &synced_items,
                     &add_error,

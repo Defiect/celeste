@@ -24,11 +24,12 @@ use indexmap::IndexMap;
 use sea_orm::{entity::prelude::*, ActiveValue, DatabaseConnection};
 
 use crate::{
-    infrastructure::{
-        persistence::models::{
-            RemotesModel, SyncDirsModel, SyncItemsActiveModel, SyncItemsColumn, SyncItemsEntity,
-        },
-        rclone::{self, RcloneListFilter},
+    domain::{
+        ports::RcloneClient,
+        sync::{ListFilter, RemoteItem},
+    },
+    infrastructure::persistence::models::{
+        RemotesModel, SyncDirsModel, SyncItemsActiveModel, SyncItemsColumn, SyncItemsEntity,
     },
     launch::CLOSE_REQUEST,
     traits::prelude::*,
@@ -78,6 +79,7 @@ pub fn sync_local_directory<
     remote: &RemotesModel,
     sync_dir: &SyncDirsModel,
     db: &DatabaseConnection,
+    client: &dyn RcloneClient,
     directory_map: &DirectoryMap,
     synced_items: &RefCell<Vec<(String, String)>>,
     add_error: F1,
@@ -208,10 +210,10 @@ pub fn sync_local_directory<
                 .as_secs()
         };
         let local_utc_timestamp = get_local_file_timestamp();
-        let remote_item = match rclone::sync::stat(&remote.name, &remote_path) {
+        let remote_item = match client.stat(&remote.name, &remote_path) {
             Ok(item) => item,
             Err(err) => {
-                add_error(SyncError::General(remote_path.clone(), err.error));
+                add_error(SyncError::General(remote_path.clone(), err));
                 continue;
             }
         };
@@ -230,23 +232,23 @@ pub fn sync_local_directory<
         // [`crate::infrastructure::rclone::sync::RcloneRemoteItem`] of the item on the remote, or
         // an [`Err<()>`] if an issue occurred (all errors are automatically added
         // via `add_errors`).
-        let push_local_to_remote = || -> Result<rclone::RcloneRemoteItem, ()> {
+        let push_local_to_remote = || -> Result<RemoteItem, ()> {
             let file_type = item.file_type().unwrap();
 
             if let Some(rclone_item) = &remote_item {
                 let same_type = file_type.is_dir() && rclone_item.is_dir;
 
                 if !same_type {
-                    if let Err(err) = rclone::sync::purge(&remote.name, &remote_path) {
-                        add_error(SyncError::General(remote_path.clone(), err.error));
+                    if let Err(err) = client.purge(&remote.name, &remote_path) {
+                        add_error(SyncError::General(remote_path.clone(), err));
                         return Err(());
                     }
                 }
             }
 
             if file_type.is_dir() {
-                if let Err(err) = rclone::sync::mkdir(&remote.name, &remote_path) {
-                    add_error(SyncError::General(remote_path.clone(), err.error));
+                if let Err(err) = client.mkdir(&remote.name, &remote_path) {
+                    add_error(SyncError::General(remote_path.clone(), err));
                     return Err(());
                 }
                 sync_local_directory(
@@ -254,6 +256,7 @@ pub fn sync_local_directory<
                     remote,
                     sync_dir,
                     db,
+                    client,
                     directory_map,
                     synced_items,
                     add_error.clone(),
@@ -262,13 +265,13 @@ pub fn sync_local_directory<
                 );
                 update_ui_progress(&local_path);
             } else if let Err(err) =
-                rclone::sync::copy_to_remote(&local_path, &remote.name, &remote_path)
+                client.copy_to_remote(&local_path, &remote.name, &remote_path)
             {
-                add_error(SyncError::General(local_path.clone(), err.error));
+                add_error(SyncError::General(local_path.clone(), err));
                 return Err(());
             }
 
-            Ok(rclone::sync::stat(&remote.name, &remote_path)
+            Ok(client.stat(&remote.name, &remote_path)
                 .unwrap()
                 .unwrap())
         };
@@ -295,6 +298,7 @@ pub fn sync_local_directory<
                     remote,
                     sync_dir,
                     db,
+                    client,
                     directory_map,
                     synced_items,
                     add_error.clone(),
@@ -303,9 +307,9 @@ pub fn sync_local_directory<
                 );
                 update_ui_progress(&local_path);
             } else if let Err(err) =
-                rclone::sync::copy_to_local(&local_path, &remote.name, &remote_path)
+                client.copy_to_local(&local_path, &remote.name, &remote_path)
             {
-                add_error(SyncError::General(remote_path.clone(), err.error));
+                add_error(SyncError::General(remote_path.clone(), err));
                 return Err(());
             }
 
@@ -433,17 +437,17 @@ pub fn sync_local_directory<
             }
 
             // The remote item is now guaranteed to exist, so fetch it.
-            let remote_item_safe = match rclone::sync::stat(&remote.name, &remote_path) {
+            let remote_item_safe = match client.stat(&remote.name, &remote_path) {
                 Ok(item) => item.unwrap(),
                 Err(err) => {
-                    add_error(SyncError::General(remote_path.clone(), err.error));
+                    add_error(SyncError::General(remote_path.clone(), err));
                     continue;
                 }
             };
-            match rclone::sync::stat(&remote.name, &remote_path) {
+            match client.stat(&remote.name, &remote_path) {
                 Ok(item) => item.unwrap(),
                 Err(err) => {
-                    add_error(SyncError::General(remote_path.clone(), err.error));
+                    add_error(SyncError::General(remote_path.clone(), err));
                     continue;
                 }
             };
@@ -487,6 +491,7 @@ pub fn sync_remote_directory<
     remote: &RemotesModel,
     sync_dir: &SyncDirsModel,
     db: &DatabaseConnection,
+    client: &dyn RcloneClient,
     directory_map: &DirectoryMap,
     synced_items: &RefCell<Vec<(String, String)>>,
     add_error: F1,
@@ -531,10 +536,10 @@ pub fn sync_remote_directory<
         item.status_text.set_label(&status_string);
     };
     update_ui_progress(remote_dir);
-    let items = match rclone::sync::list(&remote.name, remote_dir, false, RcloneListFilter::All) {
+    let items = match client.list(&remote.name, remote_dir, false, ListFilter::All) {
         Ok(ok_items) => ok_items,
         Err(err) => {
-            add_error(SyncError::General(remote_dir.to_owned(), err.error));
+            add_error(SyncError::General(remote_dir.to_owned(), err));
             return;
         }
     };
@@ -611,18 +616,18 @@ pub fn sync_remote_directory<
         let push_local_to_remote = || {
             if local_path.is_dir() {
                 if !item.is_dir {
-                    if let Err(err) = rclone::sync::delete(&remote.name, &remote_path_string) {
+                    if let Err(err) = client.delete_file(&remote.name, &remote_path_string) {
                         add_error(SyncError::General(
                             remote_path_string.clone(),
-                            err.error,
+                            err,
                         ));
                         return Err(());
                     }
 
-                    if let Err(err) = rclone::sync::mkdir(&remote.name, &remote_path_string) {
+                    if let Err(err) = client.mkdir(&remote.name, &remote_path_string) {
                         add_error(SyncError::General(
                             remote_path_string.clone(),
-                            err.error,
+                            err,
                         ));
                         return Err(());
                     }
@@ -633,6 +638,7 @@ pub fn sync_remote_directory<
                     remote,
                     sync_dir,
                     db,
+                    client,
                     directory_map,
                     synced_items,
                     add_error.clone(),
@@ -642,29 +648,29 @@ pub fn sync_remote_directory<
                 update_ui_progress(&remote_path_string);
             } else {
                 if item.is_dir {
-                    if let Err(err) = rclone::sync::purge(&remote.name, &remote_path_string) {
+                    if let Err(err) = client.purge(&remote.name, &remote_path_string) {
                         add_error(SyncError::General(
                             remote_path_string.clone(),
-                            err.error,
+                            err,
                         ));
                         return Err(());
                     }
                 }
 
-                if let Err(err) = rclone::sync::copy_to_remote(
+                if let Err(err) = client.copy_to_remote(
                     &local_path_string,
                     &remote.name,
                     &remote_path_string,
                 ) {
                     add_error(SyncError::General(
                         remote_path_string.clone(),
-                        err.error,
+                        err,
                     ));
                     return Err(());
                 }
             }
 
-            Ok(rclone::sync::stat(&remote.name, &remote_path_string)
+            Ok(client.stat(&remote.name, &remote_path_string)
                 .unwrap()
                 .unwrap())
         };
@@ -716,6 +722,7 @@ pub fn sync_remote_directory<
                     remote,
                     sync_dir,
                     db,
+                    client,
                     directory_map,
                     synced_items,
                     add_error.clone(),
@@ -723,14 +730,14 @@ pub fn sync_remote_directory<
                     process_deletion_requests.clone(),
                 );
                 update_ui_progress(&remote_path_string);
-            } else if let Err(err) = rclone::sync::copy_to_local(
+            } else if let Err(err) = client.copy_to_local(
                 &local_path_string,
                 &remote.name,
                 &remote_path_string,
             ) {
                 add_error(SyncError::General(
                     remote_path_string.clone(),
-                    err.error,
+                    err,
                 ));
                 return Err(());
             }
@@ -812,10 +819,10 @@ pub fn sync_remote_directory<
             } else if !local_path.exists()
                 && remote_timestamp == db_model.last_remote_timestamp as i64
             {
-                if let Err(err) = rclone::sync::purge(&remote.name, &remote_path_string) {
+                if let Err(err) = client.purge(&remote.name, &remote_path_string) {
                     add_error(SyncError::General(
                         remote_path_string.clone(),
-                        err.error,
+                        err,
                     ));
                     delete_db_entry();
                     continue;
@@ -861,12 +868,12 @@ pub fn sync_remote_directory<
         // The local item is now guaranteed to exist. Also fetch the remote's
         // timestamp in case it got updated above.
         let l_timestamp = get_local_file_timestamp().unwrap();
-        let r_timestamp = match rclone::sync::stat(&remote.name, &remote_path_string) {
+        let r_timestamp = match client.stat(&remote.name, &remote_path_string) {
             Ok(item) => item.unwrap().mod_time.unix_timestamp(),
             Err(err) => {
                 add_error(SyncError::General(
                     remote_path_string.clone(),
-                    err.error,
+                    err,
                 ));
                 continue;
             }
