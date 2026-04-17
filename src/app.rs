@@ -4,7 +4,10 @@
 
 use std::{
     collections::HashMap,
-    sync::Arc,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     time::{Duration, Instant},
 };
 
@@ -71,6 +74,10 @@ pub struct CelesteApp {
     /// Sender handed to us by the subscription worker; sync code clones this
     /// to emit events back into the event loop.
     events_tx: Option<mpsc::Sender<SyncEvent>>,
+    /// Per-remote cancel flags. Flipping `true` tells the in-flight
+    /// sync pass to bail out between actions — the app sets it when
+    /// the user disables a remote (or the app shuts down).
+    cancel_flags: HashMap<RemoteId, Arc<AtomicBool>>,
 }
 
 pub struct Flags {
@@ -100,6 +107,7 @@ impl Application for CelesteApp {
             sync_dir_drafts: HashMap::new(),
             add_remote_draft: None,
             events_tx: None,
+            cancel_flags: HashMap::new(),
         };
         let repo = flags.repo;
         let load = Command::perform(
@@ -498,8 +506,19 @@ impl Application for CelesteApp {
                 let Some(remote) = self.remotes.iter_mut().find(|r| r.id == id) else {
                     return Command::none();
                 };
+                let was_enabled = remote.policy.enabled;
                 let new_policy = settings::policy_from(&sub, &remote.policy);
                 remote.policy = new_policy.clone();
+                // If the user just disabled a remote that's currently
+                // syncing, trip its cancel flag so the running pass
+                // bails out between actions. Re-enabling uses the
+                // next scheduler tick — no action here.
+                if was_enabled && !new_policy.enabled
+                    && let Some(flag) = self.cancel_flags.get(&id)
+                {
+                    flag.store(true, Ordering::Release);
+                    self.refresh_requested_after.remove(&id);
+                }
                 let repo = self.repo.clone();
                 Command::perform(
                     async move {
@@ -564,6 +583,15 @@ impl CelesteApp {
                 self.sync_dir_errors.remove(&sd.id);
             }
         }
+        // Fresh cancel flag for this pass. Reusing the existing Arc
+        // lets any stored reference remain wired up (we flip-flop the
+        // bool rather than swap the Arc).
+        let flag = self
+            .cancel_flags
+            .entry(id)
+            .or_insert_with(|| Arc::new(AtomicBool::new(false)))
+            .clone();
+        flag.store(false, Ordering::Release);
         self.syncing.insert(id);
         let repo = self.repo.clone();
         let rclone = self.rclone.clone();
@@ -581,13 +609,21 @@ impl CelesteApp {
                             let _ = tx.blocking_send(event);
                         }
                     };
+                    let is_cancelled = {
+                        let f = flag.clone();
+                        move || f.load(Ordering::Acquire)
+                    };
                     for sd in sync_dirs {
+                        if is_cancelled() {
+                            break;
+                        }
                         let _ = crate::services::sync::run(
                             &remote,
                             &sd,
                             &*repo,
                             &*rclone,
                             emit.clone(),
+                            is_cancelled.clone(),
                         );
                     }
                 })

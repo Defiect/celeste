@@ -374,16 +374,22 @@ fn db_local_path(remote_path: &str, sync_dir: &SyncDir) -> String {
     derive_local_path(remote_path, sync_dir)
 }
 
-/// Entry point. Builds the snapshot, plans, applies.
-pub fn run<FE>(
+/// Entry point. Builds the snapshot, plans, applies. `is_cancelled`
+/// is polled at the start of each destructive action so the pass can
+/// bail out promptly when the user disables the remote or shuts down
+/// the app — in-flight rclone calls still run to completion (we can't
+/// interrupt `copy_to_remote` cleanly), but nothing new fires.
+pub fn run<FE, FC>(
     remote: &Remote,
     sync_dir: &SyncDir,
     repo: &dyn Repository,
     client: &dyn RcloneClient,
     emit: FE,
+    is_cancelled: FC,
 ) -> Outcome
 where
     FE: Fn(SyncEvent) + Clone,
+    FC: Fn() -> bool + Clone,
 {
     let emit_pending = |text: String| {
         emit(SyncEvent::SyncDirPending {
@@ -436,14 +442,22 @@ where
         }
     };
 
+    if is_cancelled() {
+        emit_status(tr::tr!("Sync cancelled."));
+        return Outcome::Aborted;
+    }
     let actions = plan(&snapshot, sync_dir);
-    apply(actions, &snapshot, remote, sync_dir, repo, client, &emit);
+    apply(actions, &snapshot, remote, sync_dir, repo, client, &emit, &is_cancelled);
 
+    if is_cancelled() {
+        emit_status(tr::tr!("Sync cancelled."));
+        return Outcome::Aborted;
+    }
     emit_status(tr::tr!("Files are synced."));
     Outcome::Synced
 }
 
-fn apply<FE>(
+fn apply<FE, FC>(
     actions: Vec<Action>,
     snapshot: &Snapshot,
     remote: &Remote,
@@ -451,8 +465,10 @@ fn apply<FE>(
     repo: &dyn Repository,
     client: &dyn RcloneClient,
     emit: &FE,
+    is_cancelled: &FC,
 ) where
     FE: Fn(SyncEvent) + Clone,
+    FC: Fn() -> bool + Clone,
 {
     let emit_status = |text: String| {
         emit(SyncEvent::SyncDirStatus {
@@ -470,6 +486,9 @@ fn apply<FE>(
     };
 
     for action in actions {
+        if is_cancelled() {
+            return;
+        }
         match action {
             Action::Upload {
                 local_path,

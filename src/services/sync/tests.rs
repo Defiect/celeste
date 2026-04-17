@@ -26,7 +26,14 @@ fn run_full(
     let r = remote(1, "TestRemote");
     let sd = sync_dir(1, 1, tmp.as_str(), "");
     let captured: Mutex<Vec<SyncEvent>> = Mutex::new(Vec::new());
-    let outcome = run(&r, &sd, repo, client, |e| captured.lock().unwrap().push(e));
+    let outcome = run(
+        &r,
+        &sd,
+        repo,
+        client,
+        |e| captured.lock().unwrap().push(e),
+        || false,
+    );
     let events = captured.lock().unwrap().clone();
     (outcome, events)
 }
@@ -231,6 +238,55 @@ fn upload_swallows_source_gone_race() {
     assert_eq!(outcome, Outcome::Synced);
     assert!(client.copy_to_remote_calls.lock().unwrap().is_empty());
     assert!(errors(&events).is_empty());
+}
+
+/// `is_cancelled` returning true after the snapshot but before apply
+/// bails out with `Outcome::Aborted` and no destructive op fires.
+#[test]
+fn cancellation_between_snapshot_and_apply_stops_the_pass() {
+    let tmp = TempDir::new("sync_cancel");
+    let repo = FakeRepo::new();
+    // Seed a DB row and no local file → plan would normally emit a
+    // DeleteRemote, but we cancel first.
+    let local_path = format!("{}/doomed.txt", tmp.as_str());
+    repo.insert_item(
+        SyncDirId(1),
+        &local_path,
+        "doomed.txt",
+        1_700_000_000,
+        1_700_000_000,
+    );
+
+    let client = FakeRclone::default();
+    client.set_list(
+        "",
+        Ok(vec![remote_item("doomed.txt", false, 1_700_000_000)]),
+    );
+
+    let r = remote(1, "TestRemote");
+    let sd = sync_dir(1, 1, tmp.as_str(), "");
+    let captured: Mutex<Vec<SyncEvent>> = Mutex::new(Vec::new());
+
+    // Cancel-on-first-call: the cancel check fires true right after
+    // Snapshot::build, before plan/apply.
+    let outcome = run(
+        &r,
+        &sd,
+        &repo,
+        &client,
+        |e| captured.lock().unwrap().push(e),
+        || true,
+    );
+
+    assert_eq!(outcome, Outcome::Aborted);
+    assert!(
+        client.delete_file_calls.lock().unwrap().is_empty(),
+        "no remote deletes must fire when cancelled",
+    );
+    assert!(
+        repo.has_item(&local_path, "doomed.txt"),
+        "DB row must survive a cancelled pass",
+    );
 }
 
 /// Editor swap files are filtered from the local walk — never show up
