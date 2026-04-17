@@ -828,14 +828,25 @@ pub fn sync_remote_directory<FE, FO, FD, FC>(
                     "Removing '{}' on remote…",
                     remote_path_string
                 ));
-                if let Err(err) = client.purge(&remote.name, &remote_path_string) {
+                // `purge` is rclone's directory-remove op — asking it to
+                // purge a file returns "directory not found" on most
+                // backends. Pick the right op for the item type.
+                let delete_result = if item.is_dir {
+                    client.purge(&remote.name, &remote_path_string)
+                } else {
+                    client.delete_file(&remote.name, &remote_path_string)
+                };
+                if let Err(err) = delete_result {
                     add_error(SyncError::General(
                         remote_path_string.clone(),
                         err,
                     ));
-                    delete_db_entry();
+                    // Keep the db record so the next pass retries the
+                    // delete instead of treating the file as new and
+                    // re-downloading it.
                     continue;
                 } else {
+                    delete_db_entry();
                     continue;
                 }
 
