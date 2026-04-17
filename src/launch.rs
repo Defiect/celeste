@@ -1675,6 +1675,8 @@ pub fn launch(app: &Application, background: bool) {
                     }
                 );
 
+                let is_cancelled = || *(*CLOSE_REQUEST).lock().unwrap();
+
                 sync_local_directory(
                     Path::new(&sync_dir.local_path),
                     &remote,
@@ -1686,6 +1688,7 @@ pub fn launch(app: &Application, background: bool) {
                     &check_open_requests,
                     &process_deletion_requests,
                     &update_status,
+                    &is_cancelled,
                 );
                 sync_remote_directory(
                     &sync_dir.remote_path,
@@ -1698,6 +1701,7 @@ pub fn launch(app: &Application, background: bool) {
                     &check_open_requests,
                     &process_deletion_requests,
                     &update_status,
+                    &is_cancelled,
                 );
 
                 // If a close request was sent in, quit.

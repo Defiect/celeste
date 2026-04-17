@@ -16,7 +16,6 @@ use crate::{
     infrastructure::persistence::models::{
         RemotesModel, SyncDirsModel, SyncItemsActiveModel, SyncItemsColumn, SyncItemsEntity,
     },
-    launch::CLOSE_REQUEST,
     util,
 };
 
@@ -42,6 +41,7 @@ pub fn sync_local_directory<
     F2: Fn() + Clone,
     F3: Fn() + Clone,
     F4: Fn(&str) + Clone,
+    F5: Fn() -> bool + Clone,
 >(
     local_dir: &Path,
     remote: &RemotesModel,
@@ -53,6 +53,7 @@ pub fn sync_local_directory<
     check_open_requests: F2,
     process_deletion_requests: F3,
     update_status: F4,
+    is_cancelled: F5,
 ) {
     process_deletion_requests();
 
@@ -102,7 +103,7 @@ pub fn sync_local_directory<
     for item in directory {
         // If a close request was sent in, stop syncing this remote so we can
         // quit the application in the 'main loop.
-        if *(*CLOSE_REQUEST).lock().unwrap() {
+        if is_cancelled() {
             break;
         }
 
@@ -226,6 +227,7 @@ pub fn sync_local_directory<
                     check_open_requests.clone(),
                     process_deletion_requests.clone(),
                     update_status.clone(),
+                    is_cancelled.clone(),
                 );
                 update_ui_progress(&local_path);
             } else if let Err(err) =
@@ -268,6 +270,7 @@ pub fn sync_local_directory<
                     check_open_requests.clone(),
                     process_deletion_requests.clone(),
                     update_status.clone(),
+                    is_cancelled.clone(),
                 );
                 update_ui_progress(&local_path);
             } else if let Err(err) =
@@ -451,6 +454,7 @@ pub fn sync_remote_directory<
     F2: Fn() + Clone,
     F3: Fn() + Clone,
     F4: Fn(&str) + Clone,
+    F5: Fn() -> bool + Clone,
 >(
     remote_dir: &str,
     remote: &RemotesModel,
@@ -462,6 +466,7 @@ pub fn sync_remote_directory<
     check_open_requests: F2,
     process_deletion_requests: F3,
     update_status: F4,
+    is_cancelled: F5,
 ) {
     process_deletion_requests();
 
@@ -508,7 +513,7 @@ pub fn sync_remote_directory<
     for item in items {
         // If a close request was sent in, stop syncing this remote so we can quit
         // the application in the 'main loop.
-        if *(*CLOSE_REQUEST).lock().unwrap() {
+        if is_cancelled() {
             break;
         }
 
@@ -605,6 +610,7 @@ pub fn sync_remote_directory<
                     check_open_requests.clone(),
                     process_deletion_requests.clone(),
                     update_status.clone(),
+                    is_cancelled.clone(),
                 );
                 update_ui_progress(&remote_path_string);
             } else {
@@ -689,6 +695,7 @@ pub fn sync_remote_directory<
                     check_open_requests.clone(),
                     process_deletion_requests.clone(),
                     update_status.clone(),
+                    is_cancelled.clone(),
                 );
                 update_ui_progress(&remote_path_string);
             } else if let Err(err) = client.copy_to_local(
