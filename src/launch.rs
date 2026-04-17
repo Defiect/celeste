@@ -1318,34 +1318,13 @@ pub fn launch(app: &Application, background: bool) {
                     let child = stack.child_by_name(&remote_name).unwrap();
                     stack.remove(&child);
 
-                    // Delete all related database entries.
-                    util::await_future(async {
-                        let db_remote = RemotesEntity::find()
-                            .filter(RemotesColumn::Name.eq(remote_name.clone()))
-                            .one(&db)
-                            .await
-                            .unwrap()
-                            .unwrap();
-                        let sync_dirs = SyncDirsEntity::find()
-                            .filter(SyncDirsColumn::RemoteId.eq(db_remote.id))
-                            .all(&db)
-                            .await
-                            .unwrap();
-
-                        for sync_dir in sync_dirs {
-                            SyncItemsEntity::delete_many()
-                                .filter(SyncItemsColumn::SyncDirId.eq(sync_dir.id))
-                                .exec(&db)
-                                .await
-                                .unwrap();
-                            sync_dir.delete(&db).await.unwrap();
-                        }
-
-                        db_remote.delete(&db).await.unwrap();
-                    });
-
-                    // Delete the Rclone config.
-                    rclone::sync::delete_config(&remote_name).unwrap();
+                    // DB rows + rclone config cleanup happens in the service.
+                    crate::services::remote_lifecycle::delete_remote(
+                        &remote_name,
+                        &db,
+                        &rclone_client,
+                    )
+                    .expect("failed to delete remote");
                 }
             }
 
