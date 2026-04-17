@@ -35,14 +35,14 @@ use sea_orm::{entity::prelude::*, ActiveValue, Database, DatabaseConnection};
 use std::{
     boxed,
     cell::RefCell,
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs::{self, File, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
     rc::Rc,
     sync::{Arc, Mutex},
     thread,
-    time::{Duration, SystemTime},
+    time::{Duration, Instant, SystemTime},
 };
 
 // The location for file ignore lists.
@@ -144,6 +144,10 @@ lazy_static::lazy_static! {
     pub static ref CLOSE_REQUEST: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
     // A [`Mutex`] to keep track of open requests from the tray icon.
     pub static ref OPEN_REQUEST: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
+    // Remote IDs with a pending "sync now" request from the UI or a filesystem
+    // event. The main loop consumes the set on each iteration, overriding the
+    // per-drive interval gate for the listed remotes.
+    pub static ref REFRESH_REQUESTS: Arc<Mutex<HashSet<i32>>> = Arc::new(Mutex::new(HashSet::new()));
 }
 
 /// Get an icon for use as the status icon for directory syncs.
@@ -1083,6 +1087,11 @@ pub fn launch(app: &Application, background: bool) {
         error_count
     });
 
+    // Per-drive scheduling: remember when each remote was last checked so we
+    // can honour `remote.sync_interval_seconds` instead of polling everyone on
+    // the same 500 ms tick.
+    let mut last_check_per_remote: HashMap<i32, Instant> = HashMap::new();
+
     'main: loop {
         // Break the loop if the user requested to quit the application.
         if *(*CLOSE_REQUEST).lock().unwrap() {
@@ -1117,7 +1126,29 @@ pub fn launch(app: &Application, background: bool) {
 
         util::run_in_background(|| thread::sleep(Duration::from_millis(500)));
 
+        // Drain pending refresh-now requests once per tick; any remote listed
+        // here bypasses its interval gate for this iteration.
+        let refresh_now: HashSet<i32> = {
+            let mut pending = REFRESH_REQUESTS.lock().unwrap();
+            std::mem::take(&mut *pending)
+        };
+
         for remote in remotes {
+            // Skip remotes the user has paused.
+            if remote.enabled == 0 {
+                continue;
+            }
+
+            // Skip remotes whose interval hasn't elapsed yet, unless the UI /
+            // a watcher explicitly asked for an immediate refresh.
+            let interval = Duration::from_secs(remote.sync_interval_seconds.max(1) as u64);
+            if !refresh_now.contains(&remote.id) {
+                if let Some(last) = last_check_per_remote.get(&remote.id) {
+                    if last.elapsed() < interval {
+                        continue;
+                    }
+                }
+            }
             // Process any remote deletion requests.
             {
                 let mut remote_queue = remote_deletion_queue.get_mut_ref();
@@ -2606,6 +2637,10 @@ pub fn launch(app: &Application, background: bool) {
                 item.status_text.set_label(&finished_text);
                 drop(item_ptr);
             }
+
+            // Remember the last time this remote was fully processed so the
+            // interval gate above can skip it until the next period elapses.
+            last_check_per_remote.insert(remote.id, Instant::now());
         }
 
         // Notify that we've finished checking all remotes for changes.
