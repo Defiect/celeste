@@ -188,7 +188,7 @@ impl GDriveConfig {
                 util::run_in_background(|| thread::sleep(Duration::from_millis(500)));
             }
 
-            hw_msg::warningln!("STATE URL: {}", STATE_URL.lock().unwrap());
+            eprintln!("warning: STATE URL: {}", STATE_URL.lock().unwrap());
             let kill_request = Rc::new(RefCell::new(false));
 
             // Set up and open the temporary HTTP server.

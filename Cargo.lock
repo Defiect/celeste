@@ -852,7 +852,6 @@ dependencies = [
  "glib",
  "glob",
  "grass",
- "hw-msg",
  "iced",
  "indexmap 1.9.3",
  "ksni",
@@ -1118,16 +1117,6 @@ name = "colorchoice"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b6a852b24ab71dffc585bcb46eaf7959d175cb865a7152e35b348d1b2960422"
-
-[[package]]
-name = "colored"
-version = "2.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cbf2150cce219b664a8a70df7a1f933836724b503f8a413af9365b4dcc4d90b8"
-dependencies = [
- "lazy_static",
- "windows-sys 0.48.0",
-]
 
 [[package]]
 name = "com"
@@ -2780,15 +2769,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6cb51c9a029ddc91b07a787f1d86b53ccfa49b0e86688c946ebe8d3555685dd7"
 dependencies = [
  "libm",
-]
-
-[[package]]
-name = "hw-msg"
-version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "230fa1c73aa7e828cc0c89b6902340a2df9a42aa2a0e361f47acc5c2374c1660"
-dependencies = [
- "colored",
 ]
 
 [[package]]

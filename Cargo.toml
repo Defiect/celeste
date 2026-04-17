@@ -17,7 +17,6 @@ file-lock = "2.1.11"
 futures = "0.3.30"
 glib = "0.16.9"
 glob = "0.3.1"
-hw-msg = "0.3.1"
 iced = { version = "0.12", features = ["tokio"] }
 indexmap = "1.9.3"
 ksni = "0.2.2"
