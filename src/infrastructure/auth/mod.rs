@@ -1,15 +1,17 @@
 //! Functions and libcelesteities for logging in to a server.
 use crate::{
-    entities::{RemotesActiveModel, RemotesModel},
     gtk_util,
     mpsc::{self, Sender},
-    rclone,
     traits::prelude::*,
     util,
 };
+use super::{
+    persistence::models::{RemotesActiveModel, RemotesModel},
+    rclone,
+};
 mod dropbox;
 mod gdrive;
-pub mod login_util;
+pub mod shared;
 mod nextcloud;
 mod owncloud;
 mod pcloud;
@@ -145,7 +147,7 @@ pub fn login(app: &Application, db: &DatabaseConnection) -> Option<RemotesModel>
     input_sections.append(&server_type_dropdown);
 
     // Set up the submit button.
-    let submit_button = login_util::submit_button();
+    let submit_button = shared::submit_button();
     container.append(&submit_button);
 
     // Get the window items for each server type.

@@ -1,15 +1,11 @@
 #![feature(exit_status_error)]
 
 pub mod about;
-pub mod entities;
 pub mod gtk_util;
+pub mod infrastructure;
 pub mod launch;
-pub mod login;
-pub mod migrations;
 pub mod mpsc;
-pub mod rclone;
 pub mod traits;
-pub mod tray;
 pub mod util;
 
 use adw::{

@@ -1,9 +1,7 @@
 //! The data for a pCloud Rclone config.
 use super::ServerType;
-use crate::{
-    login::gdrive::{AuthType, GDriveConfig},
-    mpsc::Sender,
-};
+use super::gdrive::{AuthType, GDriveConfig};
+use crate::mpsc::Sender;
 use adw::{gtk::Button, ApplicationWindow, EntryRow};
 
 static DEFAULT_CLIENT_ID: &str = "KRzpo46NKb7";

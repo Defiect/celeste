@@ -1,12 +1,7 @@
 //! The data for a Google Drive Rclone config.
 use super::ServerType;
-use crate::{
-    gtk_util,
-    login::{dropbox, login_util, pcloud},
-    mpsc::Sender,
-    traits::prelude::*,
-    util,
-};
+use super::{dropbox, pcloud, shared as login_util};
+use crate::{gtk_util, mpsc::Sender, traits::prelude::*, util};
 use adw::{glib, gtk::Button, prelude::*, ApplicationWindow, EntryRow, MessageDialog};
 use nix::{
     sys::signal::{self, Signal},
@@ -62,7 +57,7 @@ fn get_google_drive() -> RawHtml<String> {
     context.insert("state_url", STATE_URL.lock().unwrap().as_str());
     RawHtml(
         Tera::one_off(
-            include_str!("../html/google-drive.tera.html"),
+            include_str!("./templates/google-drive.tera.html"),
             &context,
             true,
         )
@@ -76,12 +71,12 @@ struct PngResponse(&'static [u8]);
 
 #[rocket::get("/google-signin.png")]
 fn get_google_signin_png() -> PngResponse {
-    PngResponse(include_bytes!("../images/google-signin.png"))
+    PngResponse(include_bytes!("../../images/google-signin.png"))
 }
 
 #[rocket::get("/google-drive.png")]
 fn get_google_drive_png() -> PngResponse {
-    PngResponse(include_bytes!("../images/google-drive.png"))
+    PngResponse(include_bytes!("../../images/google-drive.png"))
 }
 
 #[derive(Clone, Debug, Default)]

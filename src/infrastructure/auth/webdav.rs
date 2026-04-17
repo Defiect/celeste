@@ -1,5 +1,5 @@
 //! The data for a WebDAV Rclone config.
-use super::{login_util, nextcloud::NextcloudConfig, owncloud::OwncloudConfig, ServerType};
+use super::{nextcloud::NextcloudConfig, owncloud::OwncloudConfig, shared as login_util, ServerType};
 use crate::mpsc::Sender;
 use adw::{
     gtk::{glib, Button},

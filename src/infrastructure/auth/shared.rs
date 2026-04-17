@@ -1,5 +1,5 @@
 //! A collection of helper functions for generating login UIs.
-use crate::rclone::{self};
+use crate::infrastructure::rclone::{self};
 use adw::{
     glib,
     gtk::{Align, Button, CheckButton, Label},

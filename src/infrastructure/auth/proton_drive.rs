@@ -1,6 +1,7 @@
 //! The data for a Proton Drive Rclone config.
 use super::ServerType;
-use crate::{login::login_util, mpsc::Sender};
+use super::shared as login_util;
+use crate::mpsc::Sender;
 use adw::{glib, gtk::Button, prelude::*, ApplicationWindow, EntryRow};
 
 #[derive(Clone, Debug, Default)]

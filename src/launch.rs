@@ -1,12 +1,17 @@
 use crate::{
-    entities::{
-        RemotesColumn, RemotesEntity, RemotesModel, SyncDirsActiveModel, SyncDirsColumn,
-        SyncDirsEntity, SyncDirsModel, SyncItemsActiveModel, SyncItemsColumn, SyncItemsEntity,
-    },
     gtk_util,
-    login::{self},
-    migrations::{Migrator, MigratorTrait},
-    rclone::{self, RcloneListFilter},
+    infrastructure::{
+        auth::{self},
+        persistence::{
+            migrations::{Migrator, MigratorTrait},
+            models::{
+                RemotesColumn, RemotesEntity, RemotesModel, SyncDirsActiveModel, SyncDirsColumn,
+                SyncDirsEntity, SyncDirsModel, SyncItemsActiveModel, SyncItemsColumn,
+                SyncItemsEntity,
+            },
+        },
+        rclone::{self, RcloneListFilter},
+    },
     traits::prelude::*,
     util,
 };
@@ -197,7 +202,7 @@ pub fn launch(app: &Application, background: bool) {
     let mut remotes = util::await_future(RemotesEntity::find().all(&db)).unwrap();
 
     if remotes.is_empty() {
-        if login::login(app, &db).is_none() {
+        if auth::login(app, &db).is_none() {
             return;
         }
 
@@ -947,7 +952,7 @@ pub fn launch(app: &Application, background: bool) {
         glib::clone!(@weak app, @weak window, @weak stack, @strong gen_remote_window, @strong db => move |_| {
             window.set_sensitive(false);
 
-            if let Some(remote) = login::login(&app, &db) {
+            if let Some(remote) = auth::login(&app, &db) {
                 let window = gen_remote_window(remote.clone());
                 stack.add_titled(&window, Some(&remote.name), &remote.name);
             }
@@ -1059,7 +1064,7 @@ pub fn launch(app: &Application, background: bool) {
         window.show();
     }
 
-    let service = ksni::TrayService::new(crate::tray::Tray::new());
+    let service = ksni::TrayService::new(crate::infrastructure::tray::Tray::new());
     let handle = service.handle();
     service.spawn();
 
@@ -1100,7 +1105,7 @@ pub fn launch(app: &Application, background: bool) {
         if remotes.is_empty() {
             window.close();
 
-            if let Some(remote) = login::login(app, &db) {
+            if let Some(remote) = auth::login(app, &db) {
                 let window = gen_remote_window(remote.clone());
                 stack.add_titled(&window, Some(&remote.name), &remote.name);
                 window.show();
@@ -1831,7 +1836,7 @@ pub fn launch(app: &Application, background: bool) {
                         .unwrap();
 
                         // Push the item to the remote. Returns the
-                        // [`crate::rclone::sync::RcloneRemoteItem`] of the item on the remote, or
+                        // [`crate::infrastructure::rclone::sync::RcloneRemoteItem`] of the item on the remote, or
                         // an [`Err<()>`] if an issue occurred (all errors are automatically added
                         // via `add_errors`).
                         let push_local_to_remote = || -> Result<rclone::RcloneRemoteItem, ()> {
@@ -2242,7 +2247,7 @@ pub fn launch(app: &Application, background: bool) {
 
                         // Push the item from the local machine to the remote machine. Returns the
                         // timestamp of the new file on the remote. Returns the
-                        // [`crate::rclone::sync::RcloneRemoteItem`] of the item on the remote, or
+                        // [`crate::infrastructure::rclone::sync::RcloneRemoteItem`] of the item on the remote, or
                         // an [`Err<()>`] if an issue occurred (all errors are automatically added
                         // via `add_errors`).
                         let push_local_to_remote = || {
