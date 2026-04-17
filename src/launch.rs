@@ -5,9 +5,9 @@ use crate::{
         persistence::{
             migrations::{Migrator, MigratorTrait},
             models::{
-                RemotesColumn, RemotesEntity, RemotesModel, SyncDirsActiveModel, SyncDirsColumn,
-                SyncDirsEntity, SyncDirsModel, SyncItemsActiveModel, SyncItemsColumn,
-                SyncItemsEntity,
+                RemotesActiveModel, RemotesColumn, RemotesEntity, RemotesModel,
+                SyncDirsActiveModel, SyncDirsColumn, SyncDirsEntity, SyncDirsModel,
+                SyncItemsActiveModel, SyncItemsColumn, SyncItemsEntity,
             },
         },
         rclone::{self, RcloneListFilter},
@@ -18,15 +18,15 @@ use crate::{
 use adw::{
     glib,
     gtk::{
-        pango::EllipsizeMode, Align, Box, Button, ButtonsType, Entry, EntryCompletion,
+        pango::EllipsizeMode, Adjustment, Align, Box, Button, ButtonsType, Entry, EntryCompletion,
         FileChooserDialog, FileFilter, GestureClick, Image, Inhibit, Label, ListBox, ListBoxRow,
         ListStore, MessageDialog, Orientation, PolicyType, Popover, PositionType, ResponseType,
-        ScrolledWindow, SelectionMode, Separator, Spinner, Stack, StackSidebar,
-        StackTransitionType, Widget,
+        ScrolledWindow, SelectionMode, Separator, SpinButton, Spinner, Stack, StackSidebar,
+        StackTransitionType, Switch, Widget,
     },
     prelude::*,
-    Application, ApplicationWindow, Bin, EntryRow, HeaderBar, Leaflet, LeafletTransitionType,
-    WindowTitle,
+    ActionRow, Application, ApplicationWindow, Bin, EntryRow, HeaderBar, Leaflet,
+    LeafletTransitionType, WindowTitle,
 };
 use file_lock::{FileLock, FileOptions};
 use indexmap::IndexMap;
@@ -948,6 +948,109 @@ pub fn launch(app: &Application, background: bool) {
         }
         page.append(&gtk_util::separator());
         page.append(&sync_dirs);
+
+        // Per-remote sync settings panel.
+        {
+            let settings_header = Box::builder()
+                .orientation(Orientation::Horizontal)
+                .margin_top(20)
+                .margin_bottom(10)
+                .build();
+            let settings_label = Label::builder()
+                .label(&tr::tr!("Sync Settings"))
+                .halign(Align::Start)
+                .hexpand(true)
+                .hexpand_set(true)
+                .valign(Align::End)
+                .css_classes(vec!["heading".to_string()])
+                .build();
+            settings_header.append(&settings_label);
+
+            let settings_list = ListBox::builder()
+                .selection_mode(SelectionMode::None)
+                .css_classes(vec!["boxed-list".to_string()])
+                .build();
+
+            let enabled_row = ActionRow::builder().title(&tr::tr!("Enabled")).build();
+            let enabled_switch = Switch::builder()
+                .active(db_remote.enabled != 0)
+                .valign(Align::Center)
+                .build();
+            enabled_row.add_suffix(&enabled_switch);
+            settings_list.append(&enabled_row);
+
+            let instant_row = ActionRow::builder()
+                .title(&tr::tr!("Instant sync"))
+                .subtitle(&tr::tr!(
+                    "Trigger a sync whenever a local file changes. Restart required."
+                ))
+                .build();
+            let instant_switch = Switch::builder()
+                .active(db_remote.instant_sync != 0)
+                .valign(Align::Center)
+                .build();
+            instant_row.add_suffix(&instant_switch);
+            settings_list.append(&instant_row);
+
+            let interval_row = ActionRow::builder()
+                .title(&tr::tr!("Sync interval (seconds)"))
+                .build();
+            let interval_adjustment = Adjustment::new(
+                db_remote.sync_interval_seconds as f64,
+                10.0,
+                86_400.0,
+                10.0,
+                60.0,
+                0.0,
+            );
+            let interval_spin = SpinButton::builder()
+                .adjustment(&interval_adjustment)
+                .numeric(true)
+                .valign(Align::Center)
+                .build();
+            interval_row.add_suffix(&interval_spin);
+            settings_list.append(&interval_row);
+
+            enabled_switch.connect_active_notify(
+                glib::clone!(@strong db, @strong db_remote => move |s| {
+                    let _ = util::await_future(
+                        RemotesActiveModel {
+                            id: ActiveValue::Unchanged(db_remote.id),
+                            enabled: ActiveValue::Set(s.is_active() as i32),
+                            ..Default::default()
+                        }
+                        .update(&db),
+                    );
+                }),
+            );
+            instant_switch.connect_active_notify(
+                glib::clone!(@strong db, @strong db_remote => move |s| {
+                    let _ = util::await_future(
+                        RemotesActiveModel {
+                            id: ActiveValue::Unchanged(db_remote.id),
+                            instant_sync: ActiveValue::Set(s.is_active() as i32),
+                            ..Default::default()
+                        }
+                        .update(&db),
+                    );
+                }),
+            );
+            interval_spin.connect_value_changed(
+                glib::clone!(@strong db, @strong db_remote => move |s| {
+                    let _ = util::await_future(
+                        RemotesActiveModel {
+                            id: ActiveValue::Unchanged(db_remote.id),
+                            sync_interval_seconds: ActiveValue::Set(s.value() as i32),
+                            ..Default::default()
+                        }
+                        .update(&db),
+                    );
+                }),
+            );
+
+            page.append(&settings_header);
+            page.append(&settings_list);
+        }
 
         sections.add_named(&page, Some("main"));
         sections.set_visible_child_name("main");
