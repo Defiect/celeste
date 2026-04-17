@@ -21,8 +21,17 @@ pub enum SyncEvent {
         remote_id: RemoteId,
         message: String,
     },
-    /// Transient per-sync-dir status text (e.g. "Checking foo/ for changes...").
+    /// Primary per-sync-dir status text (e.g. "Synchronizing '/foo'…" or
+    /// "Files are synced."). Renders on the sync_dir's main row.
     SyncDirStatus {
+        remote_id: RemoteId,
+        sync_dir_id: SyncDirId,
+        text: String,
+    },
+    /// Secondary per-sync-dir "pending event" text (e.g. "Checking for
+    /// changes…" or "Refresh queued…"). Renders on a second line under
+    /// the main row, and is cleared once SyncDirStatus advances.
+    SyncDirPending {
         remote_id: RemoteId,
         sync_dir_id: SyncDirId,
         text: String,

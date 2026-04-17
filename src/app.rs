@@ -52,6 +52,10 @@ pub struct CelesteApp {
     syncing: std::collections::HashSet<RemoteId>,
     /// Latest status text per sync_dir — populated from SyncDirStatus events.
     sync_dir_status: HashMap<SyncDirId, String>,
+    /// Latest "pending event" text per sync_dir — e.g. "Checking for
+    /// changes…" during should_sync or "Refresh queued…" while another
+    /// pass is in flight. Rendered under the main status on a second line.
+    sync_dir_pending: HashMap<SyncDirId, String>,
     /// Errors accumulated for each sync_dir since its last refresh.
     sync_dir_errors: HashMap<SyncDirId, Vec<SyncError>>,
     /// Wall-clock timestamp of the last sync completion per remote. Drives
@@ -90,6 +94,7 @@ impl Application for CelesteApp {
             selected: None,
             syncing: std::collections::HashSet::new(),
             sync_dir_status: HashMap::new(),
+            sync_dir_pending: HashMap::new(),
             sync_dir_errors: HashMap::new(),
             last_sync_at: HashMap::new(),
             refresh_requested_after: std::collections::HashSet::new(),
@@ -311,12 +316,13 @@ impl Application for CelesteApp {
                 if self.syncing.contains(&id) {
                     // The current pass is still running — queue a follow-up
                     // so it fires as soon as the current one completes. Leave
-                    // a note on each sync_dir so the user gets immediate
-                    // feedback instead of thinking the click was lost.
+                    // a pending-event note on each sync_dir so the user gets
+                    // immediate feedback instead of thinking the click was
+                    // lost.
                     self.refresh_requested_after.insert(id);
                     if let Some(dirs) = self.sync_dirs.get(&id) {
                         for sd in dirs {
-                            self.sync_dir_status.insert(
+                            self.sync_dir_pending.insert(
                                 sd.id,
                                 "Refresh queued — starts after the current pass finishes."
                                     .to_owned(),
@@ -418,6 +424,7 @@ impl Application for CelesteApp {
                 if let Some(dirs) = self.sync_dirs.get(&id) {
                     for sd in dirs {
                         self.sync_dir_status.remove(&sd.id);
+                        self.sync_dir_pending.remove(&sd.id);
                     }
                 }
                 // If the user clicked Refresh now while we were already
@@ -472,7 +479,15 @@ impl Application for CelesteApp {
                     SyncEvent::SyncDirStatus {
                         sync_dir_id, text, ..
                     } => {
+                        // A primary status supersedes any pending-event
+                        // note.
+                        self.sync_dir_pending.remove(&sync_dir_id);
                         self.sync_dir_status.insert(sync_dir_id, text);
+                    }
+                    SyncEvent::SyncDirPending {
+                        sync_dir_id, text, ..
+                    } => {
+                        self.sync_dir_pending.insert(sync_dir_id, text);
                     }
                     SyncEvent::SyncDirError {
                         sync_dir_id, error, ..
@@ -535,6 +550,7 @@ impl Application for CelesteApp {
                     remote,
                     dirs,
                     &self.sync_dir_status,
+                    &self.sync_dir_pending,
                     &self.sync_dir_errors,
                     (draft_local, draft_remote),
                 )

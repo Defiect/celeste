@@ -33,6 +33,7 @@ pub fn view<'a>(
     remote: &'a Remote,
     sync_dirs: &'a [SyncDir],
     status: &'a HashMap<SyncDirId, String>,
+    pending: &'a HashMap<SyncDirId, String>,
     errors: &'a HashMap<SyncDirId, Vec<SyncError>>,
     draft: (&'a str, &'a str),
 ) -> Element<'a, Msg> {
@@ -68,6 +69,12 @@ pub fn view<'a>(
                 )),
             );
             col = col.push(header);
+            // Pending-event line: transient state that's not the
+            // primary status (e.g. "Checking for changes…",
+            // "Refresh queued…"). Rendered dim, indented.
+            if let Some(pending_text) = pending.get(&sd.id) {
+                col = col.push(text(format!("  · {pending_text}")).size(12));
+            }
             if let Some(errs) = errors.get(&sd.id) {
                 for err in errs {
                     let line = match err {
