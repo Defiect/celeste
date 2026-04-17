@@ -6,6 +6,7 @@
 
 pub mod event_bus;
 pub mod orchestrator;
+pub mod sync_dir_ops;
 
 pub use event_bus::{EventBus, event_channel};
 pub use orchestrator::SyncOrchestrator;
