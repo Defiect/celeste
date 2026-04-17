@@ -6,5 +6,6 @@
 
 pub mod commands;
 pub mod events;
+pub mod ports;
 pub mod remote;
 pub mod sync;

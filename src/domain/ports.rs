@@ -1,0 +1,87 @@
+//! Port traits: the contract services use to reach the outside world.
+//!
+//! Implementations live in `crate::infrastructure`. Services depend only on
+//! these traits, so adapter swaps never touch domain or service code.
+//!
+//! Boxed-future return types are used instead of `async fn in trait` to stay
+//! object-safe (`dyn Repository`) without pulling in `async-trait` yet. This
+//! is revisited when the orchestrator actually needs `Arc<dyn Port>`s.
+
+use std::{future::Future, path::PathBuf, pin::Pin};
+
+use super::{
+    events::FsEvent,
+    remote::{Remote, RemoteId, SyncPolicy},
+    sync::{SyncDir, SyncDirId, SyncItem},
+};
+
+pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+#[derive(Debug)]
+pub enum RepositoryError {
+    NotFound,
+    Other(String),
+}
+
+impl std::fmt::Display for RepositoryError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotFound => f.write_str("not found"),
+            Self::Other(msg) => f.write_str(msg),
+        }
+    }
+}
+
+impl std::error::Error for RepositoryError {}
+
+pub trait Repository: Send + Sync {
+    fn list_remotes(&self) -> BoxFuture<'_, Result<Vec<Remote>, RepositoryError>>;
+    fn find_remote(&self, id: RemoteId)
+        -> BoxFuture<'_, Result<Option<Remote>, RepositoryError>>;
+    fn delete_remote(&self, id: RemoteId) -> BoxFuture<'_, Result<(), RepositoryError>>;
+    fn set_policy(
+        &self,
+        id: RemoteId,
+        policy: SyncPolicy,
+    ) -> BoxFuture<'_, Result<(), RepositoryError>>;
+
+    fn list_sync_dirs(
+        &self,
+        remote: RemoteId,
+    ) -> BoxFuture<'_, Result<Vec<SyncDir>, RepositoryError>>;
+    fn list_sync_items(
+        &self,
+        sync_dir: SyncDirId,
+    ) -> BoxFuture<'_, Result<Vec<SyncItem>, RepositoryError>>;
+}
+
+pub trait RcloneClient: Send + Sync {
+    // Intentionally minimal. Operations get added as the orchestrator extraction
+    // identifies which librclone RPC calls actually need to cross the boundary.
+}
+
+pub trait FsWatcher: Send + Sync {
+    fn watch(
+        &self,
+        paths: Vec<PathBuf>,
+    ) -> BoxFuture<'_, Result<tokio::sync::mpsc::Receiver<FsEvent>, String>>;
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum TrayIcon {
+    Loading,
+    Syncing,
+    Warning,
+    Done,
+    Disconnected,
+}
+
+pub trait Tray: Send + Sync {
+    fn set_status(&self, message: &str);
+    fn set_icon(&self, icon: TrayIcon);
+}
+
+pub trait AuthProvider: Send + Sync {
+    // Placeholder. Designed when `services::auth_service` lands and we know
+    // the exact flow shape needed across OAuth2 vs WebDAV basic-auth providers.
+}
