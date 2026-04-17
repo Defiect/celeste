@@ -24,6 +24,13 @@ pub use crate::domain::sync::SyncError;
 /// Name of the per-sync-dir ignore file (one glob per line).
 pub static FILE_IGNORE_NAME: &str = ".sync-exclude.lst";
 
+/// Log a destructive op about to fire so incidents leave a trail. The
+/// 2026-04-17 bulk-trash on Google Drive had no logs; every remote/local
+/// delete the sync algorithm decides to run now announces itself here.
+pub fn log_destructive_op(kind: &str, remote_name: &str, path: &str) {
+    eprintln!("sync: DELETE {kind} remote={remote_name} path={path}");
+}
+
 // Returning an [`Err<()>`] means this directory has to stop being synced
 // because it was in the deletion queue. Any other error should return an
 // [`Ok<()>`].
@@ -221,6 +228,11 @@ pub fn sync_local_directory<FE, FO, FD, FC>(
                 let same_type = file_type.is_dir() && rclone_item.is_dir;
 
                 if !same_type {
+                    log_destructive_op(
+                        "purge-on-type-mismatch",
+                        &remote.name,
+                        &remote_path,
+                    );
                     if let Err(err) = client.purge(&remote.name, &remote_path) {
                         add_error(SyncError::General(remote_path.clone(), err));
                         return Err(());
@@ -374,6 +386,11 @@ pub fn sync_local_directory<FE, FO, FD, FC>(
             } else if remote_item.is_none()
                 && local_utc_timestamp == db_model.last_local_timestamp as u64
             {
+                log_destructive_op(
+                    "local-delete-mirroring-remote",
+                    &remote.name,
+                    &remote_path,
+                );
                 emit_status(tr::tr!(
                     "Removing '{}' locally…",
                     util::fmt_home(&local_path)
@@ -619,6 +636,11 @@ pub fn sync_remote_directory<FE, FO, FD, FC>(
         let push_local_to_remote = || {
             if local_path.is_dir() {
                 if !item.is_dir {
+                    log_destructive_op(
+                        "delete-remote-file-on-type-mismatch",
+                        &remote.name,
+                        &remote_path_string,
+                    );
                     if let Err(err) = client.delete_file(&remote.name, &remote_path_string) {
                         add_error(SyncError::General(
                             remote_path_string.clone(),
@@ -651,6 +673,11 @@ pub fn sync_remote_directory<FE, FO, FD, FC>(
                 update_ui_progress(&remote_path_string);
             } else {
                 if item.is_dir {
+                    log_destructive_op(
+                        "purge-remote-dir-on-type-mismatch",
+                        &remote.name,
+                        &remote_path_string,
+                    );
                     if let Err(err) = client.purge(&remote.name, &remote_path_string) {
                         add_error(SyncError::General(
                             remote_path_string.clone(),
@@ -824,6 +851,11 @@ pub fn sync_remote_directory<FE, FO, FD, FC>(
             } else if !local_path.exists()
                 && remote_timestamp == db_model.last_remote_timestamp
             {
+                log_destructive_op(
+                    "delete-remote-mirroring-local",
+                    &remote.name,
+                    &remote_path_string,
+                );
                 emit_status(tr::tr!(
                     "Removing '{}' on remote…",
                     remote_path_string

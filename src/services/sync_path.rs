@@ -17,6 +17,7 @@ use crate::{
         remote::Remote,
         sync::{SyncDir, SyncError},
     },
+    services::sync_dir_ops::log_destructive_op,
     util,
 };
 
@@ -215,6 +216,11 @@ pub fn sync_single_path<FE>(
                 let _ = util::await_future(repo.delete_sync_item(db.id));
             }
             Some(r) if r.mod_time.unix_timestamp() == db.last_remote_timestamp => {
+                log_destructive_op(
+                    "sync_single_path/local-gone-remote-matches-db",
+                    &remote.name,
+                    &remote_path,
+                );
                 emit_status(tr::tr!("Removing '{}' on remote…", remote_path));
                 let res = if r.is_dir {
                     client.purge(&remote.name, &remote_path)
