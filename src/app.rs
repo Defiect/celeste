@@ -18,7 +18,7 @@ use crate::{
         remote::{Remote, RemoteId},
         sync::{SyncDir, SyncDirId, SyncError},
     },
-    screens::{main_page, remote_page, settings},
+    screens::{add_remote, main_page, remote_page, settings},
     theme,
 };
 
@@ -29,6 +29,8 @@ pub enum Message {
     Main(main_page::Msg),
     Remote(remote_page::Msg),
     Settings(settings::Msg),
+    AddRemote(add_remote::Msg),
+    AddRemoteResult(Result<RemoteId, String>),
     RemotesLoaded(Vec<Remote>),
     SyncDirsLoaded(RemoteId, Vec<SyncDir>),
     PolicySaved,
@@ -62,6 +64,8 @@ pub struct CelesteApp {
     /// Transient banner text (e.g. "Add remote is only in the GTK UI
     /// today"). Cleared on the next relevant interaction.
     banner: Option<String>,
+    /// In-progress Add Remote form. Some(...) while the screen is shown.
+    add_remote_draft: Option<add_remote::Draft>,
     /// Sender handed to us by the subscription worker; sync code clones this
     /// to emit events back into the event loop.
     events_tx: Option<mpsc::Sender<SyncEvent>>,
@@ -91,6 +95,7 @@ impl Application for CelesteApp {
             last_sync_at: HashMap::new(),
             sync_dir_drafts: HashMap::new(),
             banner: None,
+            add_remote_draft: None,
             events_tx: None,
         };
         let repo = flags.repo;
@@ -171,12 +176,73 @@ impl Application for CelesteApp {
                 Command::batch(cmds)
             }
             Message::Main(main_page::Msg::AddRemote) => {
-                // Until the OAuth flow is ported, send the user to the GTK
-                // version for provisioning new remotes.
-                self.banner = Some(
-                    "Adding a new remote currently requires the GTK UI — run `celeste run-gui` to log in a provider; it will show up here automatically."
-                        .to_owned(),
-                );
+                self.add_remote_draft = Some(add_remote::Draft::default());
+                self.banner = None;
+                Command::none()
+            }
+            Message::AddRemote(sub) => {
+                let Some(draft) = self.add_remote_draft.as_mut() else {
+                    return Command::none();
+                };
+                match sub {
+                    add_remote::Msg::NameChanged(s) => draft.name = s,
+                    add_remote::Msg::UrlChanged(s) => draft.url = s,
+                    add_remote::Msg::UserChanged(s) => draft.user = s,
+                    add_remote::Msg::PassChanged(s) => draft.pass = s,
+                    add_remote::Msg::VendorChanged(v) => draft.vendor = Some(v),
+                    add_remote::Msg::Cancel => {
+                        self.add_remote_draft = None;
+                        return Command::none();
+                    }
+                    add_remote::Msg::Submit => {
+                        let Some(vendor_choice) = draft.vendor else {
+                            draft.error = Some("Pick a type first.".to_owned());
+                            return Command::none();
+                        };
+                        if draft.name.trim().is_empty()
+                            || draft.url.trim().is_empty()
+                            || draft.user.trim().is_empty()
+                        {
+                            draft.error = Some("Name, URL, username are required.".to_owned());
+                            return Command::none();
+                        }
+                        let name = draft.name.clone();
+                        let url = draft.url.clone();
+                        let user = draft.user.clone();
+                        let pass = draft.pass.clone();
+                        let vendor = vendor_choice.as_vendor();
+                        let repo = self.repo.clone();
+                        let rclone = self.rclone.clone();
+                        draft.error = None;
+                        return Command::perform(
+                            async move {
+                                tokio::task::spawn_blocking(move || {
+                                    crate::services::auth_service::add_webdav_remote(
+                                        &name, &url, &user, &pass, vendor, &*repo,
+                                        &*rclone,
+                                    )
+                                })
+                                .await
+                                .unwrap_or_else(|e| Err(e.to_string()))
+                            },
+                            Message::AddRemoteResult,
+                        );
+                    }
+                }
+                Command::none()
+            }
+            Message::AddRemoteResult(Ok(_id)) => {
+                self.add_remote_draft = None;
+                let repo = self.repo.clone();
+                Command::perform(
+                    async move { repo.list_remotes().await.unwrap_or_default() },
+                    Message::RemotesLoaded,
+                )
+            }
+            Message::AddRemoteResult(Err(msg)) => {
+                if let Some(draft) = self.add_remote_draft.as_mut() {
+                    draft.error = Some(msg);
+                }
                 Command::none()
             }
             Message::Remote(remote_page::Msg::Back) => {
@@ -369,6 +435,14 @@ impl Application for CelesteApp {
             .padding(8)
             .style(iced::theme::Container::Box)
         });
+
+        if let Some(draft) = self.add_remote_draft.as_ref() {
+            let screen = add_remote::view(draft).map(Message::AddRemote);
+            return match banner {
+                Some(b) => icol![b, screen].spacing(8).into(),
+                None => screen,
+            };
+        }
 
         let inner: Element<Message> = match self
             .selected

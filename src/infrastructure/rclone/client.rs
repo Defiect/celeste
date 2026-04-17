@@ -95,4 +95,8 @@ impl RcloneClient for LibrcloneClient {
     fn delete_config(&self, remote: &str) -> Result<(), String> {
         rpc::sync::delete_config(remote).map_err(|err| err.error)
     }
+
+    fn create_config(&self, payload_json: String) -> Result<(), String> {
+        librclone::rpc("config/create", payload_json).map(|_| ())
+    }
 }

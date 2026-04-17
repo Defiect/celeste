@@ -42,6 +42,10 @@ pub trait Repository: Send + Sync {
         &self,
         name: &str,
     ) -> BoxFuture<'_, Result<Option<Remote>, RepositoryError>>;
+    fn insert_remote(
+        &self,
+        name: String,
+    ) -> BoxFuture<'_, Result<RemoteId, RepositoryError>>;
     fn delete_remote(&self, id: RemoteId) -> BoxFuture<'_, Result<(), RepositoryError>>;
     /// Delete a remote, all of its sync_dirs, and all of their sync_items.
     fn cascade_delete_remote(
@@ -145,6 +149,10 @@ pub trait RcloneClient: Send + Sync {
         remote_path: &str,
     ) -> Result<(), String>;
     fn delete_config(&self, remote: &str) -> Result<(), String>;
+    /// Create a new rclone config from a JSON body (rclone's
+    /// `config/create` RPC payload, including `name`, `type`, `parameters`
+    /// and optional `opt`).
+    fn create_config(&self, payload_json: String) -> Result<(), String>;
 }
 
 pub trait FsWatcher: Send + Sync {

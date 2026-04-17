@@ -104,6 +104,23 @@ impl Repository for SeaOrmRepository {
         })
     }
 
+    fn insert_remote(
+        &self,
+        name: String,
+    ) -> BoxFuture<'_, Result<RemoteId, RepositoryError>> {
+        Box::pin(async move {
+            let active = RemotesActiveModel {
+                name: ActiveValue::Set(name),
+                ..Default::default()
+            };
+            let res = RemotesEntity::insert(active)
+                .exec(&self.db)
+                .await
+                .map_err(map_err)?;
+            Ok(RemoteId(res.last_insert_id))
+        })
+    }
+
     fn delete_remote(&self, id: RemoteId) -> BoxFuture<'_, Result<(), RepositoryError>> {
         Box::pin(async move {
             RemotesEntity::delete_by_id(id.0)

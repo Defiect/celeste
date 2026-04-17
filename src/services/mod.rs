@@ -4,6 +4,7 @@
 //! infrastructure types directly. This lets [`SyncOrchestrator`] and
 //! friends be unit-tested against in-memory fakes.
 
+pub mod auth_service;
 pub mod event_bus;
 pub mod orchestrator;
 pub mod remote_lifecycle;
