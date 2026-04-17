@@ -144,10 +144,20 @@ lazy_static::lazy_static! {
     pub static ref CLOSE_REQUEST: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
     // A [`Mutex`] to keep track of open requests from the tray icon.
     pub static ref OPEN_REQUEST: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
+    // Set alongside CLOSE_REQUEST when the user asks to restart; after the
+    // main loop exits, launch() re-execs the binary instead of returning.
+    pub static ref RESTART_REQUEST: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
     // Remote IDs with a pending "sync now" request from the UI or a filesystem
     // event. The main loop consumes the set on each iteration, overriding the
     // per-drive interval gate for the listed remotes.
     pub static ref REFRESH_REQUESTS: Arc<Mutex<HashSet<i32>>> = Arc::new(Mutex::new(HashSet::new()));
+}
+
+/// Signal a graceful restart — `launch()` re-execs the binary after the
+/// main loop unwinds.
+pub fn request_restart() {
+    *RESTART_REQUEST.lock().unwrap() = true;
+    *CLOSE_REQUEST.lock().unwrap() = true;
 }
 
 /// Get an icon for use as the status icon for directory syncs.
@@ -1024,7 +1034,7 @@ pub fn launch(app: &Application, background: bool) {
                 }),
             );
             instant_switch.connect_active_notify(
-                glib::clone!(@strong db, @strong db_remote => move |s| {
+                glib::clone!(@strong db, @strong db_remote, @weak window => move |s| {
                     let _ = util::await_future(
                         RemotesActiveModel {
                             id: ActiveValue::Unchanged(db_remote.id),
@@ -1033,6 +1043,29 @@ pub fn launch(app: &Application, background: bool) {
                         }
                         .update(&db),
                     );
+
+                    let dialog = adw::MessageDialog::builder()
+                        .transient_for(&window)
+                        .modal(true)
+                        .heading(&tr::tr!("Restart to apply"))
+                        .body(&tr::tr!(
+                            "Toggling instant sync only takes effect after Celeste restarts."
+                        ))
+                        .build();
+                    dialog.add_response("later", &tr::tr!("Later"));
+                    dialog.add_response("restart", &tr::tr!("Restart now"));
+                    dialog.set_response_appearance(
+                        "restart",
+                        adw::ResponseAppearance::Suggested,
+                    );
+                    dialog.set_default_response(Some("restart"));
+                    dialog.connect_response(None, |dialog, resp| {
+                        dialog.close();
+                        if resp == "restart" {
+                            request_restart();
+                        }
+                    });
+                    dialog.show();
                 }),
             );
             interval_spin.connect_value_changed(
@@ -1102,6 +1135,16 @@ pub fn launch(app: &Application, background: bool) {
             crate::about::about_window(&app);
         }),
     );
+    let sidebar_menu_restart_button = Button::builder()
+        .label(&tr::tr!("Restart"))
+        .css_classes(vec!["flat".to_string()])
+        .build();
+    sidebar_menu_restart_button.connect_clicked(
+        glib::clone!(@weak sidebar_menu_popover => move |_| {
+            sidebar_menu_popover.popdown();
+            request_restart();
+        }),
+    );
     let sidebar_menu_quit_button = Button::builder()
         .label("Quit")
         .css_classes(vec!["flat".to_string()])
@@ -1111,6 +1154,7 @@ pub fn launch(app: &Application, background: bool) {
         *(*CLOSE_REQUEST).lock().unwrap() = true;
     }));
     sidebar_menu_popover_sections.append(&sidebar_menu_about_button);
+    sidebar_menu_popover_sections.append(&sidebar_menu_restart_button);
     sidebar_menu_popover_sections.append(&sidebar_menu_quit_button);
     sidebar_menu_popover.set_parent(&sidebar_menu_button);
     sidebar_menu_button.connect_clicked(glib::clone!(@weak sidebar_menu_popover => move |_| {
@@ -2787,4 +2831,8 @@ pub fn launch(app: &Application, background: bool) {
     // and then close and destroy the window.
     window.close();
     window.destroy();
+
+    if *RESTART_REQUEST.lock().unwrap() {
+        util::restart_app();
+    }
 }

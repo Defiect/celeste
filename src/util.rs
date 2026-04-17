@@ -54,3 +54,13 @@ macro_rules! get_title {
 }
 
 pub use crate::get_title;
+
+/// Relaunch the application: spawn a detached copy of the same binary
+/// (without the `run-gui` subcommand so the new process becomes a fresh
+/// top-level supervisor) and exit the current one.
+pub fn restart_app() -> ! {
+    if let Ok(exe) = std::env::current_exe() {
+        let _ = std::process::Command::new(exe).spawn();
+    }
+    std::process::exit(0);
+}

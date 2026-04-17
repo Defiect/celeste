@@ -64,6 +64,13 @@ impl KsniTray for Tray {
                 ..Default::default()
             }),
             MenuItem::Standard(StandardItem {
+                label: tr::tr!("Restart"),
+                activate: Box::new(|_| {
+                    launch::request_restart();
+                }),
+                ..Default::default()
+            }),
+            MenuItem::Standard(StandardItem {
                 label: tr::tr!("Close"),
                 activate: Box::new(|_| {
                     *(*launch::CLOSE_REQUEST).lock().unwrap() = true;
