@@ -9,6 +9,7 @@ pub mod orchestrator;
 pub mod remote_lifecycle;
 pub mod should_sync;
 pub mod sync_dir_ops;
+pub mod sync_dir_pass;
 
 pub use event_bus::{EventBus, event_channel};
 pub use orchestrator::SyncOrchestrator;
