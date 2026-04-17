@@ -11,12 +11,15 @@ use super::{
 };
 mod dropbox;
 mod gdrive;
-pub mod shared;
 mod nextcloud;
 mod owncloud;
 mod pcloud;
 mod proton_drive;
+pub mod provider;
+pub mod shared;
 mod webdav;
+
+pub use provider::OAuthProviders;
 
 use adw::{
     glib,
