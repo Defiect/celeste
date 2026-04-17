@@ -64,6 +64,18 @@ pub trait Repository: Send + Sync {
         local_path: &str,
         remote_path: &str,
     ) -> BoxFuture<'_, Result<Option<SyncItem>, RepositoryError>>;
+    fn find_sync_item_by_local(
+        &self,
+        sync_dir: SyncDirId,
+        local_path: &str,
+    ) -> BoxFuture<'_, Result<Option<SyncItem>, RepositoryError>>;
+    fn find_sync_item_by_remote(
+        &self,
+        sync_dir: SyncDirId,
+        remote_path: &str,
+    ) -> BoxFuture<'_, Result<Option<SyncItem>, RepositoryError>>;
+    fn delete_sync_item(&self, id: SyncItemId)
+        -> BoxFuture<'_, Result<(), RepositoryError>>;
     fn insert_sync_item(
         &self,
         sync_dir: SyncDirId,

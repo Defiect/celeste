@@ -1357,7 +1357,7 @@ pub fn launch(app: &Application, background: bool) {
                 let should_sync = crate::services::should_sync::should_sync(
                     &remote,
                     &sync_dir,
-                    &db,
+                    &repo,
                     &rclone_client,
                 );
 
