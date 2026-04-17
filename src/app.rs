@@ -38,6 +38,7 @@ pub enum Message {
     SyncEventReceived(SyncEvent),
     Tick,
     FsEvent(RemoteId),
+    DismissBanner,
 }
 
 pub struct CelesteApp {
@@ -147,6 +148,7 @@ impl Application for CelesteApp {
             }
             Message::Main(main_page::Msg::Selected(id)) => {
                 self.selected = Some(id);
+                self.banner = None;
                 let repo = self.repo.clone();
                 Command::perform(
                     async move { repo.list_sync_dirs(id).await.unwrap_or_default() },
@@ -262,6 +264,10 @@ impl Application for CelesteApp {
                 self.last_sync_at.insert(id, Instant::now());
                 Command::none()
             }
+            Message::DismissBanner => {
+                self.banner = None;
+                Command::none()
+            }
             Message::FsEvent(id) => {
                 // A watched file changed — if the remote has instant_sync on
                 // and isn't already running, kick off a sync.
@@ -346,11 +352,22 @@ impl Application for CelesteApp {
     }
 
     fn view(&self) -> Element<'_, Message> {
-        use iced::widget::{column as icol, container as icontainer, text as itext};
+        use iced::widget::{
+            button as ibutton, column as icol, container as icontainer, row as irow,
+            text as itext, Space as ISpace,
+        };
         let banner = self.banner.as_ref().map(|msg| {
-            icontainer(itext(msg).size(13))
-                .padding(8)
-                .style(iced::theme::Container::Box)
+            icontainer(
+                irow![
+                    itext(msg).size(13),
+                    ISpace::with_width(iced::Length::Fill),
+                    ibutton(itext("×").size(14)).on_press(Message::DismissBanner),
+                ]
+                .align_items(iced::Alignment::Center)
+                .spacing(8),
+            )
+            .padding(8)
+            .style(iced::theme::Container::Box)
         });
 
         let inner: Element<Message> = match self
