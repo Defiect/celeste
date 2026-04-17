@@ -1,8 +1,8 @@
 //! SeaORM-backed implementation of [`crate::domain::ports::Repository`].
 
-use std::path::PathBuf;
+use std::{path::PathBuf, time::Duration};
 
-use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
+use sea_orm::{ActiveValue, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
 
 use crate::domain::{
     ports::{BoxFuture, Repository, RepositoryError},
@@ -11,8 +11,8 @@ use crate::domain::{
 };
 
 use super::models::{
-    RemotesEntity, RemotesModel, SyncDirsColumn, SyncDirsEntity, SyncDirsModel, SyncItemsColumn,
-    SyncItemsEntity, SyncItemsModel,
+    RemotesActiveModel, RemotesEntity, RemotesModel, SyncDirsColumn, SyncDirsEntity,
+    SyncDirsModel, SyncItemsColumn, SyncItemsEntity, SyncItemsModel,
 };
 
 pub struct SeaOrmRepository {
@@ -26,12 +26,14 @@ impl SeaOrmRepository {
 }
 
 fn map_remote(m: RemotesModel) -> Remote {
-    // Policy columns arrive in the Phase B migration; until then every remote
-    // gets the defaults.
     Remote {
         id: RemoteId(m.id),
         name: m.name,
-        policy: SyncPolicy::default(),
+        policy: SyncPolicy {
+            interval: Duration::from_secs(m.sync_interval_seconds.max(1) as u64),
+            instant_sync: m.instant_sync != 0,
+            enabled: m.enabled != 0,
+        },
     }
 }
 
@@ -94,11 +96,23 @@ impl Repository for SeaOrmRepository {
 
     fn set_policy(
         &self,
-        _id: RemoteId,
-        _policy: SyncPolicy,
+        id: RemoteId,
+        policy: SyncPolicy,
     ) -> BoxFuture<'_, Result<(), RepositoryError>> {
-        // Phase B adds the sync_policy columns and the real UPDATE here.
-        Box::pin(async { Ok(()) })
+        Box::pin(async move {
+            let active = RemotesActiveModel {
+                id: ActiveValue::Unchanged(id.0),
+                sync_interval_seconds: ActiveValue::Set(policy.interval.as_secs() as i32),
+                instant_sync: ActiveValue::Set(policy.instant_sync as i32),
+                enabled: ActiveValue::Set(policy.enabled as i32),
+                ..Default::default()
+            };
+            RemotesEntity::update(active)
+                .exec(&self.db)
+                .await
+                .map_err(map_err)?;
+            Ok(())
+        })
     }
 
     fn list_sync_dirs(

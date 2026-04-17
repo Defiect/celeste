@@ -8,6 +8,11 @@ pub struct Model {
     #[sea_orm(primary_key)]
     pub id: i32,
     pub name: String,
+    pub sync_interval_seconds: i32,
+    pub instant_sync: i32,
+    pub enabled: i32,
+    pub last_sync_at: Option<i64>,
+    pub last_sync_status: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
