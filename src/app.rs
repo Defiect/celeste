@@ -23,6 +23,7 @@ pub enum Message {
     Remote(remote_page::Msg),
     Settings(settings::Msg),
     RemotesLoaded(Vec<Remote>),
+    PolicySaved,
 }
 
 pub struct CelesteApp {
@@ -79,19 +80,52 @@ impl Application for CelesteApp {
                 Command::none()
             }
             Message::Main(main_page::Msg::RefreshAll) => {
-                // TODO: wire through a future SyncOrchestrator method.
+                // TODO: hook into SyncOrchestrator once it drives the sync.
                 Command::none()
             }
             Message::Main(main_page::Msg::AddRemote) => {
                 // TODO: invoke the login flow.
                 Command::none()
             }
-            Message::Remote(_) | Message::Settings(_) => Command::none(),
+            Message::Remote(remote_page::Msg::Back) => {
+                self.selected = None;
+                Command::none()
+            }
+            Message::Remote(remote_page::Msg::RefreshNow(_id)) => {
+                // TODO: push into REFRESH_REQUESTS-equivalent once the Iced
+                // side owns the orchestrator.
+                Command::none()
+            }
+            Message::Remote(remote_page::Msg::Settings(sub))
+            | Message::Settings(sub) => {
+                let Some(id) = self.selected else {
+                    return Command::none();
+                };
+                let Some(remote) = self.remotes.iter_mut().find(|r| r.id == id) else {
+                    return Command::none();
+                };
+                let new_policy = settings::policy_from(&sub, &remote.policy);
+                remote.policy = new_policy.clone();
+                let repo = self.repo.clone();
+                Command::perform(
+                    async move {
+                        let _ = repo.set_policy(id, new_policy).await;
+                    },
+                    |_| Message::PolicySaved,
+                )
+            }
+            Message::PolicySaved => Command::none(),
         }
     }
 
     fn view(&self) -> Element<'_, Message> {
-        main_page::view(&self.remotes, self.selected).map(Message::Main)
+        match self
+            .selected
+            .and_then(|id| self.remotes.iter().find(|r| r.id == id))
+        {
+            Some(remote) => remote_page::view(remote).map(Message::Remote),
+            None => main_page::view(&self.remotes, self.selected).map(Message::Main),
+        }
     }
 }
 
