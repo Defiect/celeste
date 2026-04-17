@@ -430,30 +430,81 @@ pub fn sync_local_directory<FE, FO, FD, FC>(
             } else if remote_item.is_none()
                 && local_utc_timestamp == db_model.last_local_timestamp as u64
             {
-                // Defensive: rclone's Google Drive backend has been
-                // observed returning Ok(None) from operations/stat for
-                // files that really are present, right after a mutation
-                // elsewhere in the same parent directory. Verify via a
-                // fresh list before we mirror the supposed deletion
-                // locally — the 2026-04-17 incident trashed 17 top-
-                // level files in one pass because of this exact race.
+                // Defensive: rclone's Google Drive backend returns
+                // Ok(None) from operations/stat during rate-limit /
+                // cache-flush windows even when the file is present,
+                // and operations/list can come back empty or wildly
+                // partial in the same window. Before we mirror a
+                // "remote gone" conclusion locally, require two
+                // signals from a fresh list of the parent:
+                //
+                //   1. This file isn't in the listing.
+                //   2. At least one sibling the DB expects to see IS
+                //      in the listing — if zero expected siblings are
+                //      present, the listing itself is untrustworthy
+                //      (rate limit, cache flush) and we refuse to
+                //      destroy data on it.
+                //
+                // Without #2 the April incident recurred: Google
+                // Drive throttled, list returned zero items, 17 top-
+                // level files got wrongly deleted in one pass.
                 let (parent, filename) =
                     remote_path.rsplit_once('/').unwrap_or(("", &remote_path));
-                let still_on_remote = match client.list(
+                let list_items = match client.list(
                     &remote.name,
                     parent,
                     false,
                     ListFilter::All,
                 ) {
-                    Ok(items) => items.iter().any(|i| i.name == filename),
-                    Err(_) => true,
+                    Ok(items) => items,
+                    Err(err) => {
+                        eprintln!(
+                            "sync: ABORT local-delete-mirroring-remote remote={} path={} — parent list failed ({err}).",
+                            remote.name, remote_path,
+                        );
+                        continue;
+                    }
                 };
-                if still_on_remote {
+                if list_items.iter().any(|i| i.name == filename) {
                     eprintln!(
-                        "sync: ABORT local-delete-mirroring-remote remote={} path={} — stat returned None but list shows the file is still present (rclone cache race).",
+                        "sync: ABORT local-delete-mirroring-remote remote={} path={} — stat=None but list shows the file is still present (rclone cache race).",
                         remote.name, remote_path,
                     );
                     continue;
+                }
+                let all_items = util::await_future(repo.list_sync_items(sync_dir.id))
+                    .unwrap_or_default();
+                let expected_sibling_names: Vec<String> = all_items
+                    .iter()
+                    .filter_map(|it| {
+                        if it.remote_path == remote_path {
+                            return None;
+                        }
+                        let (p, n) = it
+                            .remote_path
+                            .rsplit_once('/')
+                            .unwrap_or(("", &it.remote_path));
+                        if p == parent {
+                            Some(n.to_owned())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                if !expected_sibling_names.is_empty() {
+                    let seen = expected_sibling_names
+                        .iter()
+                        .filter(|n| list_items.iter().any(|i| i.name == **n))
+                        .count();
+                    if seen == 0 {
+                        eprintln!(
+                            "sync: ABORT local-delete-mirroring-remote remote={} path={} — listing returned 0 of {} expected siblings, parent listing is untrustworthy (likely rate limit or cache flush).",
+                            remote.name,
+                            remote_path,
+                            expected_sibling_names.len(),
+                        );
+                        continue;
+                    }
                 }
                 log_destructive_op(
                     "local-delete-mirroring-remote",

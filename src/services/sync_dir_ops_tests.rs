@@ -98,6 +98,67 @@ fn list_verify_aborts_delete_when_stat_disagrees_with_list() {
     );
 }
 
+/// Stronger cache-race guard: under Google Drive rate limit, both
+/// stat AND list can come back empty, which bypassed the earlier
+/// list-verify. Now we additionally require at least one expected
+/// sibling (from the DB) to be present in the listing — if zero
+/// expected siblings are visible, the listing itself is considered
+/// corrupt and the delete is aborted. Regression for the 2026-04-17
+/// rate-limit-driven cascade.
+#[test]
+fn list_verify_aborts_when_listing_is_missing_all_expected_siblings() {
+    let tmp = TempDir::new("stat_and_list_lie");
+    let target = tmp.write_file("target.pdf", b"data");
+    let sibling_a = tmp.write_file("sibling_a.pdf", b"a");
+    let sibling_b = tmp.write_file("sibling_b.pdf", b"b");
+    touch_mtime(&target, 1_700_000_000);
+    touch_mtime(&sibling_a, 1_700_000_000);
+    touch_mtime(&sibling_b, 1_700_000_000);
+
+    let repo = FakeRepo::new();
+    repo.insert_item(
+        SyncDirId(1),
+        target.to_str().unwrap(),
+        "target.pdf",
+        1_700_000_000,
+        1_700_000_000,
+    );
+    repo.insert_item(
+        SyncDirId(1),
+        sibling_a.to_str().unwrap(),
+        "sibling_a.pdf",
+        1_700_000_000,
+        1_700_000_000,
+    );
+    repo.insert_item(
+        SyncDirId(1),
+        sibling_b.to_str().unwrap(),
+        "sibling_b.pdf",
+        1_700_000_000,
+        1_700_000_000,
+    );
+
+    let client = FakeRclone::default();
+    // Rate-limit window: stat returns None, list returns empty.
+    client.set_stat("target.pdf", Ok(None));
+    client.set_stat("sibling_a.pdf", Ok(None));
+    client.set_stat("sibling_b.pdf", Ok(None));
+    client.set_list("", Ok(vec![]));
+
+    let events = Mutex::new(Vec::new());
+    run_local_sync(&tmp, &repo, &client, &events);
+
+    assert!(
+        target.exists() && sibling_a.exists() && sibling_b.exists(),
+        "no file may be deleted when the listing looks corrupt (0 expected siblings present)",
+    );
+    assert_eq!(
+        repo.item_count(),
+        3,
+        "no DB row may be removed when the listing looks corrupt",
+    );
+}
+
 /// When stat and list both agree the remote file is gone, the
 /// branch proceeds: local file deleted, DB row removed.
 #[test]
