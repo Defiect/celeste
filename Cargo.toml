@@ -36,6 +36,3 @@ tokio = { version = "1.38.0", features = ["macros", "rt-multi-thread", "sync"] }
 tr = "0.1.7"
 url = "2.5.2"
 
-[build-dependencies]
-grass = "0.11.2"
-nipper = "0.1.9"
