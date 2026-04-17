@@ -531,11 +531,21 @@ pub fn sync_remote_directory<FE, FO, FD, FC>(
         }
 
         let remote_path_string = item.path.clone();
-        let local_path_string = format!(
-            "{}/{}",
-            sync_dir.local_path,
-            item.path.strip_prefix(&sync_dir.remote_path).unwrap()
-        );
+        // rclone returns each item's `path` relative to the remote filesystem
+        // root, so it usually starts with sync_dir.remote_path. Fall back to
+        // the raw path if it doesn't (e.g., when remote_path was stored with
+        // odd normalisation), then trim the separator so we don't end up
+        // with "<local>//<file>".
+        let relative = item
+            .path
+            .strip_prefix(&sync_dir.remote_path)
+            .unwrap_or(&item.path)
+            .trim_start_matches('/');
+        let local_path_string = if relative.is_empty() {
+            sync_dir.local_path.clone()
+        } else {
+            format!("{}/{}", sync_dir.local_path, relative)
+        };
         update_ui_progress(&remote_path_string);
 
         // If we've already synced this directory from `fn sync_local_directory`

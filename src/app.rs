@@ -326,11 +326,18 @@ impl Application for CelesteApp {
                 if local.trim().is_empty() || remote.trim().is_empty() {
                     return Command::none();
                 }
+                // Normalise to match the on-disk contract: the local path is
+                // absolute (leading `/`) and has no trailing `/`; the remote
+                // path has no leading or trailing `/`. The sync loop assumes
+                // this shape when stripping prefixes off listed items.
+                let local_norm =
+                    format!("/{}", crate::util::strip_slashes(local.trim()));
+                let remote_norm = crate::util::strip_slashes(remote.trim());
                 self.sync_dir_drafts.insert(id, (String::new(), String::new()));
                 let repo = self.repo.clone();
                 Command::perform(
                     async move {
-                        let _ = repo.insert_sync_dir(id, local, remote).await;
+                        let _ = repo.insert_sync_dir(id, local_norm, remote_norm).await;
                         id
                     },
                     |id| Message::Main(main_page::Msg::Selected(id)),
