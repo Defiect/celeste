@@ -34,13 +34,6 @@ pub enum SyncStatus {
     Error { message: String },
 }
 
-#[derive(Clone, Debug)]
-pub struct Conflict {
-    pub sync_dir_id: SyncDirId,
-    pub local_path: String,
-    pub remote_path: String,
-}
-
 /// A single entry on a remote filesystem, as returned by
 /// [`crate::domain::ports::RcloneClient`] listing / stat calls.
 #[derive(Clone, Debug)]

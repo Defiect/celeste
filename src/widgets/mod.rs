@@ -4,4 +4,3 @@
 //! service calls.
 
 pub mod duration_picker;
-pub mod status_badge;
