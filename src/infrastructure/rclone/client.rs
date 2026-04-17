@@ -11,6 +11,7 @@ use crate::domain::{
 
 use super::rpc::{self, RcloneListFilter, RcloneRemoteItem};
 
+#[derive(Clone, Copy)]
 pub struct LibrcloneClient;
 
 impl LibrcloneClient {

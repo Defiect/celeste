@@ -1615,7 +1615,7 @@ pub fn launch(app: &Application, background: bool) {
                 let synced_items: RefCell<Vec<(String, String)>> = RefCell::new(vec![]);
 
                 // Get any pending deletion requests and process them.
-                let process_deletion_requests = glib::clone!(@strong db, @weak stack, @strong directory_map, @strong remote_deletion_queue, @strong sync_dir_deletion_queue => move || {
+                let process_deletion_requests = glib::clone!(@strong db, @weak stack, @strong directory_map, @strong remote_deletion_queue, @strong sync_dir_deletion_queue, @strong rclone_client => move || {
                     let mut dmap = directory_map.get_mut_ref();
                     let mut remote_queue = remote_deletion_queue.get_mut_ref();
                     let mut dir_queue = sync_dir_deletion_queue.get_mut_ref();
@@ -1632,23 +1632,13 @@ pub fn launch(app: &Application, background: bool) {
                         // Remove the item from the directory map.
                         dmap.get_mut(&queue_item.0).unwrap().remove(&dir_pair).unwrap();
 
-                        // Remove the item from the database.
-                        util::await_future(async {
-                            let sync_dir = SyncDirsEntity::find()
-                                .filter(SyncDirsColumn::LocalPath.eq(queue_item.1.clone()))
-                                .filter(SyncDirsColumn::RemotePath.eq(queue_item.2.clone()))
-                                .one(&db)
-                                .await
-                                .unwrap()
-                                .unwrap();
-
-                            SyncItemsEntity::delete_many()
-                                .filter(SyncItemsColumn::SyncDirId.eq(sync_dir.id))
-                                .exec(&db)
-                                .await
-                                .unwrap();
-                            sync_dir.delete(&db).await.unwrap();
-                        });
+                        // Cascade-delete DB rows via the service.
+                        crate::services::remote_lifecycle::delete_sync_dir(
+                            &queue_item.1,
+                            &queue_item.2,
+                            &db,
+                        )
+                        .expect("failed to delete sync_dir");
                     }
 
                     // Process remote deletions.
@@ -1659,34 +1649,13 @@ pub fn launch(app: &Application, background: bool) {
                         let child = stack.child_by_name(&remote_name).unwrap();
                         stack.remove(&child);
 
-                        // Delete all related database entries.
-                        util::await_future(async {
-                            let db_remote = RemotesEntity::find()
-                                .filter(RemotesColumn::Name.eq(remote_name.clone()))
-                                .one(&db)
-                                .await
-                                .unwrap()
-                                .unwrap();
-                            let sync_dirs = SyncDirsEntity::find()
-                                .filter(SyncDirsColumn::RemoteId.eq(db_remote.id))
-                                .all(&db)
-                                .await
-                                .unwrap();
-
-                            for sync_dir in sync_dirs {
-                                SyncItemsEntity::delete_many()
-                                    .filter(SyncItemsColumn::SyncDirId.eq(sync_dir.id))
-                                    .exec(&db)
-                                    .await
-                                    .unwrap();
-                                sync_dir.delete(&db).await.unwrap();
-                            }
-
-                            db_remote.delete(&db).await.unwrap();
-                        });
-
-                        // Delete the Rclone config.
-                        rclone::sync::delete_config(&remote_name).unwrap();
+                        // DB + rclone config cleanup via the service.
+                        crate::services::remote_lifecycle::delete_remote(
+                            &remote_name,
+                            &db,
+                            &rclone_client,
+                        )
+                        .expect("failed to delete remote");
                     }
                 });
 

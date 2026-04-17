@@ -16,6 +16,33 @@ use crate::{
     util,
 };
 
+/// Cascade-delete one sync_dir (by local + remote path) and all of its
+/// sync_items from the DB. UI unlinking is the caller's problem.
+pub fn delete_sync_dir(
+    local_path: &str,
+    remote_path: &str,
+    db: &DatabaseConnection,
+) -> Result<(), String> {
+    util::await_future(async {
+        let sync_dir = SyncDirsEntity::find()
+            .filter(SyncDirsColumn::LocalPath.eq(local_path))
+            .filter(SyncDirsColumn::RemotePath.eq(remote_path))
+            .one(db)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| {
+                format!("sync_dir '{local_path}' <-> '{remote_path}' not found")
+            })?;
+        SyncItemsEntity::delete_many()
+            .filter(SyncItemsColumn::SyncDirId.eq(sync_dir.id))
+            .exec(db)
+            .await
+            .map_err(|e| e.to_string())?;
+        sync_dir.delete(db).await.map_err(|e| e.to_string())?;
+        Ok::<(), String>(())
+    })
+}
+
 pub fn delete_remote(
     remote_name: &str,
     db: &DatabaseConnection,
