@@ -49,6 +49,11 @@ pub trait Repository: Send + Sync {
         &self,
         remote: RemoteId,
     ) -> BoxFuture<'_, Result<Vec<SyncDir>, RepositoryError>>;
+    fn sync_dir_exists(
+        &self,
+        local_path: &str,
+        remote_path: &str,
+    ) -> BoxFuture<'_, Result<bool, RepositoryError>>;
     fn list_sync_items(
         &self,
         sync_dir: SyncDirId,

@@ -129,6 +129,24 @@ impl Repository for SeaOrmRepository {
         })
     }
 
+    fn sync_dir_exists(
+        &self,
+        local_path: &str,
+        remote_path: &str,
+    ) -> BoxFuture<'_, Result<bool, RepositoryError>> {
+        let local = local_path.to_owned();
+        let remote = remote_path.to_owned();
+        Box::pin(async move {
+            let row = SyncDirsEntity::find()
+                .filter(SyncDirsColumn::LocalPath.eq(local))
+                .filter(SyncDirsColumn::RemotePath.eq(remote))
+                .one(&self.db)
+                .await
+                .map_err(map_err)?;
+            Ok(row.is_some())
+        })
+    }
+
     fn list_sync_items(
         &self,
         sync_dir: SyncDirId,
