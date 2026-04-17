@@ -1330,12 +1330,11 @@ pub fn launch(app: &Application, background: bool) {
                 }
             }
 
-            let sync_dirs = util::await_future(
-                SyncDirsEntity::find()
-                    .filter(SyncDirsColumn::RemoteId.eq(remote.id))
-                    .all(&db),
-            )
-            .unwrap();
+            let sync_dirs = util::await_future(crate::domain::ports::Repository::list_sync_dirs(
+                &repo,
+                crate::domain::remote::RemoteId(remote.id),
+            ))
+            .unwrap_or_default();
 
             for sync_dir in sync_dirs {
                 // Immediately reflect that this sync_dir is being processed —
@@ -1365,18 +1364,11 @@ pub fn launch(app: &Application, background: bool) {
                         enabled: remote.enabled != 0,
                     },
                 };
-                let domain_sync_dir = crate::domain::sync::SyncDir {
-                    id: crate::domain::sync::SyncDirId(sync_dir.id),
-                    remote_id: crate::domain::remote::RemoteId(sync_dir.remote_id),
-                    local_path: sync_dir.local_path.clone(),
-                    remote_path: sync_dir.remote_path.clone(),
-                };
-
                 // Gate the real sync work on whether anything has actually
                 // changed under this sync_dir since the last successful pass.
                 let should_sync = crate::services::should_sync::should_sync(
                     &domain_remote,
-                    &domain_sync_dir,
+                    &sync_dir,
                     &repo,
                     &rclone_client,
                 );
@@ -1702,7 +1694,7 @@ pub fn launch(app: &Application, background: bool) {
                 sync_local_directory(
                     Path::new(&sync_dir.local_path),
                     &domain_remote,
-                    &domain_sync_dir,
+                    &sync_dir,
                     &repo,
                     &rclone_client,
                     &synced_items,
@@ -1715,7 +1707,7 @@ pub fn launch(app: &Application, background: bool) {
                 sync_remote_directory(
                     &sync_dir.remote_path,
                     &domain_remote,
-                    &domain_sync_dir,
+                    &sync_dir,
                     &repo,
                     &rclone_client,
                     &synced_items,
@@ -1734,7 +1726,15 @@ pub fn launch(app: &Application, background: bool) {
                 // If this sync directory doesn't exist anymore (from being deleted during
                 // `process_deletion_requests` calls in the about two functions), go to the next
                 // sync directory.
-                if !sync_dir.exists(&db) {
+                if !util::await_future(
+                    crate::domain::ports::Repository::sync_dir_exists(
+                        &repo,
+                        &sync_dir.local_path,
+                        &sync_dir.remote_path,
+                    ),
+                )
+                .unwrap_or(false)
+                {
                     continue 'main;
                 }
 
