@@ -70,3 +70,244 @@ pub fn add_webdav_remote(
     util::await_future(repo.insert_remote(name.to_owned()))
         .map_err(|e| e.to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+
+    use super::*;
+    use crate::domain::{
+        ports::{BoxFuture, Repository, RepositoryError},
+        remote::{Remote, RemoteId, SyncPolicy},
+        sync::{ListFilter, RemoteItem, SyncDir, SyncDirId, SyncItem, SyncItemId},
+    };
+
+    #[derive(Default)]
+    struct FakeRepo {
+        inserted: Mutex<Vec<String>>,
+        next_id: Mutex<i32>,
+    }
+
+    impl Repository for FakeRepo {
+        fn list_remotes(&self) -> BoxFuture<'_, Result<Vec<Remote>, RepositoryError>> {
+            Box::pin(async { Ok(vec![]) })
+        }
+        fn find_remote(
+            &self,
+            _id: RemoteId,
+        ) -> BoxFuture<'_, Result<Option<Remote>, RepositoryError>> {
+            Box::pin(async { Ok(None) })
+        }
+        fn find_remote_by_name(
+            &self,
+            _name: &str,
+        ) -> BoxFuture<'_, Result<Option<Remote>, RepositoryError>> {
+            Box::pin(async { Ok(None) })
+        }
+        fn insert_remote(
+            &self,
+            name: String,
+        ) -> BoxFuture<'_, Result<RemoteId, RepositoryError>> {
+            let mut inserted = self.inserted.lock().unwrap();
+            inserted.push(name);
+            let mut next = self.next_id.lock().unwrap();
+            *next += 1;
+            let id = RemoteId(*next);
+            Box::pin(async move { Ok(id) })
+        }
+        fn delete_remote(&self, _id: RemoteId) -> BoxFuture<'_, Result<(), RepositoryError>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn cascade_delete_remote(
+            &self,
+            _id: RemoteId,
+        ) -> BoxFuture<'_, Result<(), RepositoryError>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn cascade_delete_sync_dir(
+            &self,
+            _local: &str,
+            _remote: &str,
+        ) -> BoxFuture<'_, Result<(), RepositoryError>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn set_policy(
+            &self,
+            _id: RemoteId,
+            _p: SyncPolicy,
+        ) -> BoxFuture<'_, Result<(), RepositoryError>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn list_sync_dirs(
+            &self,
+            _r: RemoteId,
+        ) -> BoxFuture<'_, Result<Vec<SyncDir>, RepositoryError>> {
+            Box::pin(async { Ok(vec![]) })
+        }
+        fn sync_dir_exists(
+            &self,
+            _l: &str,
+            _r: &str,
+        ) -> BoxFuture<'_, Result<bool, RepositoryError>> {
+            Box::pin(async { Ok(false) })
+        }
+        fn insert_sync_dir(
+            &self,
+            _r: RemoteId,
+            _l: String,
+            _rp: String,
+        ) -> BoxFuture<'_, Result<(), RepositoryError>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn list_sync_items(
+            &self,
+            _sd: SyncDirId,
+        ) -> BoxFuture<'_, Result<Vec<SyncItem>, RepositoryError>> {
+            Box::pin(async { Ok(vec![]) })
+        }
+        fn find_sync_item_by_paths(
+            &self,
+            _sd: SyncDirId,
+            _l: &str,
+            _r: &str,
+        ) -> BoxFuture<'_, Result<Option<SyncItem>, RepositoryError>> {
+            Box::pin(async { Ok(None) })
+        }
+        fn find_sync_item_by_local(
+            &self,
+            _sd: SyncDirId,
+            _l: &str,
+        ) -> BoxFuture<'_, Result<Option<SyncItem>, RepositoryError>> {
+            Box::pin(async { Ok(None) })
+        }
+        fn find_sync_item_by_remote(
+            &self,
+            _sd: SyncDirId,
+            _r: &str,
+        ) -> BoxFuture<'_, Result<Option<SyncItem>, RepositoryError>> {
+            Box::pin(async { Ok(None) })
+        }
+        fn insert_sync_item(
+            &self,
+            _sd: SyncDirId,
+            _l: String,
+            _r: String,
+            _lt: i64,
+            _rt: i64,
+        ) -> BoxFuture<'_, Result<(), RepositoryError>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn update_sync_item_timestamps(
+            &self,
+            _id: SyncItemId,
+            _lt: i64,
+            _rt: i64,
+        ) -> BoxFuture<'_, Result<(), RepositoryError>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn delete_sync_item(
+            &self,
+            _id: SyncItemId,
+        ) -> BoxFuture<'_, Result<(), RepositoryError>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn delete_sync_item_by_paths(
+            &self,
+            _sd: SyncDirId,
+            _l: &str,
+            _r: &str,
+        ) -> BoxFuture<'_, Result<(), RepositoryError>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    #[derive(Default)]
+    struct FakeRclone {
+        created: Mutex<Vec<String>>,
+    }
+
+    impl crate::domain::ports::RcloneClient for FakeRclone {
+        fn stat(&self, _r: &str, _p: &str) -> Result<Option<RemoteItem>, String> {
+            Ok(None)
+        }
+        fn list(
+            &self,
+            _r: &str,
+            _p: &str,
+            _rec: bool,
+            _f: ListFilter,
+        ) -> Result<Vec<RemoteItem>, String> {
+            Ok(vec![])
+        }
+        fn mkdir(&self, _r: &str, _p: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn delete_file(&self, _r: &str, _p: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn purge(&self, _r: &str, _p: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn copy_to_remote(&self, _l: &str, _r: &str, _rp: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn copy_to_local(&self, _l: &str, _r: &str, _rp: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn delete_config(&self, _r: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn create_config(&self, payload: String) -> Result<(), String> {
+            self.created.lock().unwrap().push(payload);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn webdav_creates_rclone_config_and_inserts_row() {
+        let repo = FakeRepo::default();
+        let client = FakeRclone::default();
+
+        let id = add_webdav_remote(
+            "Home NAS",
+            "https://nas.example.org/webdav",
+            "alex",
+            "hunter2",
+            WebDavVendor::WebDav,
+            &repo,
+            &client,
+        )
+        .expect("add should succeed against fakes");
+
+        assert_eq!(id.0, 1);
+        assert_eq!(repo.inserted.lock().unwrap().as_slice(), &["Home NAS".to_owned()]);
+        let created = client.created.lock().unwrap();
+        assert_eq!(created.len(), 1);
+        assert!(created[0].contains("\"vendor\":\"webdav\""));
+        assert!(created[0].contains("\"user\":\"alex\""));
+    }
+
+    #[test]
+    fn nextcloud_reformats_the_url() {
+        let repo = FakeRepo::default();
+        let client = FakeRclone::default();
+
+        add_webdav_remote(
+            "Work Nextcloud",
+            "https://cloud.example.org",
+            "alex",
+            "hunter2",
+            WebDavVendor::Nextcloud,
+            &repo,
+            &client,
+        )
+        .unwrap();
+
+        let created = client.created.lock().unwrap();
+        assert!(
+            created[0].contains("/remote.php/dav/files/alex"),
+            "expected Nextcloud URL to be rewritten, got: {}",
+            created[0]
+        );
+    }
+}
