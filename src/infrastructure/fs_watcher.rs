@@ -33,10 +33,10 @@ use crate::{
 /// flush.
 const FLUSH_INTERVAL: Duration = Duration::from_millis(500);
 
-/// Re-read the DB and reconcile the watch set every N flushes. 30 × 500ms
-/// = 15s, which is often enough for toggling `instant_sync` to feel
+/// Re-read the DB and reconcile the watch set every N flushes. 10 × 500ms
+/// = 5s, which is often enough for toggling `instant_sync` to feel
 /// responsive without hammering SeaORM.
-const RECONCILE_EVERY_N_FLUSHES: u32 = 30;
+const RECONCILE_EVERY_N_FLUSHES: u32 = 10;
 
 /// Generalised entry point — forwards debounced batches of changed paths
 /// per remote through the provided callback. Iced wires this into
