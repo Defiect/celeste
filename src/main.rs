@@ -6,6 +6,7 @@ pub mod gtk_util;
 pub mod infrastructure;
 pub mod launch;
 pub mod mpsc;
+pub mod services;
 pub mod traits;
 pub mod util;
 
