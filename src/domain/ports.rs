@@ -70,6 +70,12 @@ pub trait Repository: Send + Sync {
         local_path: &str,
         remote_path: &str,
     ) -> BoxFuture<'_, Result<bool, RepositoryError>>;
+    fn insert_sync_dir(
+        &self,
+        remote: RemoteId,
+        local_path: String,
+        remote_path: String,
+    ) -> BoxFuture<'_, Result<(), RepositoryError>>;
     fn list_sync_items(
         &self,
         sync_dir: SyncDirId,

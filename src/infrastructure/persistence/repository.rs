@@ -13,9 +13,9 @@ use crate::domain::{
 };
 
 use super::models::{
-    RemotesActiveModel, RemotesColumn, RemotesEntity, RemotesModel, SyncDirsColumn,
-    SyncDirsEntity, SyncDirsModel, SyncItemsActiveModel, SyncItemsColumn, SyncItemsEntity,
-    SyncItemsModel,
+    RemotesActiveModel, RemotesColumn, RemotesEntity, RemotesModel, SyncDirsActiveModel,
+    SyncDirsColumn, SyncDirsEntity, SyncDirsModel, SyncItemsActiveModel, SyncItemsColumn,
+    SyncItemsEntity, SyncItemsModel,
 };
 
 #[derive(Clone)]
@@ -198,6 +198,27 @@ impl Repository for SeaOrmRepository {
                 .await
                 .map_err(map_err)?;
             Ok(rows.into_iter().map(map_sync_dir).collect())
+        })
+    }
+
+    fn insert_sync_dir(
+        &self,
+        remote: RemoteId,
+        local_path: String,
+        remote_path: String,
+    ) -> BoxFuture<'_, Result<(), RepositoryError>> {
+        Box::pin(async move {
+            let active = SyncDirsActiveModel {
+                remote_id: ActiveValue::Set(remote.0),
+                local_path: ActiveValue::Set(local_path),
+                remote_path: ActiveValue::Set(remote_path),
+                ..Default::default()
+            };
+            SyncDirsEntity::insert(active)
+                .exec(&self.db)
+                .await
+                .map_err(map_err)?;
+            Ok(())
         })
     }
 

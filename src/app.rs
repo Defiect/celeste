@@ -54,6 +54,9 @@ pub struct CelesteApp {
     /// Wall-clock timestamp of the last sync completion per remote. Drives
     /// the interval scheduler.
     last_sync_at: HashMap<RemoteId, Instant>,
+    /// In-progress (local_path, remote_path) inputs for the Add sync_dir form
+    /// on each remote page.
+    sync_dir_drafts: HashMap<RemoteId, (String, String)>,
     /// Sender handed to us by the subscription worker; sync code clones this
     /// to emit events back into the event loop.
     events_tx: Option<mpsc::Sender<SyncEvent>>,
@@ -81,6 +84,7 @@ impl Application for CelesteApp {
             sync_dir_status: HashMap::new(),
             sync_dir_errors: HashMap::new(),
             last_sync_at: HashMap::new(),
+            sync_dir_drafts: HashMap::new(),
             events_tx: None,
         };
         let repo = flags.repo;
@@ -156,6 +160,51 @@ impl Application for CelesteApp {
                 Command::none()
             }
             Message::Remote(remote_page::Msg::RefreshNow(id)) => self.start_sync(id),
+            Message::Remote(remote_page::Msg::DraftLocalPathChanged(s)) => {
+                if let Some(id) = self.selected {
+                    self.sync_dir_drafts.entry(id).or_default().0 = s;
+                }
+                Command::none()
+            }
+            Message::Remote(remote_page::Msg::DraftRemotePathChanged(s)) => {
+                if let Some(id) = self.selected {
+                    self.sync_dir_drafts.entry(id).or_default().1 = s;
+                }
+                Command::none()
+            }
+            Message::Remote(remote_page::Msg::AddSyncDir) => {
+                let Some(id) = self.selected else {
+                    return Command::none();
+                };
+                let Some((local, remote)) = self.sync_dir_drafts.get(&id).cloned() else {
+                    return Command::none();
+                };
+                if local.trim().is_empty() || remote.trim().is_empty() {
+                    return Command::none();
+                }
+                self.sync_dir_drafts.insert(id, (String::new(), String::new()));
+                let repo = self.repo.clone();
+                Command::perform(
+                    async move {
+                        let _ = repo.insert_sync_dir(id, local, remote).await;
+                        id
+                    },
+                    |id| Message::Main(main_page::Msg::Selected(id)),
+                )
+            }
+            Message::Remote(remote_page::Msg::DeleteSyncDir(local, remote)) => {
+                let Some(id) = self.selected else {
+                    return Command::none();
+                };
+                let repo = self.repo.clone();
+                Command::perform(
+                    async move {
+                        let _ = repo.cascade_delete_sync_dir(&local, &remote).await;
+                        id
+                    },
+                    |id| Message::Main(main_page::Msg::Selected(id)),
+                )
+            }
             Message::SyncStarted(id) => {
                 self.syncing.insert(id);
                 Command::none()
@@ -246,11 +295,17 @@ impl Application for CelesteApp {
                     .get(&remote.id)
                     .map(|v| v.as_slice())
                     .unwrap_or(&[]);
+                let (draft_local, draft_remote) = self
+                    .sync_dir_drafts
+                    .get(&remote.id)
+                    .map(|(l, r)| (l.as_str(), r.as_str()))
+                    .unwrap_or(("", ""));
                 remote_page::view(
                     remote,
                     dirs,
                     &self.sync_dir_status,
                     &self.sync_dir_errors,
+                    (draft_local, draft_remote),
                 )
                 .map(Message::Remote)
             }
