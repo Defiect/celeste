@@ -1,13 +1,17 @@
 //! Interval picker — presents the full set of supported [`Interval`]
-//! choices. The pick_list shows the current selection on its own, so
-//! there's no separate label.
+//! choices. When a `warn_below` threshold is supplied, options
+//! shorter than the threshold get a trailing ⚠ glyph to flag them
+//! to the user (provider-specific rate-limit tripwires, typically).
+//! The companion tooltip lives in the caller's layout.
+
+use std::fmt;
 
 use iced::{widget::pick_list, Element};
 
 use crate::domain::remote::Interval;
 
-impl std::fmt::Display for Interval {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for Interval {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let label = match self {
             Interval::FiveSeconds => "5 s",
             Interval::FifteenSeconds => "15 s",
@@ -22,9 +26,45 @@ impl std::fmt::Display for Interval {
     }
 }
 
+/// Wrapper that carries a warn flag through `pick_list`'s Display-based
+/// rendering. The flag decides whether the ⚠ glyph gets tacked on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Option {
+    interval: Interval,
+    warn: bool,
+}
+
+impl fmt::Display for Option {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.interval.fmt(f)?;
+        if self.warn {
+            f.write_str("  ⚠")?;
+        }
+        Ok(())
+    }
+}
+
 pub fn view<Msg: 'static + Clone>(
     current: Interval,
+    warn_below: std::option::Option<Interval>,
     on_change: impl Fn(Interval) -> Msg + 'static,
 ) -> Element<'static, Msg> {
-    pick_list(&Interval::ALL[..], Some(current), on_change).into()
+    let options: Vec<Option> = Interval::ALL
+        .iter()
+        .map(|i| Option {
+            interval: *i,
+            warn: warn_below
+                .map(|t| i.seconds() < t.seconds())
+                .unwrap_or(false),
+        })
+        .collect();
+    let current_opt = options
+        .iter()
+        .find(|o| o.interval == current)
+        .copied()
+        .unwrap_or(Option {
+            interval: current,
+            warn: false,
+        });
+    pick_list(options, Some(current_opt), move |o| on_change(o.interval)).into()
 }

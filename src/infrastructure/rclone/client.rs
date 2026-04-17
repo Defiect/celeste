@@ -99,4 +99,20 @@ impl RcloneClient for LibrcloneClient {
     fn create_config(&self, payload_json: String) -> Result<(), String> {
         librclone::rpc("config/create", payload_json).map(|_| ())
     }
+
+    fn remote_type(&self, remote: &str) -> Result<Option<String>, String> {
+        let payload = serde_json::json!({ "name": remote }).to_string();
+        match librclone::rpc("config/get", payload) {
+            Ok(body) => {
+                let parsed: serde_json::Value =
+                    serde_json::from_str(&body).map_err(|e| e.to_string())?;
+                // `config/get` returns {} for unknown remotes.
+                if parsed.as_object().map(|m| m.is_empty()).unwrap_or(true) {
+                    return Ok(None);
+                }
+                Ok(parsed.get("type").and_then(|v| v.as_str()).map(str::to_owned))
+            }
+            Err(err) => Err(err),
+        }
+    }
 }

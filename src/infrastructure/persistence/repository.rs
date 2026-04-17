@@ -35,6 +35,8 @@ fn map_remote(m: RemotesModel) -> Remote {
             interval: Interval::from_seconds(m.sync_interval_seconds.max(1) as u64),
             enabled: m.enabled != 0,
         },
+        // Enriched in the app layer via RcloneClient::remote_type.
+        provider_kind: None,
     }
 }
 

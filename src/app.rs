@@ -15,7 +15,7 @@ use crate::{
     domain::{
         events::SyncEvent,
         ports::{RcloneClient, Repository},
-        remote::{Remote, RemoteId},
+        remote::{ProviderKind, Remote, RemoteId},
         sync::{SyncDir, SyncDirId, SyncError},
     },
     screens::{add_remote, main_page, remote_page, settings},
@@ -140,7 +140,17 @@ impl Application for CelesteApp {
 
     fn update(&mut self, message: Message) -> Command<Message> {
         match message {
-            Message::RemotesLoaded(remotes) => {
+            Message::RemotesLoaded(mut remotes) => {
+                // Ask rclone for each remote's backend type so the
+                // scheduler can enforce provider-specific interval
+                // floors (see `ProviderKind::min_interval`). A failure
+                // here is non-fatal — the remote just loses its
+                // provider-specific floor for this session.
+                for r in &mut remotes {
+                    if let Ok(Some(t)) = self.rclone.remote_type(&r.name) {
+                        r.provider_kind = ProviderKind::from_rclone_type(&t);
+                    }
+                }
                 self.remotes = remotes;
                 Command::none()
             }

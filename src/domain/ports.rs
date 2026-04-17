@@ -152,5 +152,9 @@ pub trait RcloneClient: Send + Sync {
     /// `config/create` RPC payload, including `name`, `type`, `parameters`
     /// and optional `opt`).
     fn create_config(&self, payload_json: String) -> Result<(), String>;
+    /// rclone backend type for a configured remote — `"drive"`,
+    /// `"dropbox"`, `"protondrive"`, `"webdav"`, etc. Returns `Ok(None)`
+    /// when the remote name isn't in rclone's config.
+    fn remote_type(&self, remote: &str) -> Result<Option<String>, String>;
 }
 

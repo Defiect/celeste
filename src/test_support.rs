@@ -439,6 +439,9 @@ impl RcloneClient for FakeRclone {
     fn create_config(&self, _payload: String) -> Result<(), String> {
         Ok(())
     }
+    fn remote_type(&self, _remote: &str) -> Result<Option<String>, String> {
+        Ok(None)
+    }
 }
 
 /// Build a test Remote with the given id and name.
@@ -447,6 +450,7 @@ pub fn remote(id: i32, name: &str) -> Remote {
         id: RemoteId(id),
         name: name.to_owned(),
         policy: SyncPolicy::default(),
+        provider_kind: None,
     }
 }
 

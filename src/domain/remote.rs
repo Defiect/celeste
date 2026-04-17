@@ -14,11 +14,65 @@ pub enum ProviderKind {
     WebDav,
 }
 
+impl ProviderKind {
+    /// Map rclone's backend `type` field to our domain enum. Everything
+    /// that isn't recognised is `None` — treated as "no provider-specific
+    /// quirks".
+    pub fn from_rclone_type(t: &str) -> Option<Self> {
+        match t {
+            "dropbox" => Some(Self::Dropbox),
+            "drive" => Some(Self::GDrive),
+            "pcloud" => Some(Self::PCloud),
+            "protondrive" => Some(Self::ProtonDrive),
+            // WebDAV-family all use rclone's "webdav" backend; the
+            // vendor sub-selector picks Nextcloud / Owncloud / plain
+            // WebDAV. Can't tell them apart from `type` alone, so
+            // collapse to WebDav — the UI hints apply equally.
+            "webdav" => Some(Self::WebDav),
+            _ => None,
+        }
+    }
+
+    /// Interval a fresh remote of this kind should be created with.
+    /// Proton Drive rate-limits hard enough that 5 s / 15 s trap the
+    /// sync in back-to-back 429 storms; 30 s tested clean.
+    pub fn default_interval(self) -> Interval {
+        match self {
+            ProviderKind::ProtonDrive => Interval::ThirtySeconds,
+            _ => Interval::FifteenSeconds,
+        }
+    }
+
+    /// Intervals shorter than this are flagged in the UI with a ⚠.
+    /// Above it, the backend should cope without the warning. `None`
+    /// means no warnings for this provider.
+    pub fn short_interval_threshold(self) -> Option<Interval> {
+        match self {
+            ProviderKind::ProtonDrive => Some(Interval::ThirtySeconds),
+            _ => None,
+        }
+    }
+
+    /// Text shown on the tooltip next to the picker when the provider
+    /// has short-interval warnings.
+    pub fn short_interval_warning(self) -> Option<&'static str> {
+        match self {
+            ProviderKind::ProtonDrive => Some(
+                "Proton Drive rate-limits every per-file revision fetch — intervals shorter than 30 s trip the backoff and starve the sync. 30 s is the tested-clean minimum.",
+            ),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Remote {
     pub id: RemoteId,
     pub name: String,
     pub policy: SyncPolicy,
+    /// Filled in after load by the app layer via `RcloneClient::remote_type`.
+    /// Drives provider-specific UI hints (interval warnings, defaults).
+    pub provider_kind: Option<ProviderKind>,
 }
 
 /// Per-remote sync cadence. Fixed to a handful of discrete choices —
@@ -85,5 +139,80 @@ impl Default for SyncPolicy {
             interval: Interval::FifteenSeconds,
             enabled: true,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn remote_with(kind: Option<ProviderKind>, picked: Interval) -> Remote {
+        Remote {
+            id: RemoteId(1),
+            name: "Remote".to_owned(),
+            policy: SyncPolicy {
+                interval: picked,
+                enabled: true,
+            },
+            provider_kind: kind,
+        }
+    }
+
+    #[test]
+    fn proton_drive_defaults_to_thirty_seconds() {
+        assert_eq!(
+            ProviderKind::ProtonDrive.default_interval(),
+            Interval::ThirtySeconds,
+        );
+    }
+
+    #[test]
+    fn other_providers_default_to_fifteen_seconds() {
+        assert_eq!(
+            ProviderKind::GDrive.default_interval(),
+            Interval::FifteenSeconds,
+        );
+        assert_eq!(
+            ProviderKind::WebDav.default_interval(),
+            Interval::FifteenSeconds,
+        );
+    }
+
+    #[test]
+    fn short_interval_threshold_only_proton() {
+        assert_eq!(
+            ProviderKind::ProtonDrive.short_interval_threshold(),
+            Some(Interval::ThirtySeconds),
+        );
+        assert_eq!(ProviderKind::GDrive.short_interval_threshold(), None);
+        assert_eq!(ProviderKind::Dropbox.short_interval_threshold(), None);
+    }
+
+    #[test]
+    fn user_picking_still_survives_through_the_policy() {
+        // No clamping anywhere: whatever the user picks is what we use.
+        let r = remote_with(Some(ProviderKind::ProtonDrive), Interval::FiveSeconds);
+        assert_eq!(r.policy.interval.duration(), Duration::from_secs(5));
+    }
+
+    #[test]
+    fn rclone_type_mapping_covers_known_backends() {
+        assert_eq!(
+            ProviderKind::from_rclone_type("protondrive"),
+            Some(ProviderKind::ProtonDrive)
+        );
+        assert_eq!(
+            ProviderKind::from_rclone_type("drive"),
+            Some(ProviderKind::GDrive)
+        );
+        assert_eq!(
+            ProviderKind::from_rclone_type("dropbox"),
+            Some(ProviderKind::Dropbox)
+        );
+        assert_eq!(
+            ProviderKind::from_rclone_type("webdav"),
+            Some(ProviderKind::WebDav)
+        );
+        assert_eq!(ProviderKind::from_rclone_type("bogus"), None);
     }
 }

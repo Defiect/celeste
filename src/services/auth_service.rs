@@ -15,7 +15,7 @@ use serde_json::json;
 use crate::{
     domain::{
         ports::{RcloneClient, Repository},
-        remote::RemoteId,
+        remote::{ProviderKind, RemoteId, SyncPolicy},
     },
     util,
 };
@@ -101,8 +101,17 @@ pub fn add_proton_drive_remote(
     .to_string();
 
     client.create_config(payload)?;
-    util::await_future(repo.insert_remote(name.to_owned()))
-        .map_err(|e| e.to_string())
+    let id = util::await_future(repo.insert_remote(name.to_owned()))
+        .map_err(|e| e.to_string())?;
+    // Proton Drive rate-limits short polls; ship the provider-specific
+    // default interval so the user doesn't have to discover this the
+    // hard way.
+    let policy = SyncPolicy {
+        interval: ProviderKind::ProtonDrive.default_interval(),
+        enabled: true,
+    };
+    let _ = util::await_future(repo.set_policy(id, policy));
+    Ok(id)
 }
 
 /// OAuth providers that use `rclone authorize` for token capture.
@@ -386,6 +395,9 @@ mod tests {
         fn create_config(&self, payload: String) -> Result<(), String> {
             self.created.lock().unwrap().push(payload);
             Ok(())
+        }
+        fn remote_type(&self, _r: &str) -> Result<Option<String>, String> {
+            Ok(None)
         }
     }
 
