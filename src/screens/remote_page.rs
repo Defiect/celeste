@@ -11,7 +11,7 @@ use iced::{
 use crate::{
     domain::{
         remote::{Remote, RemoteId},
-        sync::{SyncDir, SyncDirId},
+        sync::{SyncDir, SyncDirId, SyncError},
     },
     screens::settings,
     theme::{PAGE_PADDING, ROW_SPACING, SECTION_SPACING},
@@ -28,6 +28,7 @@ pub fn view<'a>(
     remote: &'a Remote,
     sync_dirs: &'a [SyncDir],
     status: &'a HashMap<SyncDirId, String>,
+    errors: &'a HashMap<SyncDirId, Vec<SyncError>>,
 ) -> Element<'a, Msg> {
     let header = row![
         button(text("←")).on_press(Msg::Back),
@@ -43,7 +44,7 @@ pub fn view<'a>(
             .size(14)
             .into()
     } else {
-        let mut col = column![text("Sync directories").size(16)].spacing(ROW_SPACING / 2);
+        let mut col = column![text("Sync directories").size(16)].spacing(ROW_SPACING);
         for sd in sync_dirs {
             let mut row = iced::widget::Row::new().spacing(8);
             row = row.push(text(&sd.local_path).size(13));
@@ -54,6 +55,19 @@ pub fn view<'a>(
                 row = row.push(text(status_text).size(12));
             }
             col = col.push(row);
+            if let Some(errs) = errors.get(&sd.id) {
+                for err in errs {
+                    let line = match err {
+                        SyncError::General(path, msg) => {
+                            format!("  ⚠ {path}: {msg}")
+                        }
+                        SyncError::BothMoreCurrent(local, remote) => {
+                            format!("  ⚠ Conflict: '{local}' vs '{remote}'")
+                        }
+                    };
+                    col = col.push(text(line).size(12));
+                }
+            }
         }
         scrollable(col).height(Length::FillPortion(2)).into()
     };

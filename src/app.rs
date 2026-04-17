@@ -12,7 +12,7 @@ use crate::{
         events::SyncEvent,
         ports::{RcloneClient, Repository},
         remote::{Remote, RemoteId},
-        sync::{SyncDir, SyncDirId},
+        sync::{SyncDir, SyncDirId, SyncError},
     },
     screens::{main_page, remote_page, settings},
     theme,
@@ -44,6 +44,8 @@ pub struct CelesteApp {
     syncing: std::collections::HashSet<RemoteId>,
     /// Latest status text per sync_dir — populated from SyncDirStatus events.
     sync_dir_status: HashMap<SyncDirId, String>,
+    /// Errors accumulated for each sync_dir since its last refresh.
+    sync_dir_errors: HashMap<SyncDirId, Vec<SyncError>>,
     /// Sender handed to us by the subscription worker; sync code clones this
     /// to emit events back into the event loop.
     events_tx: Option<mpsc::Sender<SyncEvent>>,
@@ -69,6 +71,7 @@ impl Application for CelesteApp {
             selected: None,
             syncing: std::collections::HashSet::new(),
             sync_dir_status: HashMap::new(),
+            sync_dir_errors: HashMap::new(),
             events_tx: None,
         };
         let repo = flags.repo;
@@ -157,8 +160,15 @@ impl Application for CelesteApp {
                     } => {
                         self.sync_dir_status.insert(sync_dir_id, text);
                     }
-                    SyncEvent::SyncDirError { .. }
-                    | SyncEvent::RemoteStarted { .. }
+                    SyncEvent::SyncDirError {
+                        sync_dir_id, error, ..
+                    } => {
+                        self.sync_dir_errors
+                            .entry(sync_dir_id)
+                            .or_default()
+                            .push(error);
+                    }
+                    SyncEvent::RemoteStarted { .. }
                     | SyncEvent::RemoteCompleted { .. }
                     | SyncEvent::RemoteFailed { .. }
                     | SyncEvent::FileProgress { .. } => {}
@@ -198,8 +208,13 @@ impl Application for CelesteApp {
                     .get(&remote.id)
                     .map(|v| v.as_slice())
                     .unwrap_or(&[]);
-                remote_page::view(remote, dirs, &self.sync_dir_status)
-                    .map(Message::Remote)
+                remote_page::view(
+                    remote,
+                    dirs,
+                    &self.sync_dir_status,
+                    &self.sync_dir_errors,
+                )
+                .map(Message::Remote)
             }
             None => main_page::view(&self.remotes, self.selected, &self.syncing)
                 .map(Message::Main),
@@ -215,6 +230,13 @@ impl CelesteApp {
     fn start_sync(&mut self, id: RemoteId) -> Command<Message> {
         if self.syncing.contains(&id) {
             return Command::none();
+        }
+        // Clear previous errors for all sync_dirs of this remote before the
+        // new pass starts populating them.
+        if let Some(dirs) = self.sync_dirs.get(&id) {
+            for sd in dirs {
+                self.sync_dir_errors.remove(&sd.id);
+            }
         }
         self.syncing.insert(id);
         let repo = self.repo.clone();
