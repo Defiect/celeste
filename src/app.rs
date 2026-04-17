@@ -4,13 +4,15 @@
 
 use std::{collections::HashMap, sync::Arc};
 
-use iced::{executor, Application, Command, Element, Settings, Theme};
+use iced::{executor, subscription, Application, Command, Element, Settings, Subscription, Theme};
+use tokio::sync::mpsc;
 
 use crate::{
     domain::{
+        events::SyncEvent,
         ports::{RcloneClient, Repository},
         remote::{Remote, RemoteId},
-        sync::SyncDir,
+        sync::{SyncDir, SyncDirId},
     },
     screens::{main_page, remote_page, settings},
     theme,
@@ -28,6 +30,8 @@ pub enum Message {
     PolicySaved,
     SyncStarted(RemoteId),
     SyncFinished(RemoteId),
+    WorkerReady(mpsc::Sender<SyncEvent>),
+    SyncEventReceived(SyncEvent),
 }
 
 pub struct CelesteApp {
@@ -38,6 +42,11 @@ pub struct CelesteApp {
     selected: Option<RemoteId>,
     /// Remotes whose sync pass is currently running.
     syncing: std::collections::HashSet<RemoteId>,
+    /// Latest status text per sync_dir — populated from SyncDirStatus events.
+    sync_dir_status: HashMap<SyncDirId, String>,
+    /// Sender handed to us by the subscription worker; sync code clones this
+    /// to emit events back into the event loop.
+    events_tx: Option<mpsc::Sender<SyncEvent>>,
 }
 
 pub struct Flags {
@@ -59,6 +68,8 @@ impl Application for CelesteApp {
             sync_dirs: HashMap::new(),
             selected: None,
             syncing: std::collections::HashSet::new(),
+            sync_dir_status: HashMap::new(),
+            events_tx: None,
         };
         let repo = flags.repo;
         let load = Command::perform(
@@ -74,6 +85,19 @@ impl Application for CelesteApp {
 
     fn theme(&self) -> Theme {
         theme::celeste_theme()
+    }
+
+    fn subscription(&self) -> Subscription<Message> {
+        subscription::channel(std::any::TypeId::of::<CelesteApp>(), 128, |mut output| async move {
+            use iced::futures::SinkExt;
+            let (tx, mut rx) = mpsc::channel::<SyncEvent>(128);
+            let _ = output.send(Message::WorkerReady(tx)).await;
+            while let Some(event) = rx.recv().await {
+                let _ = output.send(Message::SyncEventReceived(event)).await;
+            }
+            std::future::pending::<()>().await;
+            unreachable!()
+        })
     }
 
     fn update(&mut self, message: Message) -> Command<Message> {
@@ -113,6 +137,7 @@ impl Application for CelesteApp {
                 self.syncing.insert(id);
                 let repo = self.repo.clone();
                 let rclone = self.rclone.clone();
+                let events_tx = self.events_tx.clone();
                 Command::perform(
                     async move {
                         let remote = match repo.find_remote(id).await {
@@ -120,16 +145,19 @@ impl Application for CelesteApp {
                             _ => return id,
                         };
                         let sync_dirs = repo.list_sync_dirs(id).await.unwrap_or_default();
-                        let repo = repo.clone();
-                        let rclone = rclone.clone();
                         let _ = tokio::task::spawn_blocking(move || {
+                            let emit = move |event: SyncEvent| {
+                                if let Some(tx) = &events_tx {
+                                    let _ = tx.blocking_send(event);
+                                }
+                            };
                             for sd in sync_dirs {
                                 let _ = crate::services::sync_dir_pass::run(
                                     &remote,
                                     &sd,
                                     &*repo,
                                     &*rclone,
-                                    |_| {},
+                                    emit.clone(),
                                     || {},
                                     || {},
                                     || false,
@@ -141,10 +169,6 @@ impl Application for CelesteApp {
                     },
                     Message::SyncFinished,
                 )
-                .map(|msg| match msg {
-                    Message::SyncFinished(id) => Message::SyncFinished(id),
-                    other => other,
-                })
             }
             Message::SyncStarted(id) => {
                 self.syncing.insert(id);
@@ -152,6 +176,25 @@ impl Application for CelesteApp {
             }
             Message::SyncFinished(id) => {
                 self.syncing.remove(&id);
+                Command::none()
+            }
+            Message::WorkerReady(tx) => {
+                self.events_tx = Some(tx);
+                Command::none()
+            }
+            Message::SyncEventReceived(event) => {
+                match event {
+                    SyncEvent::SyncDirStatus {
+                        sync_dir_id, text, ..
+                    } => {
+                        self.sync_dir_status.insert(sync_dir_id, text);
+                    }
+                    SyncEvent::SyncDirError { .. }
+                    | SyncEvent::RemoteStarted { .. }
+                    | SyncEvent::RemoteCompleted { .. }
+                    | SyncEvent::RemoteFailed { .. }
+                    | SyncEvent::FileProgress { .. } => {}
+                }
                 Command::none()
             }
             Message::Remote(remote_page::Msg::Settings(sub))
@@ -187,7 +230,8 @@ impl Application for CelesteApp {
                     .get(&remote.id)
                     .map(|v| v.as_slice())
                     .unwrap_or(&[]);
-                remote_page::view(remote, dirs).map(Message::Remote)
+                remote_page::view(remote, dirs, &self.sync_dir_status)
+                    .map(Message::Remote)
             }
             None => main_page::view(&self.remotes, self.selected, &self.syncing)
                 .map(Message::Main),

@@ -1,6 +1,8 @@
 //! Per-remote detail page: header with Refresh now, (future) sync-dirs list,
 //! and the Sync Settings panel.
 
+use std::collections::HashMap;
+
 use iced::{
     widget::{button, column, container, row, scrollable, text, Rule, Space},
     Element, Length,
@@ -9,7 +11,7 @@ use iced::{
 use crate::{
     domain::{
         remote::{Remote, RemoteId},
-        sync::SyncDir,
+        sync::{SyncDir, SyncDirId},
     },
     screens::settings,
     theme::{PAGE_PADDING, ROW_SPACING, SECTION_SPACING},
@@ -22,7 +24,11 @@ pub enum Msg {
     Settings(settings::Msg),
 }
 
-pub fn view<'a>(remote: &'a Remote, sync_dirs: &'a [SyncDir]) -> Element<'a, Msg> {
+pub fn view<'a>(
+    remote: &'a Remote,
+    sync_dirs: &'a [SyncDir],
+    status: &'a HashMap<SyncDirId, String>,
+) -> Element<'a, Msg> {
     let header = row![
         button(text("←")).on_press(Msg::Back),
         text(&remote.name).size(22),
@@ -39,14 +45,15 @@ pub fn view<'a>(remote: &'a Remote, sync_dirs: &'a [SyncDir]) -> Element<'a, Msg
     } else {
         let mut col = column![text("Sync directories").size(16)].spacing(ROW_SPACING / 2);
         for sd in sync_dirs {
-            col = col.push(
-                row![
-                    text(&sd.local_path).size(13),
-                    text("→").size(13),
-                    text(&sd.remote_path).size(13),
-                ]
-                .spacing(8),
-            );
+            let mut row = iced::widget::Row::new().spacing(8);
+            row = row.push(text(&sd.local_path).size(13));
+            row = row.push(text("→").size(13));
+            row = row.push(text(&sd.remote_path).size(13));
+            if let Some(status_text) = status.get(&sd.id) {
+                row = row.push(Space::with_width(Length::Fill));
+                row = row.push(text(status_text).size(12));
+            }
+            col = col.push(row);
         }
         scrollable(col).height(Length::FillPortion(2)).into()
     };
