@@ -67,7 +67,7 @@ pub fn sync_local_directory<FE, FO, FD, FC>(
         if !sync_dir_still_exists() {
             return;
         }
-        let msg = tr::tr!("Checking '{}' for changes...", util::fmt_home(dir));
+        let msg = tr::tr!("Synchronizing '{}'…", util::fmt_home(dir));
         emit(SyncEvent::SyncDirStatus {
             remote_id: remote.id,
             sync_dir_id: sync_dir.id,
@@ -488,7 +488,7 @@ pub fn sync_remote_directory<FE, FO, FD, FC>(
         if !sync_dir_still_exists() {
             return;
         }
-        let msg = tr::tr!("Checking '{}' on remote for changes...", dir);
+        let msg = tr::tr!("Synchronizing '{}'…", dir);
         emit(SyncEvent::SyncDirStatus {
             remote_id: remote.id,
             sync_dir_id: sync_dir.id,

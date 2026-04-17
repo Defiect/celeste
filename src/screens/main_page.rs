@@ -37,13 +37,14 @@ pub fn view<'a>(
     let sidebar = {
         let mut col = column![text("Remotes").size(16)].spacing(ROW_SPACING);
         for remote in remotes {
-            let label = if syncing.contains(&remote.id) {
-                format!("{}  (syncing…)", remote.name)
+            let status = if syncing.contains(&remote.id) {
+                "syncing…"
             } else if !remote.policy.enabled {
-                format!("{}  (paused)", remote.name)
+                "paused"
             } else {
-                remote.name.clone()
+                "idle"
             };
+            let label = format!("{}  ({status})", remote.name);
             let btn = button(text(label))
                 .width(Length::Fill)
                 .on_press(Msg::Selected(remote.id));

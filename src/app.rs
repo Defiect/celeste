@@ -57,6 +57,9 @@ pub struct CelesteApp {
     /// Wall-clock timestamp of the last sync completion per remote. Drives
     /// the interval scheduler.
     last_sync_at: HashMap<RemoteId, Instant>,
+    /// Remote ids with a refresh request queued while the current pass is
+    /// still running — as soon as SyncFinished lands we kick another pass.
+    refresh_requested_after: std::collections::HashSet<RemoteId>,
     /// In-progress (local_path, remote_path) inputs for the Add sync_dir form
     /// on each remote page.
     sync_dir_drafts: HashMap<RemoteId, (String, String)>,
@@ -89,6 +92,7 @@ impl Application for CelesteApp {
             sync_dir_status: HashMap::new(),
             sync_dir_errors: HashMap::new(),
             last_sync_at: HashMap::new(),
+            refresh_requested_after: std::collections::HashSet::new(),
             sync_dir_drafts: HashMap::new(),
             add_remote_draft: None,
             events_tx: None,
@@ -303,7 +307,16 @@ impl Application for CelesteApp {
                 self.selected = None;
                 Command::none()
             }
-            Message::Remote(remote_page::Msg::RefreshNow(id)) => self.start_sync(id),
+            Message::Remote(remote_page::Msg::RefreshNow(id)) => {
+                if self.syncing.contains(&id) {
+                    // The current pass is still running — queue a follow-up
+                    // so it fires as soon as the current one completes.
+                    self.refresh_requested_after.insert(id);
+                    Command::none()
+                } else {
+                    self.start_sync(id)
+                }
+            }
             Message::Remote(remote_page::Msg::DraftLocalPathChanged(s)) => {
                 if let Some(id) = self.selected {
                     self.sync_dir_drafts.entry(id).or_default().0 = s;
@@ -389,7 +402,20 @@ impl Application for CelesteApp {
             Message::SyncFinished(id) => {
                 self.syncing.remove(&id);
                 self.last_sync_at.insert(id, Instant::now());
-                Command::none()
+                // Clear lingering "Synchronizing '/foo'…" strings left on
+                // each sync_dir row — the pass is done, those are stale.
+                if let Some(dirs) = self.sync_dirs.get(&id) {
+                    for sd in dirs {
+                        self.sync_dir_status.remove(&sd.id);
+                    }
+                }
+                // If the user clicked Refresh now while we were already
+                // syncing, honour that click now.
+                if self.refresh_requested_after.remove(&id) {
+                    self.start_sync(id)
+                } else {
+                    Command::none()
+                }
             }
             Message::FsEvent(id) => {
                 // A watched file changed — if the remote has instant_sync on
