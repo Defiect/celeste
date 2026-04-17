@@ -310,8 +310,19 @@ impl Application for CelesteApp {
             Message::Remote(remote_page::Msg::RefreshNow(id)) => {
                 if self.syncing.contains(&id) {
                     // The current pass is still running — queue a follow-up
-                    // so it fires as soon as the current one completes.
+                    // so it fires as soon as the current one completes. Leave
+                    // a note on each sync_dir so the user gets immediate
+                    // feedback instead of thinking the click was lost.
                     self.refresh_requested_after.insert(id);
+                    if let Some(dirs) = self.sync_dirs.get(&id) {
+                        for sd in dirs {
+                            self.sync_dir_status.insert(
+                                sd.id,
+                                "Refresh queued — starts after the current pass finishes."
+                                    .to_owned(),
+                            );
+                        }
+                    }
                     Command::none()
                 } else {
                     self.start_sync(id)
@@ -453,7 +464,6 @@ impl Application for CelesteApp {
                 Command::batch(cmds)
             }
             Message::WorkerReady(tx) => {
-                eprintln!("[celeste] subscription worker ready");
                 self.events_tx = Some(tx);
                 Command::none()
             }
@@ -462,10 +472,6 @@ impl Application for CelesteApp {
                     SyncEvent::SyncDirStatus {
                         sync_dir_id, text, ..
                     } => {
-                        eprintln!(
-                            "[celeste] SyncDirStatus sd={} text={:?}",
-                            sync_dir_id.0, text
-                        );
                         self.sync_dir_status.insert(sync_dir_id, text);
                     }
                     SyncEvent::SyncDirError {
@@ -560,12 +566,6 @@ impl CelesteApp {
         let repo = self.repo.clone();
         let rclone = self.rclone.clone();
         let events_tx = self.events_tx.clone();
-        if events_tx.is_none() {
-            eprintln!(
-                "[celeste] start_sync(id={}): events_tx is None — status events will be dropped",
-                id.0
-            );
-        }
         Command::perform(
             async move {
                 let remote = match repo.find_remote(id).await {
@@ -573,29 +573,13 @@ impl CelesteApp {
                     _ => return id,
                 };
                 let sync_dirs = repo.list_sync_dirs(id).await.unwrap_or_default();
-                eprintln!(
-                    "[celeste] sync task: remote={:?} sync_dirs.len={}",
-                    remote.name,
-                    sync_dirs.len()
-                );
                 let _ = tokio::task::spawn_blocking(move || {
-                    let emit = move |event: SyncEvent| match &events_tx {
-                        Some(tx) => {
-                            if let Err(err) = tx.blocking_send(event) {
-                                eprintln!(
-                                    "[celeste] emit: channel closed, dropping event: {err}"
-                                );
-                            }
-                        }
-                        None => {
-                            eprintln!("[celeste] emit: events_tx None");
+                    let emit = move |event: SyncEvent| {
+                        if let Some(tx) = &events_tx {
+                            let _ = tx.blocking_send(event);
                         }
                     };
                     for sd in sync_dirs {
-                        eprintln!(
-                            "[celeste] sync_dir_pass::run sd={} local={:?} remote={:?}",
-                            sd.id.0, sd.local_path, sd.remote_path
-                        );
                         let _ = crate::services::sync_dir_pass::run(
                             &remote,
                             &sd,

@@ -45,7 +45,21 @@ where
     FD: Fn() + Clone,
     FC: Fn() -> bool + Clone,
 {
+    // The should_sync check below walks the whole remote tree over rclone
+    // and can take minutes on large accounts (Google Drive especially).
+    // Emit a status first so the UI doesn't sit blank during that wait.
+    emit(SyncEvent::SyncDirStatus {
+        remote_id: remote.id,
+        sync_dir_id: sync_dir.id,
+        text: tr::tr!("Checking for changes…"),
+    });
+
     if !should_sync(remote, sync_dir, repo, client) {
+        emit(SyncEvent::SyncDirStatus {
+            remote_id: remote.id,
+            sync_dir_id: sync_dir.id,
+            text: tr::tr!("Files are synced."),
+        });
         return Outcome::UpToDate;
     }
 
@@ -70,11 +84,16 @@ where
         repo,
         client,
         &synced_items,
-        emit,
+        emit.clone(),
         check_open_requests,
         process_deletion_requests,
         is_cancelled,
     );
 
+    emit(SyncEvent::SyncDirStatus {
+        remote_id: remote.id,
+        sync_dir_id: sync_dir.id,
+        text: tr::tr!("Files are synced."),
+    });
     Outcome::Synced
 }
