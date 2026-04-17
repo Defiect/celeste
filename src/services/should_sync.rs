@@ -4,8 +4,14 @@
 //! Emits `SyncEvent::SyncDirPending` at key points so the UI can show
 //! progress during the slow remote-list step (rclone can take minutes
 //! against big Google Drive accounts).
+//!
+//! Performance: the remote-file pass already does a recursive
+//! `client.list()`; we hold the result in a `remote_cache: HashMap<path,
+//! mod_time>` so the follow-up DB reconciliation can look everything up
+//! in O(1) instead of issuing one `client.stat()` per tracked item.
 
 use std::{
+    collections::HashMap,
     fs::{self, File},
     path::Path,
     time::SystemTime,
@@ -105,56 +111,53 @@ where
         }
     }
 
-    // Remote file checks. The list call itself is where Google Drive
-    // spends the most wall-clock — no way to show per-item progress
-    // there, but the message tells the user why it's waiting.
+    // Remote file checks + cache build.
     pending(tr::tr!("Listing remote (may take a while)…"));
-    if let Ok(remote_paths) =
-        client.list(&remote.name, &sync_dir.remote_path, true, ListFilter::All)
-    {
-        let total_remote = remote_paths.len();
-        if total_remote > 0 {
-            pending(tr::tr!("Checking 0/{} remote files…", total_remote));
-        }
-        'remote: for (i, path) in remote_paths.into_iter().enumerate() {
-            if i > 0 && (i % PROGRESS_CHUNK == 0 || i + 1 == total_remote) {
-                pending(tr::tr!(
-                    "Checking {}/{} remote files…",
-                    i + 1,
-                    total_remote
-                ));
+    let mut remote_cache: HashMap<String, i64> = HashMap::new();
+    match client.list(&remote.name, &sync_dir.remote_path, true, ListFilter::All) {
+        Ok(remote_paths) => {
+            let total_remote = remote_paths.len();
+            if total_remote > 0 {
+                pending(tr::tr!("Checking 0/{} remote files…", total_remote));
             }
-            let stripped_path = match path.name.contains('/') {
-                true => path
-                    .name
-                    .strip_suffix(&format!("{}/", sync_dir.remote_path))
-                    .unwrap()
-                    .to_string(),
-                false => path.name.clone(),
-            };
-            let maybe_db_sync_item =
-                util::await_future(repo.find_sync_item_by_remote(sync_dir_id, &stripped_path))
-                    .unwrap_or(None);
-            let db_timestamp: i64 = if let Some(db_sync_item) = maybe_db_sync_item {
-                db_sync_item.last_remote_timestamp
-            } else {
-                should_sync = true;
-                break 'remote;
-            };
-            let remote_timestamp = path.mod_time.unix_timestamp();
+            remote_cache.reserve(total_remote);
+            'remote: for (i, path) in remote_paths.into_iter().enumerate() {
+                if i > 0 && (i % PROGRESS_CHUNK == 0 || i + 1 == total_remote) {
+                    pending(tr::tr!(
+                        "Checking {}/{} remote files…",
+                        i + 1,
+                        total_remote
+                    ));
+                }
+                let mod_ts = path.mod_time.unix_timestamp();
+                let maybe_db_sync_item = util::await_future(
+                    repo.find_sync_item_by_remote(sync_dir_id, &path.path),
+                )
+                .unwrap_or(None);
+                remote_cache.insert(path.path, mod_ts);
 
-            if remote_timestamp != db_timestamp {
-                should_sync = true;
-                break 'remote;
+                let db_timestamp: i64 = if let Some(db_sync_item) = maybe_db_sync_item {
+                    db_sync_item.last_remote_timestamp
+                } else {
+                    should_sync = true;
+                    break 'remote;
+                };
+
+                if mod_ts != db_timestamp {
+                    should_sync = true;
+                    break 'remote;
+                }
             }
         }
-    } else {
-        // TODO: show the disconnected icon instead of trying to sync again.
-        should_sync = true;
+        Err(_) => {
+            // TODO: show the disconnected icon instead of trying to sync again.
+            should_sync = true;
+        }
     }
 
     // DB file checks. This covers files that got deleted locally or on the
-    // remote, as those changes wouldn't necessarily be visible above.
+    // remote, as those changes wouldn't necessarily be visible above. Uses
+    // the cached remote listing so we don't hammer rclone with N stat RPCs.
     pending(tr::tr!("Reconciling database…"));
     let sync_items = util::await_future(repo.list_sync_items(sync_dir_id)).unwrap_or_default();
     let total_db = sync_items.len();
@@ -171,16 +174,10 @@ where
             ));
         }
         let local_path_str = sync_item.local_path.clone();
-        let remote_path = if !sync_dir.remote_path.is_empty() {
-            format!("{}/{}", sync_dir.remote_path, sync_item.remote_path)
-        } else {
-            sync_item.remote_path.clone()
-        };
-        let maybe_remote_timestamp: Option<i64> = client
-            .stat(&remote.name, &remote_path)
-            .ok()
-            .flatten()
-            .map(|remote_item| remote_item.mod_time.unix_timestamp());
+        // sync_item.remote_path is stored with any sync_dir.remote_path
+        // prefix already applied, so it's the full path the remote cache
+        // is keyed by.
+        let maybe_remote_timestamp = remote_cache.get(&sync_item.remote_path).copied();
 
         // If the path doesn't exist both locally and on the remote, delete
         // the DB entry.
