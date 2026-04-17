@@ -40,7 +40,6 @@ pub enum Message {
     SyncEventReceived(SyncEvent),
     Tick,
     FsEvent(RemoteId),
-    DismissBanner,
 }
 
 pub struct CelesteApp {
@@ -61,9 +60,6 @@ pub struct CelesteApp {
     /// In-progress (local_path, remote_path) inputs for the Add sync_dir form
     /// on each remote page.
     sync_dir_drafts: HashMap<RemoteId, (String, String)>,
-    /// Transient banner text (e.g. "Add remote is only in the GTK UI
-    /// today"). Cleared on the next relevant interaction.
-    banner: Option<String>,
     /// In-progress Add Remote form. Some(...) while the screen is shown.
     add_remote_draft: Option<add_remote::Draft>,
     /// Sender handed to us by the subscription worker; sync code clones this
@@ -94,7 +90,6 @@ impl Application for CelesteApp {
             sync_dir_errors: HashMap::new(),
             last_sync_at: HashMap::new(),
             sync_dir_drafts: HashMap::new(),
-            banner: None,
             add_remote_draft: None,
             events_tx: None,
         };
@@ -153,7 +148,6 @@ impl Application for CelesteApp {
             }
             Message::Main(main_page::Msg::Selected(id)) => {
                 self.selected = Some(id);
-                self.banner = None;
                 let repo = self.repo.clone();
                 Command::perform(
                     async move { repo.list_sync_dirs(id).await.unwrap_or_default() },
@@ -177,7 +171,6 @@ impl Application for CelesteApp {
             }
             Message::Main(main_page::Msg::AddRemote) => {
                 self.add_remote_draft = Some(add_remote::Draft::default());
-                self.banner = None;
                 Command::none()
             }
             Message::AddRemote(sub) => {
@@ -391,10 +384,6 @@ impl Application for CelesteApp {
                 self.last_sync_at.insert(id, Instant::now());
                 Command::none()
             }
-            Message::DismissBanner => {
-                self.banner = None;
-                Command::none()
-            }
             Message::FsEvent(id) => {
                 // A watched file changed — if the remote has instant_sync on
                 // and isn't already running, kick off a sync.
@@ -479,33 +468,11 @@ impl Application for CelesteApp {
     }
 
     fn view(&self) -> Element<'_, Message> {
-        use iced::widget::{
-            button as ibutton, column as icol, container as icontainer, row as irow,
-            text as itext, Space as ISpace,
-        };
-        let banner = self.banner.as_ref().map(|msg| {
-            icontainer(
-                irow![
-                    itext(msg).size(13),
-                    ISpace::with_width(iced::Length::Fill),
-                    ibutton(itext("×").size(14)).on_press(Message::DismissBanner),
-                ]
-                .align_items(iced::Alignment::Center)
-                .spacing(8),
-            )
-            .padding(8)
-            .style(iced::theme::Container::Box)
-        });
-
         if let Some(draft) = self.add_remote_draft.as_ref() {
-            let screen = add_remote::view(draft).map(Message::AddRemote);
-            return match banner {
-                Some(b) => icol![b, screen].spacing(8).into(),
-                None => screen,
-            };
+            return add_remote::view(draft).map(Message::AddRemote);
         }
 
-        let inner: Element<Message> = match self
+        match self
             .selected
             .and_then(|id| self.remotes.iter().find(|r| r.id == id))
         {
@@ -531,11 +498,6 @@ impl Application for CelesteApp {
             }
             None => main_page::view(&self.remotes, self.selected, &self.syncing)
                 .map(Message::Main),
-        };
-
-        match banner {
-            Some(b) => icol![b, inner].spacing(8).into(),
-            None => inner,
         }
     }
 }
