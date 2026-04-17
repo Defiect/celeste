@@ -37,6 +37,7 @@ pub enum Message {
     WorkerReady(mpsc::Sender<SyncEvent>),
     SyncEventReceived(SyncEvent),
     Tick,
+    FsEvent(RemoteId),
 }
 
 pub struct CelesteApp {
@@ -119,7 +120,19 @@ impl Application for CelesteApp {
             },
         );
         let ticker = iced::time::every(Duration::from_secs(5)).map(|_| Message::Tick);
-        Subscription::batch([events, ticker])
+        // Poll PENDING_FS each tick and emit one FsEvent per pending id.
+        // The actual FS watcher thread lives in main.rs; this subscription
+        // just forwards whatever it has queued.
+        let fs_events = iced::time::every(Duration::from_millis(500)).map(|_| {
+            let ids = crate::pending_fs_events::drain();
+            // Iced subscriptions return a single Message, so collapse a
+            // batch into the first id; the next tick picks up the rest.
+            match ids.first().copied() {
+                Some(raw_id) => Message::FsEvent(RemoteId(raw_id)),
+                None => Message::Tick,
+            }
+        });
+        Subscription::batch([events, ticker, fs_events])
     }
 
     fn update(&mut self, message: Message) -> Command<Message> {
@@ -239,6 +252,19 @@ impl Application for CelesteApp {
                 self.syncing.remove(&id);
                 self.last_sync_at.insert(id, Instant::now());
                 Command::none()
+            }
+            Message::FsEvent(id) => {
+                // A watched file changed — if the remote has instant_sync on
+                // and isn't already running, kick off a sync.
+                let due = self
+                    .remotes
+                    .iter()
+                    .any(|r| r.id == id && r.policy.enabled && r.policy.instant_sync);
+                if due && !self.syncing.contains(&id) {
+                    self.start_sync(id)
+                } else {
+                    Command::none()
+                }
             }
             Message::Tick => {
                 // Check each enabled remote; if its interval has elapsed and

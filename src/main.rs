@@ -7,6 +7,7 @@ pub mod gtk_util;
 pub mod infrastructure;
 pub mod launch;
 pub mod mpsc;
+pub mod pending_fs_events;
 pub mod screens;
 pub mod services;
 pub mod theme;
@@ -104,6 +105,7 @@ fn main() {
                     app::run as iced_run,
                     domain::ports::{RcloneClient, Repository},
                     infrastructure::{
+                        fs_watcher,
                         persistence::{
                             migrations::{Migrator, MigratorTrait},
                             repository::SeaOrmRepository,
@@ -129,6 +131,12 @@ fn main() {
                 .expect("failed to connect to the database");
                 util::await_future(Migrator::up(&db, None))
                     .expect("failed to run database migrations");
+
+                // fs_watcher pushes matched remote_ids into a global the
+                // Iced subscription polls.
+                let on_change: Arc<dyn Fn(i32) + Send + Sync> =
+                    Arc::new(|id| crate::pending_fs_events::push(id));
+                fs_watcher::spawn_with_callback(db.clone(), on_change);
 
                 let repo: Arc<dyn Repository> = Arc::new(SeaOrmRepository::new(db));
                 let rclone: Arc<dyn RcloneClient> = Arc::new(LibrcloneClient::new());

@@ -33,6 +33,19 @@ use crate::{
 const DEBOUNCE_WINDOW: Duration = Duration::from_millis(500);
 
 pub fn spawn(db: DatabaseConnection, refresh_requests: Arc<Mutex<HashSet<i32>>>) {
+    let on_change: Arc<dyn Fn(i32) + Send + Sync> = Arc::new(move |remote_id: i32| {
+        refresh_requests.lock().unwrap().insert(remote_id);
+    });
+    spawn_with_callback(db, on_change);
+}
+
+/// Generalised entry point — forwards each debounced filesystem event as a
+/// remote_id through the provided callback. The GTK shell wraps that into
+/// REFRESH_REQUESTS (via [`spawn`]); Iced pushes it onto its Message channel.
+pub fn spawn_with_callback(
+    db: DatabaseConnection,
+    on_change: Arc<dyn Fn(i32) + Send + Sync>,
+) {
     thread::spawn(move || {
         let path_to_remote = match build_watch_map(&db) {
             Some(map) if !map.is_empty() => map,
@@ -42,7 +55,6 @@ pub fn spawn(db: DatabaseConnection, refresh_requests: Arc<Mutex<HashSet<i32>>>)
         let last_trigger: Arc<Mutex<HashMap<i32, Instant>>> =
             Arc::new(Mutex::new(HashMap::new()));
 
-        let callback_refresh = refresh_requests.clone();
         let callback_map = path_to_remote.clone();
         let callback_last = last_trigger.clone();
 
@@ -63,14 +75,13 @@ pub fn spawn(db: DatabaseConnection, refresh_requests: Arc<Mutex<HashSet<i32>>>)
 
                 let now = Instant::now();
                 let mut last = callback_last.lock().unwrap();
-                let mut pending = callback_refresh.lock().unwrap();
                 for remote_id in matched {
                     let fire = last
                         .get(&remote_id)
                         .map(|t| now.duration_since(*t) >= DEBOUNCE_WINDOW)
                         .unwrap_or(true);
                     if fire {
-                        pending.insert(remote_id);
+                        on_change(remote_id);
                         last.insert(remote_id, now);
                     }
                 }
