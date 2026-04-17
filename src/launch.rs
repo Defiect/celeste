@@ -1673,18 +1673,29 @@ pub fn launch(app: &Application, background: bool) {
                     }
                 });
 
-                let update_status = glib::clone!(
-                    @strong directory_map, @strong remote, @strong sync_dir => move |text: &str| {
-                        let ptr = directory_map.get_ref();
-                        let dir_pair = (
-                            sync_dir.local_path.clone(),
-                            sync_dir.remote_path.clone(),
-                        );
-                        if let Some(item) = ptr
-                            .get(&remote.name)
-                            .and_then(|m| m.get(&dir_pair))
-                        {
-                            item.status_text.set_label(text);
+                let emit = glib::clone!(
+                    @strong directory_map, @strong remote, @strong sync_dir, @strong add_error
+                    => move |event: crate::domain::events::SyncEvent| {
+                        use crate::domain::events::SyncEvent;
+                        match event {
+                            SyncEvent::SyncDirStatus { text, .. } => {
+                                let ptr = directory_map.get_ref();
+                                let dir_pair = (
+                                    sync_dir.local_path.clone(),
+                                    sync_dir.remote_path.clone(),
+                                );
+                                if let Some(item) = ptr
+                                    .get(&remote.name)
+                                    .and_then(|m| m.get(&dir_pair))
+                                {
+                                    item.status_text.set_label(&text);
+                                }
+                            }
+                            SyncEvent::SyncDirError { error, .. } => add_error(error),
+                            SyncEvent::RemoteStarted { .. }
+                            | SyncEvent::RemoteCompleted { .. }
+                            | SyncEvent::RemoteFailed { .. }
+                            | SyncEvent::FileProgress { .. } => {}
                         }
                     }
                 );
@@ -1698,10 +1709,9 @@ pub fn launch(app: &Application, background: bool) {
                     &repo,
                     &rclone_client,
                     &synced_items,
-                    &add_error,
+                    emit.clone(),
                     &check_open_requests,
                     &process_deletion_requests,
-                    &update_status,
                     &is_cancelled,
                 );
                 sync_remote_directory(
@@ -1711,10 +1721,9 @@ pub fn launch(app: &Application, background: bool) {
                     &repo,
                     &rclone_client,
                     &synced_items,
-                    &add_error,
+                    emit,
                     &check_open_requests,
                     &process_deletion_requests,
-                    &update_status,
                     &is_cancelled,
                 );
 

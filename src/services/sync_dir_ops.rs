@@ -9,6 +9,7 @@ use file_lock::{FileLock, FileOptions};
 
 use crate::{
     domain::{
+        events::SyncEvent,
         ports::{RcloneClient, Repository},
         remote::Remote,
         sync::{ListFilter, RemoteItem, SyncDir},
@@ -27,30 +28,36 @@ pub static FILE_IGNORE_NAME: &str = ".sync-exclude.lst";
 // because it was in the deletion queue. Any other error should return an
 // [`Ok<()>`].
 #[allow(clippy::too_many_arguments)]
-pub fn sync_local_directory<
-    F1: Fn(SyncError) + Clone,
-    F2: Fn() + Clone,
-    F3: Fn() + Clone,
-    F4: Fn(&str) + Clone,
-    F5: Fn() -> bool + Clone,
->(
+pub fn sync_local_directory<FE, FO, FD, FC>(
     local_dir: &Path,
     remote: &Remote,
     sync_dir: &SyncDir,
     repo: &dyn Repository,
     client: &dyn RcloneClient,
     synced_items: &RefCell<Vec<(String, String)>>,
-    add_error: F1,
-    check_open_requests: F2,
-    process_deletion_requests: F3,
-    update_status: F4,
-    is_cancelled: F5,
-) {
+    emit: FE,
+    check_open_requests: FO,
+    process_deletion_requests: FD,
+    is_cancelled: FC,
+) where
+    FE: Fn(SyncEvent) + Clone,
+    FO: Fn() + Clone,
+    FD: Fn() + Clone,
+    FC: Fn() -> bool + Clone,
+{
     process_deletion_requests();
 
     let sync_dir_still_exists = || {
         util::await_future(repo.sync_dir_exists(&sync_dir.local_path, &sync_dir.remote_path))
             .unwrap_or(false)
+    };
+
+    let add_error = |err: SyncError| {
+        emit(SyncEvent::SyncDirError {
+            remote_id: remote.id,
+            sync_dir_id: sync_dir.id,
+            error: err,
+        });
     };
 
     let dir_string = local_dir.to_str().unwrap().to_owned();
@@ -61,7 +68,11 @@ pub fn sync_local_directory<
             return;
         }
         let msg = tr::tr!("Checking '{}' for changes...", util::fmt_home(dir));
-        update_status(&msg);
+        emit(SyncEvent::SyncDirStatus {
+            remote_id: remote.id,
+            sync_dir_id: sync_dir.id,
+            text: msg,
+        });
     };
     update_ui_progress(&dir_string);
     let directory = match fs::read_dir(local_dir) {
@@ -218,10 +229,9 @@ pub fn sync_local_directory<
                     repo,
                     client,
                     synced_items,
-                    add_error.clone(),
+                    emit.clone(),
                     check_open_requests.clone(),
                     process_deletion_requests.clone(),
-                    update_status.clone(),
                     is_cancelled.clone(),
                 );
                 update_ui_progress(&local_path);
@@ -261,10 +271,9 @@ pub fn sync_local_directory<
                     repo,
                     client,
                     synced_items,
-                    add_error.clone(),
+                    emit.clone(),
                     check_open_requests.clone(),
                     process_deletion_requests.clone(),
-                    update_status.clone(),
                     is_cancelled.clone(),
                 );
                 update_ui_progress(&local_path);
@@ -419,30 +428,36 @@ pub fn sync_local_directory<
 // - NOTE: `remote_dir` should be: 1. the path with any `/` prefix/suffix
 //   removed 2. the full path from the root of the remote server.
 #[allow(clippy::too_many_arguments)]
-pub fn sync_remote_directory<
-    F1: Fn(SyncError) + Clone,
-    F2: Fn() + Clone,
-    F3: Fn() + Clone,
-    F4: Fn(&str) + Clone,
-    F5: Fn() -> bool + Clone,
->(
+pub fn sync_remote_directory<FE, FO, FD, FC>(
     remote_dir: &str,
     remote: &Remote,
     sync_dir: &SyncDir,
     repo: &dyn Repository,
     client: &dyn RcloneClient,
     synced_items: &RefCell<Vec<(String, String)>>,
-    add_error: F1,
-    check_open_requests: F2,
-    process_deletion_requests: F3,
-    update_status: F4,
-    is_cancelled: F5,
-) {
+    emit: FE,
+    check_open_requests: FO,
+    process_deletion_requests: FD,
+    is_cancelled: FC,
+) where
+    FE: Fn(SyncEvent) + Clone,
+    FO: Fn() + Clone,
+    FD: Fn() + Clone,
+    FC: Fn() -> bool + Clone,
+{
     process_deletion_requests();
 
     let sync_dir_still_exists = || {
         util::await_future(repo.sync_dir_exists(&sync_dir.local_path, &sync_dir.remote_path))
             .unwrap_or(false)
+    };
+
+    let add_error = |err: SyncError| {
+        emit(SyncEvent::SyncDirError {
+            remote_id: remote.id,
+            sync_dir_id: sync_dir.id,
+            error: err,
+        });
     };
 
     let ignore_file_string = format!("{}/{}", sync_dir.local_path, FILE_IGNORE_NAME);
@@ -474,7 +489,11 @@ pub fn sync_remote_directory<
             return;
         }
         let msg = tr::tr!("Checking '{}' on remote for changes...", dir);
-        update_status(&msg);
+        emit(SyncEvent::SyncDirStatus {
+            remote_id: remote.id,
+            sync_dir_id: sync_dir.id,
+            text: msg,
+        });
     };
     update_ui_progress(remote_dir);
     let items = match client.list(&remote.name, remote_dir, false, ListFilter::All) {
@@ -580,10 +599,9 @@ pub fn sync_remote_directory<
                     repo,
                     client,
                     synced_items,
-                    add_error.clone(),
+                    emit.clone(),
                     check_open_requests.clone(),
                     process_deletion_requests.clone(),
-                    update_status.clone(),
                     is_cancelled.clone(),
                 );
                 update_ui_progress(&remote_path_string);
@@ -665,10 +683,9 @@ pub fn sync_remote_directory<
                     repo,
                     client,
                     synced_items,
-                    add_error.clone(),
+                    emit.clone(),
                     check_open_requests.clone(),
                     process_deletion_requests.clone(),
-                    update_status.clone(),
                     is_cancelled.clone(),
                 );
                 update_ui_progress(&remote_path_string);
