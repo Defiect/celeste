@@ -119,8 +119,15 @@ impl Application for CelesteApp {
                 Command::none()
             }
             Message::Main(main_page::Msg::RefreshAll) => {
-                // TODO: hook into SyncOrchestrator once it drives the sync.
-                Command::none()
+                let ids: Vec<RemoteId> = self
+                    .remotes
+                    .iter()
+                    .filter(|r| r.policy.enabled && !self.syncing.contains(&r.id))
+                    .map(|r| r.id)
+                    .collect();
+                let cmds: Vec<Command<Message>> =
+                    ids.into_iter().map(|id| self.start_sync(id)).collect();
+                Command::batch(cmds)
             }
             Message::Main(main_page::Msg::AddRemote) => {
                 // TODO: invoke the login flow.
@@ -130,46 +137,7 @@ impl Application for CelesteApp {
                 self.selected = None;
                 Command::none()
             }
-            Message::Remote(remote_page::Msg::RefreshNow(id)) => {
-                if self.syncing.contains(&id) {
-                    return Command::none();
-                }
-                self.syncing.insert(id);
-                let repo = self.repo.clone();
-                let rclone = self.rclone.clone();
-                let events_tx = self.events_tx.clone();
-                Command::perform(
-                    async move {
-                        let remote = match repo.find_remote(id).await {
-                            Ok(Some(r)) => r,
-                            _ => return id,
-                        };
-                        let sync_dirs = repo.list_sync_dirs(id).await.unwrap_or_default();
-                        let _ = tokio::task::spawn_blocking(move || {
-                            let emit = move |event: SyncEvent| {
-                                if let Some(tx) = &events_tx {
-                                    let _ = tx.blocking_send(event);
-                                }
-                            };
-                            for sd in sync_dirs {
-                                let _ = crate::services::sync_dir_pass::run(
-                                    &remote,
-                                    &sd,
-                                    &*repo,
-                                    &*rclone,
-                                    emit.clone(),
-                                    || {},
-                                    || {},
-                                    || false,
-                                );
-                            }
-                        })
-                        .await;
-                        id
-                    },
-                    Message::SyncFinished,
-                )
-            }
+            Message::Remote(remote_page::Msg::RefreshNow(id)) => self.start_sync(id),
             Message::SyncStarted(id) => {
                 self.syncing.insert(id);
                 Command::none()
@@ -236,6 +204,53 @@ impl Application for CelesteApp {
             None => main_page::view(&self.remotes, self.selected, &self.syncing)
                 .map(Message::Main),
         }
+    }
+}
+
+impl CelesteApp {
+    /// Spawn a sync pass for one remote. No-op if already syncing. Marks the
+    /// remote as in-flight so the sidebar shows "(syncing…)" and returns
+    /// a Command that will deliver `SyncFinished(id)` when the blocking
+    /// task completes.
+    fn start_sync(&mut self, id: RemoteId) -> Command<Message> {
+        if self.syncing.contains(&id) {
+            return Command::none();
+        }
+        self.syncing.insert(id);
+        let repo = self.repo.clone();
+        let rclone = self.rclone.clone();
+        let events_tx = self.events_tx.clone();
+        Command::perform(
+            async move {
+                let remote = match repo.find_remote(id).await {
+                    Ok(Some(r)) => r,
+                    _ => return id,
+                };
+                let sync_dirs = repo.list_sync_dirs(id).await.unwrap_or_default();
+                let _ = tokio::task::spawn_blocking(move || {
+                    let emit = move |event: SyncEvent| {
+                        if let Some(tx) = &events_tx {
+                            let _ = tx.blocking_send(event);
+                        }
+                    };
+                    for sd in sync_dirs {
+                        let _ = crate::services::sync_dir_pass::run(
+                            &remote,
+                            &sd,
+                            &*repo,
+                            &*rclone,
+                            emit.clone(),
+                            || {},
+                            || {},
+                            || false,
+                        );
+                    }
+                })
+                .await;
+                id
+            },
+            Message::SyncFinished,
+        )
     }
 }
 
