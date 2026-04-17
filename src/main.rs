@@ -1,6 +1,7 @@
 #![feature(exit_status_error)]
 
 pub mod about;
+pub mod domain;
 pub mod gtk_util;
 pub mod infrastructure;
 pub mod launch;
