@@ -2,7 +2,11 @@
 //! GTK `launch::launch`. Runs the pure-Rust UI against the already-extracted
 //! service layer.
 
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use iced::{executor, subscription, Application, Command, Element, Settings, Subscription, Theme};
 use tokio::sync::mpsc;
@@ -32,6 +36,7 @@ pub enum Message {
     SyncFinished(RemoteId),
     WorkerReady(mpsc::Sender<SyncEvent>),
     SyncEventReceived(SyncEvent),
+    Tick,
 }
 
 pub struct CelesteApp {
@@ -46,6 +51,9 @@ pub struct CelesteApp {
     sync_dir_status: HashMap<SyncDirId, String>,
     /// Errors accumulated for each sync_dir since its last refresh.
     sync_dir_errors: HashMap<SyncDirId, Vec<SyncError>>,
+    /// Wall-clock timestamp of the last sync completion per remote. Drives
+    /// the interval scheduler.
+    last_sync_at: HashMap<RemoteId, Instant>,
     /// Sender handed to us by the subscription worker; sync code clones this
     /// to emit events back into the event loop.
     events_tx: Option<mpsc::Sender<SyncEvent>>,
@@ -72,6 +80,7 @@ impl Application for CelesteApp {
             syncing: std::collections::HashSet::new(),
             sync_dir_status: HashMap::new(),
             sync_dir_errors: HashMap::new(),
+            last_sync_at: HashMap::new(),
             events_tx: None,
         };
         let repo = flags.repo;
@@ -91,16 +100,22 @@ impl Application for CelesteApp {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        subscription::channel(std::any::TypeId::of::<CelesteApp>(), 128, |mut output| async move {
-            use iced::futures::SinkExt;
-            let (tx, mut rx) = mpsc::channel::<SyncEvent>(128);
-            let _ = output.send(Message::WorkerReady(tx)).await;
-            while let Some(event) = rx.recv().await {
-                let _ = output.send(Message::SyncEventReceived(event)).await;
-            }
-            std::future::pending::<()>().await;
-            unreachable!()
-        })
+        let events = subscription::channel(
+            std::any::TypeId::of::<CelesteApp>(),
+            128,
+            |mut output| async move {
+                use iced::futures::SinkExt;
+                let (tx, mut rx) = mpsc::channel::<SyncEvent>(128);
+                let _ = output.send(Message::WorkerReady(tx)).await;
+                while let Some(event) = rx.recv().await {
+                    let _ = output.send(Message::SyncEventReceived(event)).await;
+                }
+                std::future::pending::<()>().await;
+                unreachable!()
+            },
+        );
+        let ticker = iced::time::every(Duration::from_secs(5)).map(|_| Message::Tick);
+        Subscription::batch([events, ticker])
     }
 
     fn update(&mut self, message: Message) -> Command<Message> {
@@ -147,7 +162,30 @@ impl Application for CelesteApp {
             }
             Message::SyncFinished(id) => {
                 self.syncing.remove(&id);
+                self.last_sync_at.insert(id, Instant::now());
                 Command::none()
+            }
+            Message::Tick => {
+                // Check each enabled remote; if its interval has elapsed and
+                // it's not already syncing, kick off a new pass.
+                let now = Instant::now();
+                let due: Vec<RemoteId> = self
+                    .remotes
+                    .iter()
+                    .filter(|r| {
+                        r.policy.enabled
+                            && !self.syncing.contains(&r.id)
+                            && self
+                                .last_sync_at
+                                .get(&r.id)
+                                .map(|t| now.duration_since(*t) >= r.policy.interval)
+                                .unwrap_or(true)
+                    })
+                    .map(|r| r.id)
+                    .collect();
+                let cmds: Vec<Command<Message>> =
+                    due.into_iter().map(|id| self.start_sync(id)).collect();
+                Command::batch(cmds)
             }
             Message::WorkerReady(tx) => {
                 self.events_tx = Some(tx);
