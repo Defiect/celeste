@@ -10,3 +10,10 @@ pub mod should_sync;
 pub mod sync_dir_ops;
 pub mod sync_dir_pass;
 pub mod sync_path;
+
+#[cfg(test)]
+mod should_sync_tests;
+#[cfg(test)]
+mod sync_dir_ops_tests;
+#[cfg(test)]
+mod sync_path_tests;

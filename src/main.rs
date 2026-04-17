@@ -4,6 +4,8 @@ pub mod infrastructure;
 pub mod pending_fs_events;
 pub mod screens;
 pub mod services;
+#[cfg(test)]
+pub mod test_support;
 pub mod theme;
 pub mod util;
 pub mod widgets;
