@@ -612,12 +612,21 @@ pub fn launch(app: &Application, background: bool) {
                 .valign(Align::Start)
                 .margin_end(6)
                 .build();
-            {
-                let remote_id = db_remote.id;
-                refresh_now_button.connect_clicked(move |_| {
-                    REFRESH_REQUESTS.lock().unwrap().insert(remote_id);
-                });
-            }
+            refresh_now_button.connect_clicked(glib::clone!(
+                @strong db_remote, @strong directory_map => move |_| {
+                    REFRESH_REQUESTS.lock().unwrap().insert(db_remote.id);
+
+                    // Immediate visual feedback while the loop hasn't picked
+                    // the request up yet — otherwise the user stares at the
+                    // previous status during slow rclone list calls.
+                    if let Some(dirs) = directory_map.get_ref().get(&db_remote.name) {
+                        for dir in dirs.values() {
+                            dir.status_text
+                                .set_label(&tr::tr!("Refresh queued..."));
+                        }
+                    }
+                }
+            ));
             let new_folder_button = Button::builder()
                 .icon_name("folder-new")
                 .halign(Align::End)
@@ -1365,6 +1374,20 @@ pub fn launch(app: &Application, background: bool) {
             .unwrap();
 
             for sync_dir in sync_dirs {
+                // Immediately reflect that this sync_dir is being processed —
+                // the should_sync check below can take minutes on big remotes
+                // and we don't want the user staring at "Awaiting sync
+                // check..." the whole time.
+                {
+                    let item_ptr = directory_map.get_ref();
+                    if let Some(item) = item_ptr.get(&remote.name).and_then(|m| {
+                        m.get(&(sync_dir.local_path.clone(), sync_dir.remote_path.clone()))
+                    }) {
+                        item.status_text
+                            .set_label(&tr::tr!("Checking for changes..."));
+                    }
+                }
+
                 // Get the list of local and remote files for this sync
                 // directory, and if they don't match the last sync state
                 // in the database, then continue with syncing.
