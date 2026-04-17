@@ -1,14 +1,18 @@
 #![feature(exit_status_error)]
 
 pub mod about;
+pub mod app;
 pub mod domain;
 pub mod gtk_util;
 pub mod infrastructure;
 pub mod launch;
 pub mod mpsc;
+pub mod screens;
 pub mod services;
+pub mod theme;
 pub mod traits;
 pub mod util;
+pub mod widgets;
 
 use adw::{
     gtk::{self, gdk::Display, Align, Box, CssProvider, Label, Orientation, StyleContext},
@@ -42,6 +46,8 @@ enum Commands {
         #[arg(long)]
         background: bool,
     },
+    /// Launch the new Iced-based UI (Phase D, work in progress).
+    Iced,
 }
 
 fn main() {
@@ -92,6 +98,42 @@ fn main() {
                 });
 
                 app.run_with_args::<&str>(&[]);
+            }
+            Commands::Iced => {
+                use crate::{
+                    app::run as iced_run,
+                    domain::ports::{RcloneClient, Repository},
+                    infrastructure::{
+                        persistence::{
+                            migrations::{Migrator, MigratorTrait},
+                            repository::SeaOrmRepository,
+                        },
+                        rclone::LibrcloneClient,
+                    },
+                    util,
+                };
+                use sea_orm::Database;
+                use std::sync::Arc;
+
+                let mut db_path = util::get_config_dir();
+                std::fs::create_dir_all(&db_path).unwrap();
+                db_path.push("data.sqlite");
+                if !db_path.exists() {
+                    std::fs::File::create(&db_path).unwrap();
+                }
+
+                let db = util::await_future(Database::connect(format!(
+                    "sqlite://{}",
+                    db_path.display()
+                )))
+                .expect("failed to connect to the database");
+                util::await_future(Migrator::up(&db, None))
+                    .expect("failed to run database migrations");
+
+                let repo: Arc<dyn Repository> = Arc::new(SeaOrmRepository::new(db));
+                let rclone: Arc<dyn RcloneClient> = Arc::new(LibrcloneClient::new());
+
+                iced_run(repo, rclone).expect("iced app exited with error");
             }
         }
     } else {
