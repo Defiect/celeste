@@ -24,6 +24,7 @@ use crate::{
         remote::Remote,
         sync::{ListFilter, SyncDir},
     },
+    services::sync_dir_ops::is_editor_temp,
     util,
 };
 
@@ -72,6 +73,11 @@ where
         }
         match maybe_path {
             Ok(path) => {
+                if let Some(name) = path.file_name().and_then(|n| n.to_str())
+                    && is_editor_temp(name)
+                {
+                    continue;
+                }
                 let file = match File::open(&path) {
                     Ok(file) => file,
                     Err(_) => {
@@ -128,6 +134,9 @@ where
                         i + 1,
                         total_remote
                     ));
+                }
+                if is_editor_temp(&path.name) {
+                    continue;
                 }
                 let mod_ts = path.mod_time.unix_timestamp();
                 let maybe_db_sync_item = util::await_future(

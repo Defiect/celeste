@@ -17,7 +17,7 @@ use crate::{
         remote::Remote,
         sync::{SyncDir, SyncError},
     },
-    services::sync_dir_ops::log_destructive_op,
+    services::sync_dir_ops::{is_editor_temp, log_destructive_op},
     util,
 };
 
@@ -37,6 +37,14 @@ pub fn sync_single_path<FE>(
     let Some(local_path) = path.to_str().map(str::to_owned) else {
         return;
     };
+
+    // Skip editor swap/temp files: they churn faster than we can upload
+    // and only produce `object not found` errors + stale DB rows.
+    if let Some(name) = path.file_name().and_then(|n| n.to_str())
+        && is_editor_temp(name)
+    {
+        return;
+    }
 
     // Reject paths outside this sync_dir.
     let prefix = format!("{}/", sync_dir.local_path);

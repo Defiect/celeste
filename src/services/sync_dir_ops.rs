@@ -31,6 +31,44 @@ pub fn log_destructive_op(kind: &str, remote_name: &str, path: &str) {
     eprintln!("sync: DELETE {kind} remote={remote_name} path={path}");
 }
 
+/// Editor and toolchain temp-file patterns that should never touch the
+/// remote. Syncing these is always wrong: the file lives for seconds,
+/// then the editor deletes it, and the sync layer ends up with half-
+/// uploaded files, spurious "object not found" errors, and DB records
+/// that provoke later `local-delete-mirroring-remote` passes.
+pub fn is_editor_temp(name: &str) -> bool {
+    // Kate swap.
+    if name.ends_with(".kate-swp") {
+        return true;
+    }
+    // Vim swap files: ".foo.swp", ".foo.swo", ".foo.swn".
+    if name.starts_with('.')
+        && (name.ends_with(".swp") || name.ends_with(".swo") || name.ends_with(".swn"))
+    {
+        return true;
+    }
+    // Emacs lock symlinks and autosave.
+    if name.starts_with(".#") {
+        return true;
+    }
+    if name.starts_with('#') && name.ends_with('#') {
+        return true;
+    }
+    // Kate / generic backup.
+    if name.ends_with('~') {
+        return true;
+    }
+    // GIO/Nautilus copy staging.
+    if name.starts_with(".goutputstream-") {
+        return true;
+    }
+    // Browser partial downloads.
+    if name.ends_with(".crdownload") || name.ends_with(".part") {
+        return true;
+    }
+    false
+}
+
 // Returning an [`Err<()>`] means this directory has to stop being synced
 // because it was in the deletion queue. Any other error should return an
 // [`Ok<()>`].
@@ -147,6 +185,12 @@ pub fn sync_local_directory<FE, FO, FD, FC>(
         }
         let item = item.unwrap();
         let local_path = item.path().to_str().unwrap().to_owned();
+
+        if let Some(name) = item.file_name().to_str()
+            && is_editor_temp(name)
+        {
+            continue;
+        }
 
         // The path from the root of the remote.
         let remote_path = {
@@ -569,6 +613,10 @@ pub fn sync_remote_directory<FE, FO, FD, FC>(
         // deleted from the `sync_dir_deletion_queue`), stop processing and return.
         if !sync_dir_still_exists() {
             break;
+        }
+
+        if is_editor_temp(&item.name) {
+            continue;
         }
 
         // If this item matches the ignore filter, don't sync it.
