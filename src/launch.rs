@@ -1352,11 +1352,31 @@ pub fn launch(app: &Application, background: bool) {
                     }
                 }
 
+                // Build the domain-side snapshot the services need (so they
+                // don't see SeaORM models).
+                let domain_remote = crate::domain::remote::Remote {
+                    id: crate::domain::remote::RemoteId(remote.id),
+                    name: remote.name.clone(),
+                    policy: crate::domain::remote::SyncPolicy {
+                        interval: std::time::Duration::from_secs(
+                            remote.sync_interval_seconds.max(1) as u64,
+                        ),
+                        instant_sync: remote.instant_sync != 0,
+                        enabled: remote.enabled != 0,
+                    },
+                };
+                let domain_sync_dir = crate::domain::sync::SyncDir {
+                    id: crate::domain::sync::SyncDirId(sync_dir.id),
+                    remote_id: crate::domain::remote::RemoteId(sync_dir.remote_id),
+                    local_path: sync_dir.local_path.clone(),
+                    remote_path: sync_dir.remote_path.clone(),
+                };
+
                 // Gate the real sync work on whether anything has actually
                 // changed under this sync_dir since the last successful pass.
                 let should_sync = crate::services::should_sync::should_sync(
-                    &remote,
-                    &sync_dir,
+                    &domain_remote,
+                    &domain_sync_dir,
                     &repo,
                     &rclone_client,
                 );
@@ -1681,8 +1701,8 @@ pub fn launch(app: &Application, background: bool) {
 
                 sync_local_directory(
                     Path::new(&sync_dir.local_path),
-                    &remote,
-                    &sync_dir,
+                    &domain_remote,
+                    &domain_sync_dir,
                     &repo,
                     &rclone_client,
                     &synced_items,
@@ -1694,8 +1714,8 @@ pub fn launch(app: &Application, background: bool) {
                 );
                 sync_remote_directory(
                     &sync_dir.remote_path,
-                    &remote,
-                    &sync_dir,
+                    &domain_remote,
+                    &domain_sync_dir,
                     &repo,
                     &rclone_client,
                     &synced_items,

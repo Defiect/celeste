@@ -10,11 +10,13 @@ use file_lock::{FileLock, FileOptions};
 use crate::{
     domain::{
         ports::{RcloneClient, Repository},
-        sync::{ListFilter, RemoteItem, SyncDirId},
+        remote::Remote,
+        sync::{ListFilter, RemoteItem, SyncDir},
     },
-    infrastructure::persistence::models::{RemotesModel, SyncDirsModel},
     util,
 };
+
+// sync_dir_ops now lives purely on domain types — no infrastructure leak.
 
 /// Name of the per-sync-dir ignore file (one glob per line).
 pub static FILE_IGNORE_NAME: &str = ".sync-exclude.lst";
@@ -41,8 +43,8 @@ pub fn sync_local_directory<
     F5: Fn() -> bool + Clone,
 >(
     local_dir: &Path,
-    remote: &RemotesModel,
-    sync_dir: &SyncDirsModel,
+    remote: &Remote,
+    sync_dir: &SyncDir,
     repo: &dyn Repository,
     client: &dyn RcloneClient,
     synced_items: &RefCell<Vec<(String, String)>>,
@@ -188,7 +190,7 @@ pub fn sync_local_directory<
             .as_ref()
             .map(|item| item.mod_time.unix_timestamp());
         let db_item = util::await_future(repo.find_sync_item_by_paths(
-            SyncDirId(sync_dir.id),
+            sync_dir.id,
             &local_path,
             &remote_path,
         ))
@@ -286,7 +288,7 @@ pub fn sync_local_directory<
         // Delete this item from the database.
         let delete_db_entry = || {
             let _ = util::await_future(repo.delete_sync_item_by_paths(
-                SyncDirId(sync_dir.id),
+                sync_dir.id,
                 &local_path,
                 &remote_path,
             ));
@@ -410,7 +412,7 @@ pub fn sync_local_directory<
 
             // Record the current transaction's timestamps in the database.
             let _ = util::await_future(repo.insert_sync_item(
-                SyncDirId(sync_dir.id),
+                sync_dir.id,
                 local_path.clone(),
                 remote_path.clone(),
                 local_utc_timestamp as i64,
@@ -433,8 +435,8 @@ pub fn sync_remote_directory<
     F5: Fn() -> bool + Clone,
 >(
     remote_dir: &str,
-    remote: &RemotesModel,
-    sync_dir: &SyncDirsModel,
+    remote: &Remote,
+    sync_dir: &SyncDir,
     repo: &dyn Repository,
     client: &dyn RcloneClient,
     synced_items: &RefCell<Vec<(String, String)>>,
@@ -548,7 +550,7 @@ pub fn sync_remote_directory<
         };
         let local_timestamp = get_local_file_timestamp();
         let db_item = util::await_future(repo.find_sync_item_by_paths(
-            SyncDirId(sync_dir.id),
+            sync_dir.id,
             &local_path_string,
             &remote_path_string,
         ))
@@ -695,7 +697,7 @@ pub fn sync_remote_directory<
         // Delete this item from the database.
         let delete_db_entry = || {
             let _ = util::await_future(repo.delete_sync_item_by_paths(
-                SyncDirId(sync_dir.id),
+                sync_dir.id,
                 &local_path_string,
                 &remote_path_string,
             ));
@@ -822,7 +824,7 @@ pub fn sync_remote_directory<
 
         // Record the current transaction's timestamps in the database.
         let _ = util::await_future(repo.insert_sync_item(
-            SyncDirId(sync_dir.id),
+            sync_dir.id,
             local_path_string.clone(),
             remote_path_string.clone(),
             l_timestamp as i64,

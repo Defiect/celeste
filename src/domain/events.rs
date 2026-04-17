@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use super::remote::RemoteId;
 
 #[derive(Clone, Debug)]
@@ -24,5 +22,5 @@ pub enum SyncEvent {
 
 #[derive(Clone, Debug)]
 pub enum FsEvent {
-    Changed { path: PathBuf },
+    Changed { path: String },
 }

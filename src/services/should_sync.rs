@@ -10,19 +10,19 @@ use std::{
 use crate::{
     domain::{
         ports::{RcloneClient, Repository},
-        sync::{ListFilter, SyncDirId},
+        remote::Remote,
+        sync::{ListFilter, SyncDir},
     },
-    infrastructure::persistence::models::{RemotesModel, SyncDirsModel},
     util,
 };
 
 pub fn should_sync(
-    remote: &RemotesModel,
-    sync_dir: &SyncDirsModel,
+    remote: &Remote,
+    sync_dir: &SyncDir,
     repo: &dyn Repository,
     client: &dyn RcloneClient,
 ) -> bool {
-    let sync_dir_id = SyncDirId(sync_dir.id);
+    let sync_dir_id = sync_dir.id;
     let mut should_sync = false;
 
     // Local file checks.
@@ -108,7 +108,7 @@ pub fn should_sync(
     let sync_items = util::await_future(repo.list_sync_items(sync_dir_id)).unwrap_or_default();
 
     for sync_item in sync_items {
-        let local_path_str = sync_item.local_path.display().to_string();
+        let local_path_str = sync_item.local_path.clone();
         let remote_path = if !sync_dir.remote_path.is_empty() {
             format!("{}/{}", sync_dir.remote_path, sync_item.remote_path)
         } else {

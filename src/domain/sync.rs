@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use time::OffsetDateTime;
 
 use super::remote::RemoteId;
@@ -14,7 +12,7 @@ pub struct SyncItemId(pub i32);
 pub struct SyncDir {
     pub id: SyncDirId,
     pub remote_id: RemoteId,
-    pub local_path: PathBuf,
+    pub local_path: String,
     pub remote_path: String,
 }
 
@@ -22,7 +20,7 @@ pub struct SyncDir {
 pub struct SyncItem {
     pub id: SyncItemId,
     pub sync_dir_id: SyncDirId,
-    pub local_path: PathBuf,
+    pub local_path: String,
     pub remote_path: String,
     pub last_local_timestamp: i64,
     pub last_remote_timestamp: i64,
@@ -39,7 +37,7 @@ pub enum SyncStatus {
 #[derive(Clone, Debug)]
 pub struct Conflict {
     pub sync_dir_id: SyncDirId,
-    pub local_path: PathBuf,
+    pub local_path: String,
     pub remote_path: String,
 }
 
