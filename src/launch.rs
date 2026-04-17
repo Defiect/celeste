@@ -199,6 +199,8 @@ pub fn launch(app: &Application, background: bool) {
 
     // Adapter the sync routines talk to instead of calling librclone directly.
     let rclone_client = crate::infrastructure::rclone::LibrcloneClient::new();
+    // SeaORM-backed Repository — used by the sync services for DB port calls.
+    let repo = crate::infrastructure::persistence::repository::SeaOrmRepository::new(db.clone());
 
     // Get our remotes.
     let mut remotes = util::await_future(RemotesEntity::find().all(&db)).unwrap();
@@ -1682,6 +1684,7 @@ pub fn launch(app: &Application, background: bool) {
                     &remote,
                     &sync_dir,
                     &db,
+                    &repo,
                     &rclone_client,
                     &synced_items,
                     &add_error,
@@ -1695,6 +1698,7 @@ pub fn launch(app: &Application, background: bool) {
                     &remote,
                     &sync_dir,
                     &db,
+                    &repo,
                     &rclone_client,
                     &synced_items,
                     &add_error,

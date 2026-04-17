@@ -10,7 +10,7 @@ use sea_orm::{entity::prelude::*, ActiveValue, DatabaseConnection};
 
 use crate::{
     domain::{
-        ports::RcloneClient,
+        ports::{RcloneClient, Repository},
         sync::{ListFilter, RemoteItem},
     },
     infrastructure::persistence::models::{
@@ -47,6 +47,7 @@ pub fn sync_local_directory<
     remote: &RemotesModel,
     sync_dir: &SyncDirsModel,
     db: &DatabaseConnection,
+    repo: &dyn Repository,
     client: &dyn RcloneClient,
     synced_items: &RefCell<Vec<(String, String)>>,
     add_error: F1,
@@ -57,11 +58,16 @@ pub fn sync_local_directory<
 ) {
     process_deletion_requests();
 
+    let sync_dir_still_exists = || {
+        util::await_future(repo.sync_dir_exists(&sync_dir.local_path, &sync_dir.remote_path))
+            .unwrap_or(false)
+    };
+
     let dir_string = local_dir.to_str().unwrap().to_owned();
     let update_ui_progress = |dir: &str| {
         // If this directory no longer exists in the database (i.e. from being
         // deleted from the `sync_dir_deletion_queue`), then do nothing.
-        if !sync_dir.exists(db) {
+        if !sync_dir_still_exists() {
             return;
         }
         let msg = tr::tr!("Checking '{}' for changes...", util::fmt_home(dir));
@@ -112,7 +118,7 @@ pub fn sync_local_directory<
 
         // If this directory no longer exists in the database (i.e. from being
         // deleted from the `sync_dir_deletion_queue`), stop processing and return.
-        if !sync_dir.exists(db) {
+        if !sync_dir_still_exists() {
             break;
         }
 
@@ -221,6 +227,7 @@ pub fn sync_local_directory<
                     remote,
                     sync_dir,
                     db,
+                    repo,
                     client,
                     synced_items,
                     add_error.clone(),
@@ -264,6 +271,7 @@ pub fn sync_local_directory<
                     remote,
                     sync_dir,
                     db,
+                    repo,
                     client,
                     synced_items,
                     add_error.clone(),
@@ -460,6 +468,7 @@ pub fn sync_remote_directory<
     remote: &RemotesModel,
     sync_dir: &SyncDirsModel,
     db: &DatabaseConnection,
+    repo: &dyn Repository,
     client: &dyn RcloneClient,
     synced_items: &RefCell<Vec<(String, String)>>,
     add_error: F1,
@@ -469,6 +478,11 @@ pub fn sync_remote_directory<
     is_cancelled: F5,
 ) {
     process_deletion_requests();
+
+    let sync_dir_still_exists = || {
+        util::await_future(repo.sync_dir_exists(&sync_dir.local_path, &sync_dir.remote_path))
+            .unwrap_or(false)
+    };
 
     let ignore_file_string = format!("{}/{}", sync_dir.local_path, FILE_IGNORE_NAME);
     let ignore_file_path = Path::new(&ignore_file_string);
@@ -495,7 +509,7 @@ pub fn sync_remote_directory<
     let update_ui_progress = |dir: &str| {
         // If this directory no longer exists in the database (i.e. from being
         // deleted from the `sync_dir_deletion_queue`, do nothing).
-        if !sync_dir.exists(db) {
+        if !sync_dir_still_exists() {
             return;
         }
         let msg = tr::tr!("Checking '{}' on remote for changes...", dir);
@@ -522,7 +536,7 @@ pub fn sync_remote_directory<
 
         // If this directory no longer exists in the database (i.e. from being
         // deleted from the `sync_dir_deletion_queue`), stop processing and return.
-        if !sync_dir.exists(db) {
+        if !sync_dir_still_exists() {
             break;
         }
 
@@ -604,6 +618,7 @@ pub fn sync_remote_directory<
                     remote,
                     sync_dir,
                     db,
+                    repo,
                     client,
                     synced_items,
                     add_error.clone(),
@@ -689,6 +704,7 @@ pub fn sync_remote_directory<
                     remote,
                     sync_dir,
                     db,
+                    repo,
                     client,
                     synced_items,
                     add_error.clone(),
