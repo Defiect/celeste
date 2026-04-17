@@ -26,15 +26,18 @@ pub enum Message {
     RemotesLoaded(Vec<Remote>),
     SyncDirsLoaded(RemoteId, Vec<SyncDir>),
     PolicySaved,
+    SyncStarted(RemoteId),
+    SyncFinished(RemoteId),
 }
 
 pub struct CelesteApp {
     repo: Arc<dyn Repository>,
-    #[allow(dead_code)]
     rclone: Arc<dyn RcloneClient>,
     remotes: Vec<Remote>,
     sync_dirs: HashMap<RemoteId, Vec<SyncDir>>,
     selected: Option<RemoteId>,
+    /// Remotes whose sync pass is currently running.
+    syncing: std::collections::HashSet<RemoteId>,
 }
 
 pub struct Flags {
@@ -55,6 +58,7 @@ impl Application for CelesteApp {
             remotes: Vec::new(),
             sync_dirs: HashMap::new(),
             selected: None,
+            syncing: std::collections::HashSet::new(),
         };
         let repo = flags.repo;
         let load = Command::perform(
@@ -102,9 +106,52 @@ impl Application for CelesteApp {
                 self.selected = None;
                 Command::none()
             }
-            Message::Remote(remote_page::Msg::RefreshNow(_id)) => {
-                // TODO: push into REFRESH_REQUESTS-equivalent once the Iced
-                // side owns the orchestrator.
+            Message::Remote(remote_page::Msg::RefreshNow(id)) => {
+                if self.syncing.contains(&id) {
+                    return Command::none();
+                }
+                self.syncing.insert(id);
+                let repo = self.repo.clone();
+                let rclone = self.rclone.clone();
+                Command::perform(
+                    async move {
+                        let remote = match repo.find_remote(id).await {
+                            Ok(Some(r)) => r,
+                            _ => return id,
+                        };
+                        let sync_dirs = repo.list_sync_dirs(id).await.unwrap_or_default();
+                        let repo = repo.clone();
+                        let rclone = rclone.clone();
+                        let _ = tokio::task::spawn_blocking(move || {
+                            for sd in sync_dirs {
+                                let _ = crate::services::sync_dir_pass::run(
+                                    &remote,
+                                    &sd,
+                                    &*repo,
+                                    &*rclone,
+                                    |_| {},
+                                    || {},
+                                    || {},
+                                    || false,
+                                );
+                            }
+                        })
+                        .await;
+                        id
+                    },
+                    Message::SyncFinished,
+                )
+                .map(|msg| match msg {
+                    Message::SyncFinished(id) => Message::SyncFinished(id),
+                    other => other,
+                })
+            }
+            Message::SyncStarted(id) => {
+                self.syncing.insert(id);
+                Command::none()
+            }
+            Message::SyncFinished(id) => {
+                self.syncing.remove(&id);
                 Command::none()
             }
             Message::Remote(remote_page::Msg::Settings(sub))
@@ -142,7 +189,8 @@ impl Application for CelesteApp {
                     .unwrap_or(&[]);
                 remote_page::view(remote, dirs).map(Message::Remote)
             }
-            None => main_page::view(&self.remotes, self.selected).map(Message::Main),
+            None => main_page::view(&self.remotes, self.selected, &self.syncing)
+                .map(Message::Main),
         }
     }
 }
