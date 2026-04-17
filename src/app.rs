@@ -2,7 +2,7 @@
 //! GTK `launch::launch`. Runs the pure-Rust UI against the already-extracted
 //! service layer.
 
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use iced::{executor, Application, Command, Element, Settings, Theme};
 
@@ -10,6 +10,7 @@ use crate::{
     domain::{
         ports::{RcloneClient, Repository},
         remote::{Remote, RemoteId},
+        sync::SyncDir,
     },
     screens::{main_page, remote_page, settings},
     theme,
@@ -23,15 +24,16 @@ pub enum Message {
     Remote(remote_page::Msg),
     Settings(settings::Msg),
     RemotesLoaded(Vec<Remote>),
+    SyncDirsLoaded(RemoteId, Vec<SyncDir>),
     PolicySaved,
 }
 
 pub struct CelesteApp {
-    #[allow(dead_code)]
     repo: Arc<dyn Repository>,
     #[allow(dead_code)]
     rclone: Arc<dyn RcloneClient>,
     remotes: Vec<Remote>,
+    sync_dirs: HashMap<RemoteId, Vec<SyncDir>>,
     selected: Option<RemoteId>,
 }
 
@@ -51,6 +53,7 @@ impl Application for CelesteApp {
             repo: flags.repo.clone(),
             rclone: flags.rclone,
             remotes: Vec::new(),
+            sync_dirs: HashMap::new(),
             selected: None,
         };
         let repo = flags.repo;
@@ -77,6 +80,14 @@ impl Application for CelesteApp {
             }
             Message::Main(main_page::Msg::Selected(id)) => {
                 self.selected = Some(id);
+                let repo = self.repo.clone();
+                Command::perform(
+                    async move { repo.list_sync_dirs(id).await.unwrap_or_default() },
+                    move |sd| Message::SyncDirsLoaded(id, sd),
+                )
+            }
+            Message::SyncDirsLoaded(id, sd) => {
+                self.sync_dirs.insert(id, sd);
                 Command::none()
             }
             Message::Main(main_page::Msg::RefreshAll) => {
@@ -123,7 +134,14 @@ impl Application for CelesteApp {
             .selected
             .and_then(|id| self.remotes.iter().find(|r| r.id == id))
         {
-            Some(remote) => remote_page::view(remote).map(Message::Remote),
+            Some(remote) => {
+                let dirs: &[SyncDir] = self
+                    .sync_dirs
+                    .get(&remote.id)
+                    .map(|v| v.as_slice())
+                    .unwrap_or(&[]);
+                remote_page::view(remote, dirs).map(Message::Remote)
+            }
             None => main_page::view(&self.remotes, self.selected).map(Message::Main),
         }
     }
