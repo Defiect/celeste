@@ -7,10 +7,9 @@
 //! object-safe (`dyn Repository`) without pulling in `async-trait` yet. This
 //! is revisited when the orchestrator actually needs `Arc<dyn Port>`s.
 
-use std::{future::Future, path::PathBuf, pin::Pin};
+use std::{future::Future, pin::Pin};
 
 use super::{
-    events::FsEvent,
     remote::{Remote, RemoteId, SyncPolicy},
     sync::{ListFilter, RemoteItem, SyncDir, SyncDirId, SyncItem, SyncItemId},
 };
@@ -155,28 +154,3 @@ pub trait RcloneClient: Send + Sync {
     fn create_config(&self, payload_json: String) -> Result<(), String>;
 }
 
-pub trait FsWatcher: Send + Sync {
-    fn watch(
-        &self,
-        paths: Vec<PathBuf>,
-    ) -> BoxFuture<'_, Result<tokio::sync::mpsc::Receiver<FsEvent>, String>>;
-}
-
-#[derive(Clone, Copy, Debug)]
-pub enum TrayIcon {
-    Loading,
-    Syncing,
-    Warning,
-    Done,
-    Disconnected,
-}
-
-pub trait Tray: Send + Sync {
-    fn set_status(&self, message: &str);
-    fn set_icon(&self, icon: TrayIcon);
-}
-
-pub trait AuthProvider: Send + Sync {
-    // Placeholder. Designed when `services::auth_service` lands and we know
-    // the exact flow shape needed across OAuth2 vs WebDAV basic-auth providers.
-}
