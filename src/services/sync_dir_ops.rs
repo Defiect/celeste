@@ -6,16 +6,13 @@
 use std::{cell::RefCell, fs, path::Path, time::SystemTime};
 
 use file_lock::{FileLock, FileOptions};
-use sea_orm::{entity::prelude::*, ActiveValue, DatabaseConnection};
 
 use crate::{
     domain::{
         ports::{RcloneClient, Repository},
-        sync::{ListFilter, RemoteItem},
+        sync::{ListFilter, RemoteItem, SyncDirId},
     },
-    infrastructure::persistence::models::{
-        RemotesModel, SyncDirsModel, SyncItemsActiveModel, SyncItemsColumn, SyncItemsEntity,
-    },
+    infrastructure::persistence::models::{RemotesModel, SyncDirsModel},
     util,
 };
 
@@ -46,7 +43,6 @@ pub fn sync_local_directory<
     local_dir: &Path,
     remote: &RemotesModel,
     sync_dir: &SyncDirsModel,
-    db: &DatabaseConnection,
     repo: &dyn Repository,
     client: &dyn RcloneClient,
     synced_items: &RefCell<Vec<(String, String)>>,
@@ -191,13 +187,12 @@ pub fn sync_local_directory<
         let remote_utc_timestamp = remote_item
             .as_ref()
             .map(|item| item.mod_time.unix_timestamp());
-        let db_item = util::await_future(
-            SyncItemsEntity::find()
-                .filter(SyncItemsColumn::LocalPath.eq(local_path.clone()))
-                .filter(SyncItemsColumn::RemotePath.eq(remote_path.clone()))
-                .one(db),
-        )
-        .unwrap();
+        let db_item = util::await_future(repo.find_sync_item_by_paths(
+            SyncDirId(sync_dir.id),
+            &local_path,
+            &remote_path,
+        ))
+        .unwrap_or(None);
 
         // Push the item to the remote. Returns the
         // [`crate::infrastructure::rclone::sync::RcloneRemoteItem`] of the item on the remote, or
@@ -226,7 +221,6 @@ pub fn sync_local_directory<
                     &item.path(),
                     remote,
                     sync_dir,
-                    db,
                     repo,
                     client,
                     synced_items,
@@ -270,7 +264,6 @@ pub fn sync_local_directory<
                     &item.path(),
                     remote,
                     sync_dir,
-                    db,
                     repo,
                     client,
                     synced_items,
@@ -292,38 +285,29 @@ pub fn sync_local_directory<
         };
         // Delete this item from the database.
         let delete_db_entry = || {
-            util::await_future(async {
-                SyncItemsEntity::find()
-                    .filter(SyncItemsColumn::SyncDirId.eq(sync_dir.id))
-                    .filter(SyncItemsColumn::LocalPath.eq(local_path.clone()))
-                    .filter(SyncItemsColumn::RemotePath.eq(remote_path.clone()))
-                    .one(db)
-                    .await
-                    .unwrap()
-                    .unwrap()
-                    .delete(db)
-                    .await
-                    .unwrap()
-            })
+            let _ = util::await_future(repo.delete_sync_item_by_paths(
+                SyncDirId(sync_dir.id),
+                &local_path,
+                &remote_path,
+            ));
         };
 
         // If we have a record of the last sync, use that to aid in timestamp
         // checks.
         if let Some(db_model) = db_item {
-            let update_db_item = |local_timestamp, remote_timestamp| {
-                let mut active_model: SyncItemsActiveModel = db_model.clone().into();
-                active_model.last_local_timestamp = ActiveValue::Set(local_timestamp);
-                active_model.last_remote_timestamp = ActiveValue::Set(remote_timestamp);
-                util::await_future(active_model.update(db)).unwrap();
+            let update_db_item = |local_timestamp: i64, remote_timestamp: i64| {
+                let _ = util::await_future(repo.update_sync_item_timestamps(
+                    db_model.id,
+                    local_timestamp,
+                    remote_timestamp,
+                ));
             };
 
             // Both items are more current than at the last transaction - we need to
             // let the user decide which to keep.
-            // Since `db_model.last_sync_timestamp` is an `i32`, we should be able
-            // to safely convert it to an `i64` and `u64`.
             if local_utc_timestamp > db_model.last_local_timestamp as u64
                 && let Some(remote_timestamp) = remote_utc_timestamp
-                && remote_timestamp > db_model.last_remote_timestamp as i64
+                && remote_timestamp > db_model.last_remote_timestamp
             {
                 // Only add the error if one of the items is not a directory -
                 // there's no point in saying both directories are more current, and
@@ -341,8 +325,8 @@ pub fn sync_local_directory<
             } else if local_utc_timestamp > db_model.last_local_timestamp as u64 {
                 if let Ok(rclone_item) = push_local_to_remote() {
                     update_db_item(
-                        get_local_file_timestamp().try_into().unwrap(),
-                        rclone_item.mod_time.unix_timestamp().try_into().unwrap(),
+                        get_local_file_timestamp() as i64,
+                        rclone_item.mod_time.unix_timestamp(),
                     );
                     continue;
                 } else {
@@ -350,15 +334,12 @@ pub fn sync_local_directory<
                 }
             // The remote item is more recent.
             } else if let Some(remote_timestamp) = remote_utc_timestamp
-                && remote_timestamp > db_model.last_remote_timestamp as i64
+                && remote_timestamp > db_model.last_remote_timestamp
             {
                 if pull_remote_to_local().is_err() {
                     continue;
                 } else {
-                    update_db_item(
-                        get_local_file_timestamp().try_into().unwrap(),
-                        remote_timestamp.try_into().unwrap(),
-                    );
+                    update_db_item(get_local_file_timestamp() as i64, remote_timestamp);
                 }
             // The item is missing from the remote, but the last
             // recorded timestamp for the local item is still
@@ -383,7 +364,7 @@ pub fn sync_local_directory<
             // do nothing.
             } else if local_utc_timestamp == db_model.last_local_timestamp as u64
                 && let Some(remote_timestamp) = remote_utc_timestamp
-                && remote_timestamp == db_model.last_remote_timestamp as i64
+                && remote_timestamp == db_model.last_remote_timestamp
             {
                 continue;
             // Every possible scenario should have been covered
@@ -428,26 +409,13 @@ pub fn sync_local_directory<
             };
 
             // Record the current transaction's timestamps in the database.
-            util::await_future(
-                SyncItemsActiveModel {
-                    sync_dir_id: ActiveValue::Set(sync_dir.id),
-                    local_path: ActiveValue::Set(local_path.clone()),
-                    remote_path: ActiveValue::Set(remote_path.clone()),
-                    last_local_timestamp: ActiveValue::Set(
-                        local_utc_timestamp.try_into().unwrap(),
-                    ),
-                    last_remote_timestamp: ActiveValue::Set(
-                        remote_item_safe
-                            .mod_time
-                            .unix_timestamp()
-                            .try_into()
-                            .unwrap(),
-                    ),
-                    ..Default::default()
-                }
-                .insert(db),
-            )
-            .unwrap();
+            let _ = util::await_future(repo.insert_sync_item(
+                SyncDirId(sync_dir.id),
+                local_path.clone(),
+                remote_path.clone(),
+                local_utc_timestamp as i64,
+                remote_item_safe.mod_time.unix_timestamp(),
+            ));
         }
     }
 }
@@ -467,7 +435,6 @@ pub fn sync_remote_directory<
     remote_dir: &str,
     remote: &RemotesModel,
     sync_dir: &SyncDirsModel,
-    db: &DatabaseConnection,
     repo: &dyn Repository,
     client: &dyn RcloneClient,
     synced_items: &RefCell<Vec<(String, String)>>,
@@ -580,13 +547,12 @@ pub fn sync_remote_directory<
             })
         };
         let local_timestamp = get_local_file_timestamp();
-        let db_item = util::await_future(
-            SyncItemsEntity::find()
-                .filter(SyncItemsColumn::LocalPath.eq(local_path_string.clone()))
-                .filter(SyncItemsColumn::RemotePath.eq(remote_path_string.clone()))
-                .one(db),
-        )
-        .unwrap();
+        let db_item = util::await_future(repo.find_sync_item_by_paths(
+            SyncDirId(sync_dir.id),
+            &local_path_string,
+            &remote_path_string,
+        ))
+        .unwrap_or(None);
 
         // Push the item from the local machine to the remote machine. Returns the
         // timestamp of the new file on the remote. Returns the
@@ -617,7 +583,6 @@ pub fn sync_remote_directory<
                     &item.path,
                     remote,
                     sync_dir,
-                    db,
                     repo,
                     client,
                     synced_items,
@@ -703,7 +668,6 @@ pub fn sync_remote_directory<
                     &item.path,
                     remote,
                     sync_dir,
-                    db,
                     repo,
                     client,
                     synced_items,
@@ -730,34 +694,27 @@ pub fn sync_remote_directory<
         };
         // Delete this item from the database.
         let delete_db_entry = || {
-            util::await_future(async {
-                SyncItemsEntity::find()
-                    .filter(SyncItemsColumn::SyncDirId.eq(sync_dir.id))
-                    .filter(SyncItemsColumn::LocalPath.eq(local_path_string.clone()))
-                    .filter(SyncItemsColumn::RemotePath.eq(remote_path_string.clone()))
-                    .one(db)
-                    .await
-                    .unwrap()
-                    .unwrap()
-                    .delete(db)
-                    .await
-                    .unwrap()
-            })
+            let _ = util::await_future(repo.delete_sync_item_by_paths(
+                SyncDirId(sync_dir.id),
+                &local_path_string,
+                &remote_path_string,
+            ));
         };
 
         // If we have a database record, use that in checks.
         if let Some(db_model) = db_item {
-            let update_db_item = |local_timestamp, remote_timestamp| {
-                let mut active_model: SyncItemsActiveModel = db_model.clone().into();
-                active_model.last_local_timestamp = ActiveValue::Set(local_timestamp);
-                active_model.last_remote_timestamp = ActiveValue::Set(remote_timestamp);
-                util::await_future(active_model.update(db)).unwrap();
+            let update_db_item = |local_timestamp: i64, remote_timestamp: i64| {
+                let _ = util::await_future(repo.update_sync_item_timestamps(
+                    db_model.id,
+                    local_timestamp,
+                    remote_timestamp,
+                ));
             };
 
             // Both items are more recent.
             if let Some(l_timestamp) = local_timestamp
                 && l_timestamp > db_model.last_local_timestamp as u64
-                && remote_timestamp > db_model.last_remote_timestamp as i64
+                && remote_timestamp > db_model.last_remote_timestamp
             {
                 // Only add the error if one of the items is not a directory -
                 // there's no point in saying both directories are more current, and
@@ -776,8 +733,8 @@ pub fn sync_remote_directory<
             {
                 if let Ok(rclone_item) = push_local_to_remote() {
                     update_db_item(
-                        get_local_file_timestamp().unwrap().try_into().unwrap(),
-                        rclone_item.mod_time.unix_timestamp().try_into().unwrap(),
+                        get_local_file_timestamp().unwrap() as i64,
+                        rclone_item.mod_time.unix_timestamp(),
                     );
                     continue;
                 } else {
@@ -785,13 +742,13 @@ pub fn sync_remote_directory<
                 }
 
             // The remote item is more recent.
-            } else if remote_timestamp > db_model.last_remote_timestamp as i64 {
+            } else if remote_timestamp > db_model.last_remote_timestamp {
                 if pull_remote_to_local().is_err() {
                     continue;
                 } else {
                     update_db_item(
-                        get_local_file_timestamp().unwrap().try_into().unwrap(),
-                        remote_timestamp.try_into().unwrap(),
+                        get_local_file_timestamp().unwrap() as i64,
+                        remote_timestamp,
                     );
                 }
 
@@ -801,7 +758,7 @@ pub fn sync_remote_directory<
             // locally, and we need to reflect such on the
             // server.
             } else if !local_path.exists()
-                && remote_timestamp == db_model.last_remote_timestamp as i64
+                && remote_timestamp == db_model.last_remote_timestamp
             {
                 if let Err(err) = client.purge(&remote.name, &remote_path_string) {
                     add_error(SyncError::General(
@@ -818,7 +775,7 @@ pub fn sync_remote_directory<
             // do nothing.
             } else if let Some(l_timestamp) = local_timestamp
                 && l_timestamp == db_model.last_local_timestamp as u64
-                && remote_timestamp == db_model.last_remote_timestamp as i64
+                && remote_timestamp == db_model.last_remote_timestamp
             {
                 continue;
 
@@ -864,17 +821,12 @@ pub fn sync_remote_directory<
         };
 
         // Record the current transaction's timestamps in the database.
-        util::await_future(
-            SyncItemsActiveModel {
-                sync_dir_id: ActiveValue::Set(sync_dir.id),
-                local_path: ActiveValue::Set(local_path_string.clone()),
-                remote_path: ActiveValue::Set(remote_path_string.clone()),
-                last_local_timestamp: ActiveValue::Set(l_timestamp.try_into().unwrap()),
-                last_remote_timestamp: ActiveValue::Set(r_timestamp.try_into().unwrap()),
-                ..Default::default()
-            }
-            .insert(db),
-        )
-        .unwrap();
+        let _ = util::await_future(repo.insert_sync_item(
+            SyncDirId(sync_dir.id),
+            local_path_string.clone(),
+            remote_path_string.clone(),
+            l_timestamp as i64,
+            r_timestamp,
+        ));
     }
 }
