@@ -16,20 +16,12 @@ use crate::{
     util,
 };
 
+pub use crate::domain::sync::SyncError;
+
 // sync_dir_ops now lives purely on domain types — no infrastructure leak.
 
 /// Name of the per-sync-dir ignore file (one glob per line).
 pub static FILE_IGNORE_NAME: &str = ".sync-exclude.lst";
-
-/// Errors surfaced to the user for a single sync-dir pass.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum SyncError {
-    /// Catch-all: `(path, message)`.
-    General(String, String),
-    /// Local and remote copies both changed since the last sync; user must
-    /// pick a winner. `(local_path, remote_path)`.
-    BothMoreCurrent(String, String),
-}
 
 // Returning an [`Err<()>`] means this directory has to stop being synced
 // because it was in the deletion queue. Any other error should return an

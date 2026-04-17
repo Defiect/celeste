@@ -59,3 +59,13 @@ pub enum ListFilter {
     #[allow(dead_code)]
     Files,
 }
+
+/// Errors surfaced to the user for a single sync-dir pass.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum SyncError {
+    /// Catch-all: `(path, message)`.
+    General(String, String),
+    /// Local and remote copies both changed since the last sync; user must
+    /// pick a winner. `(local_path, remote_path)`.
+    BothMoreCurrent(String, String),
+}
