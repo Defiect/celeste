@@ -52,10 +52,10 @@ fn main() {
     util::await_future(Migrator::up(&db, None))
         .expect("failed to run database migrations");
 
-    // fs_watcher pushes matched remote_ids into a slot the Iced
+    // fs_watcher pushes matched (remote_id, paths) into a slot the Iced
     // subscription polls.
-    let on_change: Arc<dyn Fn(i32) + Send + Sync> =
-        Arc::new(|id| pending_fs_events::push(id));
+    let on_change: Arc<dyn Fn(i32, Vec<std::path::PathBuf>) + Send + Sync> =
+        Arc::new(pending_fs_events::push);
     fs_watcher::spawn_with_callback(db.clone(), on_change);
 
     let repo: Arc<dyn Repository> = Arc::new(SeaOrmRepository::new(db));

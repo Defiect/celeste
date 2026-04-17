@@ -9,3 +9,4 @@ pub mod remote_lifecycle;
 pub mod should_sync;
 pub mod sync_dir_ops;
 pub mod sync_dir_pass;
+pub mod sync_path;
