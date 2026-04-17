@@ -430,6 +430,31 @@ pub fn sync_local_directory<FE, FO, FD, FC>(
             } else if remote_item.is_none()
                 && local_utc_timestamp == db_model.last_local_timestamp as u64
             {
+                // Defensive: rclone's Google Drive backend has been
+                // observed returning Ok(None) from operations/stat for
+                // files that really are present, right after a mutation
+                // elsewhere in the same parent directory. Verify via a
+                // fresh list before we mirror the supposed deletion
+                // locally — the 2026-04-17 incident trashed 17 top-
+                // level files in one pass because of this exact race.
+                let (parent, filename) =
+                    remote_path.rsplit_once('/').unwrap_or(("", &remote_path));
+                let still_on_remote = match client.list(
+                    &remote.name,
+                    parent,
+                    false,
+                    ListFilter::All,
+                ) {
+                    Ok(items) => items.iter().any(|i| i.name == filename),
+                    Err(_) => true,
+                };
+                if still_on_remote {
+                    eprintln!(
+                        "sync: ABORT local-delete-mirroring-remote remote={} path={} — stat returned None but list shows the file is still present (rclone cache race).",
+                        remote.name, remote_path,
+                    );
+                    continue;
+                }
                 log_destructive_op(
                     "local-delete-mirroring-remote",
                     &remote.name,
