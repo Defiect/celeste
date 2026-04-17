@@ -186,47 +186,107 @@ impl Application for CelesteApp {
                 };
                 match sub {
                     add_remote::Msg::NameChanged(s) => draft.name = s,
+                    add_remote::Msg::ProviderChanged(p) => draft.provider = Some(p),
                     add_remote::Msg::UrlChanged(s) => draft.url = s,
                     add_remote::Msg::UserChanged(s) => draft.user = s,
                     add_remote::Msg::PassChanged(s) => draft.pass = s,
-                    add_remote::Msg::VendorChanged(v) => draft.vendor = Some(v),
+                    add_remote::Msg::TotpChanged(s) => draft.totp = s,
+                    add_remote::Msg::ClientIdChanged(s) => draft.client_id = s,
+                    add_remote::Msg::ClientSecretChanged(s) => draft.client_secret = s,
                     add_remote::Msg::Cancel => {
                         self.add_remote_draft = None;
                         return Command::none();
                     }
                     add_remote::Msg::Submit => {
-                        let Some(vendor_choice) = draft.vendor else {
-                            draft.error = Some("Pick a type first.".to_owned());
+                        let Some(kind) = draft.provider else {
+                            draft.error = Some("Pick a provider first.".to_owned());
                             return Command::none();
                         };
-                        if draft.name.trim().is_empty()
-                            || draft.url.trim().is_empty()
-                            || draft.user.trim().is_empty()
-                        {
-                            draft.error = Some("Name, URL, username are required.".to_owned());
+                        if draft.name.trim().is_empty() {
+                            draft.error = Some("Name is required.".to_owned());
                             return Command::none();
                         }
                         let name = draft.name.clone();
-                        let url = draft.url.clone();
-                        let user = draft.user.clone();
-                        let pass = draft.pass.clone();
-                        let vendor = vendor_choice.as_vendor();
                         let repo = self.repo.clone();
                         let rclone = self.rclone.clone();
                         draft.error = None;
-                        return Command::perform(
-                            async move {
-                                tokio::task::spawn_blocking(move || {
-                                    crate::services::auth_service::add_webdav_remote(
-                                        &name, &url, &user, &pass, vendor, &*repo,
-                                        &*rclone,
-                                    )
-                                })
-                                .await
-                                .unwrap_or_else(|e| Err(e.to_string()))
-                            },
-                            Message::AddRemoteResult,
-                        );
+
+                        if let Some(vendor) = kind.webdav_vendor() {
+                            if draft.url.trim().is_empty()
+                                || draft.user.trim().is_empty()
+                            {
+                                draft.error =
+                                    Some("URL and username are required.".to_owned());
+                                return Command::none();
+                            }
+                            let url = draft.url.clone();
+                            let user = draft.user.clone();
+                            let pass = draft.pass.clone();
+                            draft.busy = true;
+                            return Command::perform(
+                                async move {
+                                    tokio::task::spawn_blocking(move || {
+                                        crate::services::auth_service::add_webdav_remote(
+                                            &name, &url, &user, &pass, vendor, &*repo,
+                                            &*rclone,
+                                        )
+                                    })
+                                    .await
+                                    .unwrap_or_else(|e| Err(e.to_string()))
+                                },
+                                Message::AddRemoteResult,
+                            );
+                        }
+
+                        if kind.is_proton_drive() {
+                            if draft.user.trim().is_empty() {
+                                draft.error = Some("Username is required.".to_owned());
+                                return Command::none();
+                            }
+                            let user = draft.user.clone();
+                            let pass = draft.pass.clone();
+                            let totp = draft.totp.clone();
+                            draft.busy = true;
+                            return Command::perform(
+                                async move {
+                                    tokio::task::spawn_blocking(move || {
+                                        crate::services::auth_service::add_proton_drive_remote(
+                                            &name, &user, &pass, &totp, &*repo, &*rclone,
+                                        )
+                                    })
+                                    .await
+                                    .unwrap_or_else(|e| Err(e.to_string()))
+                                },
+                                Message::AddRemoteResult,
+                            );
+                        }
+
+                        if let Some(provider) = kind.oauth_provider() {
+                            let client_id = draft.client_id.trim().to_owned();
+                            let client_secret = draft.client_secret.trim().to_owned();
+                            draft.busy = true;
+                            return Command::perform(
+                                async move {
+                                    tokio::task::spawn_blocking(move || {
+                                        let client_id = (!client_id.is_empty())
+                                            .then_some(client_id.as_str());
+                                        let client_secret = (!client_secret.is_empty())
+                                            .then_some(client_secret.as_str());
+                                        crate::services::auth_service::add_oauth_remote(
+                                            &name,
+                                            provider,
+                                            client_id,
+                                            client_secret,
+                                            &*repo,
+                                            &*rclone,
+                                        )
+                                    })
+                                    .await
+                                    .unwrap_or_else(|e| Err(e.to_string()))
+                                },
+                                Message::AddRemoteResult,
+                            );
+                        }
                     }
                 }
                 Command::none()
@@ -242,6 +302,7 @@ impl Application for CelesteApp {
             Message::AddRemoteResult(Err(msg)) => {
                 if let Some(draft) = self.add_remote_draft.as_mut() {
                     draft.error = Some(msg);
+                    draft.busy = false;
                 }
                 Command::none()
             }
