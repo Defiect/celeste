@@ -7,7 +7,7 @@
 //!   the token, we pass it to config/create)
 
 use iced::{
-    widget::{button, column, container, pick_list, row, text_input, Space},
+    widget::{button, column, container, pick_list, row, text::Shaping, text_input, tooltip, Space},
     Element, Length,
 };
 
@@ -82,7 +82,41 @@ impl ProviderKind {
     pub fn is_proton_drive(self) -> bool {
         matches!(self, ProviderKind::ProtonDrive)
     }
+
+    /// Whether this provider has been exercised against the current
+    /// sync algorithm. Everything except Google Drive and Proton Drive
+    /// gets a ⚠ glyph in the picker plus a hover-tooltip explaining
+    /// the situation.
+    pub fn is_tested(self) -> bool {
+        matches!(self, ProviderKind::GDrive | ProviderKind::ProtonDrive)
+    }
 }
+
+/// Pick-list wrapper that prefixes untested providers with a ⚠ glyph.
+/// The ProviderKind itself stays context-free; only the dropdown
+/// presentation is annotated.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ProviderOption(ProviderKind);
+
+impl std::fmt::Display for ProviderOption {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)?;
+        if !self.0.is_tested() {
+            f.write_str("  ⚠")?;
+        }
+        Ok(())
+    }
+}
+
+const PROVIDER_OPTIONS: [ProviderOption; 7] = [
+    ProviderOption(ProviderKind::WebDav),
+    ProviderOption(ProviderKind::Nextcloud),
+    ProviderOption(ProviderKind::Owncloud),
+    ProviderOption(ProviderKind::ProtonDrive),
+    ProviderOption(ProviderKind::Dropbox),
+    ProviderOption(ProviderKind::GDrive),
+    ProviderOption(ProviderKind::PCloud),
+];
 
 impl std::fmt::Display for ProviderKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -137,10 +171,36 @@ pub fn view(draft: &Draft) -> Element<'_, Msg> {
     .align_items(iced::Alignment::Center)
     .spacing(8);
 
+    let selected_option = draft.provider.map(ProviderOption);
+    let picker = pick_list(&PROVIDER_OPTIONS[..], selected_option, |o| {
+        Msg::ProviderChanged(o.0)
+    })
+    .text_shaping(Shaping::Advanced)
+    .placeholder("Pick a provider");
+
+    let untested_note: Element<'_, Msg> = match draft.provider {
+        Some(p) if !p.is_tested() => tooltip(
+            text("⚠").size(16),
+            text(
+                "This provider hasn't been tested against the current sync \
+                 algorithm yet. It should work (rclone handles the transport \
+                 and the sync logic is backend-agnostic), but you'd be the \
+                 first to try it.",
+            )
+            .size(12),
+            tooltip::Position::Right,
+        )
+        .gap(8)
+        .padding(8)
+        .into(),
+        _ => Space::with_width(Length::Shrink).into(),
+    };
+
     let provider_row = row![
         field_label("Type"),
-        pick_list(&ProviderKind::ALL[..], draft.provider, Msg::ProviderChanged)
-            .placeholder("Pick a provider"),
+        picker,
+        Space::with_width(Length::Fixed(8.0)),
+        untested_note,
     ]
     .align_items(iced::Alignment::Center)
     .spacing(8);
