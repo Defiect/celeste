@@ -38,7 +38,23 @@ pub trait Repository: Send + Sync {
     fn list_remotes(&self) -> BoxFuture<'_, Result<Vec<Remote>, RepositoryError>>;
     fn find_remote(&self, id: RemoteId)
         -> BoxFuture<'_, Result<Option<Remote>, RepositoryError>>;
+    fn find_remote_by_name(
+        &self,
+        name: &str,
+    ) -> BoxFuture<'_, Result<Option<Remote>, RepositoryError>>;
     fn delete_remote(&self, id: RemoteId) -> BoxFuture<'_, Result<(), RepositoryError>>;
+    /// Delete a remote, all of its sync_dirs, and all of their sync_items.
+    fn cascade_delete_remote(
+        &self,
+        id: RemoteId,
+    ) -> BoxFuture<'_, Result<(), RepositoryError>>;
+    /// Delete a sync_dir (by `(local_path, remote_path)`) and all of its
+    /// sync_items.
+    fn cascade_delete_sync_dir(
+        &self,
+        local_path: &str,
+        remote_path: &str,
+    ) -> BoxFuture<'_, Result<(), RepositoryError>>;
     fn set_policy(
         &self,
         id: RemoteId,

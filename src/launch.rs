@@ -1323,7 +1323,7 @@ pub fn launch(app: &Application, background: bool) {
                     // DB rows + rclone config cleanup happens in the service.
                     crate::services::remote_lifecycle::delete_remote(
                         &remote_name,
-                        &db,
+                        &repo,
                         &rclone_client,
                     )
                     .expect("failed to delete remote");
@@ -1629,7 +1629,7 @@ pub fn launch(app: &Application, background: bool) {
                 let synced_items: RefCell<Vec<(String, String)>> = RefCell::new(vec![]);
 
                 // Get any pending deletion requests and process them.
-                let process_deletion_requests = glib::clone!(@strong db, @weak stack, @strong directory_map, @strong remote_deletion_queue, @strong sync_dir_deletion_queue, @strong rclone_client => move || {
+                let process_deletion_requests = glib::clone!(@strong db, @weak stack, @strong directory_map, @strong remote_deletion_queue, @strong sync_dir_deletion_queue, @strong rclone_client, @strong repo => move || {
                     let mut dmap = directory_map.get_mut_ref();
                     let mut remote_queue = remote_deletion_queue.get_mut_ref();
                     let mut dir_queue = sync_dir_deletion_queue.get_mut_ref();
@@ -1650,7 +1650,7 @@ pub fn launch(app: &Application, background: bool) {
                         crate::services::remote_lifecycle::delete_sync_dir(
                             &queue_item.1,
                             &queue_item.2,
-                            &db,
+                            &repo,
                         )
                         .expect("failed to delete sync_dir");
                     }
@@ -1666,7 +1666,7 @@ pub fn launch(app: &Application, background: bool) {
                         // DB + rclone config cleanup via the service.
                         crate::services::remote_lifecycle::delete_remote(
                             &remote_name,
-                            &db,
+                            &repo,
                             &rclone_client,
                         )
                         .expect("failed to delete remote");

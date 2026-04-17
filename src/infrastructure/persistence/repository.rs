@@ -13,10 +13,12 @@ use crate::domain::{
 };
 
 use super::models::{
-    RemotesActiveModel, RemotesEntity, RemotesModel, SyncDirsColumn, SyncDirsEntity,
-    SyncDirsModel, SyncItemsActiveModel, SyncItemsColumn, SyncItemsEntity, SyncItemsModel,
+    RemotesActiveModel, RemotesColumn, RemotesEntity, RemotesModel, SyncDirsColumn,
+    SyncDirsEntity, SyncDirsModel, SyncItemsActiveModel, SyncItemsColumn, SyncItemsEntity,
+    SyncItemsModel,
 };
 
+#[derive(Clone)]
 pub struct SeaOrmRepository {
     db: DatabaseConnection,
 }
@@ -87,12 +89,79 @@ impl Repository for SeaOrmRepository {
         })
     }
 
+    fn find_remote_by_name(
+        &self,
+        name: &str,
+    ) -> BoxFuture<'_, Result<Option<Remote>, RepositoryError>> {
+        let name = name.to_owned();
+        Box::pin(async move {
+            let row = RemotesEntity::find()
+                .filter(RemotesColumn::Name.eq(name))
+                .one(&self.db)
+                .await
+                .map_err(map_err)?;
+            Ok(row.map(map_remote))
+        })
+    }
+
     fn delete_remote(&self, id: RemoteId) -> BoxFuture<'_, Result<(), RepositoryError>> {
         Box::pin(async move {
             RemotesEntity::delete_by_id(id.0)
                 .exec(&self.db)
                 .await
                 .map_err(map_err)?;
+            Ok(())
+        })
+    }
+
+    fn cascade_delete_remote(
+        &self,
+        id: RemoteId,
+    ) -> BoxFuture<'_, Result<(), RepositoryError>> {
+        Box::pin(async move {
+            let sync_dirs = SyncDirsEntity::find()
+                .filter(SyncDirsColumn::RemoteId.eq(id.0))
+                .all(&self.db)
+                .await
+                .map_err(map_err)?;
+            for sd in sync_dirs {
+                SyncItemsEntity::delete_many()
+                    .filter(SyncItemsColumn::SyncDirId.eq(sd.id))
+                    .exec(&self.db)
+                    .await
+                    .map_err(map_err)?;
+                sd.delete(&self.db).await.map_err(map_err)?;
+            }
+            RemotesEntity::delete_by_id(id.0)
+                .exec(&self.db)
+                .await
+                .map_err(map_err)?;
+            Ok(())
+        })
+    }
+
+    fn cascade_delete_sync_dir(
+        &self,
+        local_path: &str,
+        remote_path: &str,
+    ) -> BoxFuture<'_, Result<(), RepositoryError>> {
+        let local = local_path.to_owned();
+        let remote = remote_path.to_owned();
+        Box::pin(async move {
+            if let Some(sd) = SyncDirsEntity::find()
+                .filter(SyncDirsColumn::LocalPath.eq(local))
+                .filter(SyncDirsColumn::RemotePath.eq(remote))
+                .one(&self.db)
+                .await
+                .map_err(map_err)?
+            {
+                SyncItemsEntity::delete_many()
+                    .filter(SyncItemsColumn::SyncDirId.eq(sd.id))
+                    .exec(&self.db)
+                    .await
+                    .map_err(map_err)?;
+                sd.delete(&self.db).await.map_err(map_err)?;
+            }
             Ok(())
         })
     }
