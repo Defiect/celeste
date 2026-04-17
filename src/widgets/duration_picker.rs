@@ -1,13 +1,8 @@
-//! Two-choice interval picker — 5 s or 15 s. We dropped the custom-
-//! seconds flow along with instant sync; the sync algorithm's listing
-//! cost is what drives the lower bound here, and 5/15 covers both
-//! "I want changes right away" and "don't hammer the API" without
-//! bringing back the chatter from picking arbitrary values.
+//! Interval picker — presents the full set of supported [`Interval`]
+//! choices. The pick_list shows the current selection on its own, so
+//! there's no separate label.
 
-use iced::{
-    widget::{pick_list, row, text},
-    Element,
-};
+use iced::{widget::pick_list, Element};
 
 use crate::domain::remote::Interval;
 
@@ -16,6 +11,12 @@ impl std::fmt::Display for Interval {
         let label = match self {
             Interval::FiveSeconds => "5 s",
             Interval::FifteenSeconds => "15 s",
+            Interval::ThirtySeconds => "30 s",
+            Interval::OneMinute => "1 min",
+            Interval::FiveMinutes => "5 min",
+            Interval::FifteenMinutes => "15 min",
+            Interval::ThirtyMinutes => "30 min",
+            Interval::OneHour => "1 hour",
         };
         f.write_str(label)
     }
@@ -25,12 +26,5 @@ pub fn view<Msg: 'static + Clone>(
     current: Interval,
     on_change: impl Fn(Interval) -> Msg + 'static,
 ) -> Element<'static, Msg> {
-    const ALL: [Interval; 2] = [Interval::FiveSeconds, Interval::FifteenSeconds];
-    row![
-        text("Interval:").size(14),
-        pick_list(&ALL[..], Some(current), on_change),
-    ]
-    .spacing(8)
-    .align_items(iced::Alignment::Center)
-    .into()
+    pick_list(&Interval::ALL[..], Some(current), on_change).into()
 }
