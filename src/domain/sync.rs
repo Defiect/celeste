@@ -7,6 +7,9 @@ use super::remote::RemoteId;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct SyncDirId(pub i32);
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct SyncItemId(pub i32);
+
 #[derive(Clone, Debug)]
 pub struct SyncDir {
     pub id: SyncDirId,
@@ -17,6 +20,7 @@ pub struct SyncDir {
 
 #[derive(Clone, Debug)]
 pub struct SyncItem {
+    pub id: SyncItemId,
     pub sync_dir_id: SyncDirId,
     pub local_path: PathBuf,
     pub remote_path: String,

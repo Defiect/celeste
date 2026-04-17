@@ -12,7 +12,7 @@ use std::{future::Future, path::PathBuf, pin::Pin};
 use super::{
     events::FsEvent,
     remote::{Remote, RemoteId, SyncPolicy},
-    sync::{ListFilter, RemoteItem, SyncDir, SyncDirId, SyncItem},
+    sync::{ListFilter, RemoteItem, SyncDir, SyncDirId, SyncItem, SyncItemId},
 };
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -58,6 +58,32 @@ pub trait Repository: Send + Sync {
         &self,
         sync_dir: SyncDirId,
     ) -> BoxFuture<'_, Result<Vec<SyncItem>, RepositoryError>>;
+    fn find_sync_item_by_paths(
+        &self,
+        sync_dir: SyncDirId,
+        local_path: &str,
+        remote_path: &str,
+    ) -> BoxFuture<'_, Result<Option<SyncItem>, RepositoryError>>;
+    fn insert_sync_item(
+        &self,
+        sync_dir: SyncDirId,
+        local_path: String,
+        remote_path: String,
+        last_local_timestamp: i64,
+        last_remote_timestamp: i64,
+    ) -> BoxFuture<'_, Result<(), RepositoryError>>;
+    fn update_sync_item_timestamps(
+        &self,
+        id: SyncItemId,
+        last_local_timestamp: i64,
+        last_remote_timestamp: i64,
+    ) -> BoxFuture<'_, Result<(), RepositoryError>>;
+    fn delete_sync_item_by_paths(
+        &self,
+        sync_dir: SyncDirId,
+        local_path: &str,
+        remote_path: &str,
+    ) -> BoxFuture<'_, Result<(), RepositoryError>>;
 }
 
 pub trait RcloneClient: Send + Sync {
