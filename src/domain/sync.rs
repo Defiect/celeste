@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+use time::OffsetDateTime;
+
 use super::remote::RemoteId;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -35,4 +37,23 @@ pub struct Conflict {
     pub sync_dir_id: SyncDirId,
     pub local_path: PathBuf,
     pub remote_path: String,
+}
+
+/// A single entry on a remote filesystem, as returned by
+/// [`crate::domain::ports::RcloneClient`] listing / stat calls.
+#[derive(Clone, Debug)]
+pub struct RemoteItem {
+    pub is_dir: bool,
+    pub path: String,
+    pub name: String,
+    pub mod_time: OffsetDateTime,
+}
+
+/// Filter for `list` calls — matches rclone's `dirsOnly` / `filesOnly` options.
+#[derive(Clone, Copy, Debug)]
+pub enum ListFilter {
+    All,
+    Dirs,
+    #[allow(dead_code)]
+    Files,
 }

@@ -12,7 +12,7 @@ use std::{future::Future, path::PathBuf, pin::Pin};
 use super::{
     events::FsEvent,
     remote::{Remote, RemoteId, SyncPolicy},
-    sync::{SyncDir, SyncDirId, SyncItem},
+    sync::{ListFilter, RemoteItem, SyncDir, SyncDirId, SyncItem},
 };
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -56,8 +56,30 @@ pub trait Repository: Send + Sync {
 }
 
 pub trait RcloneClient: Send + Sync {
-    // Intentionally minimal. Operations get added as the orchestrator extraction
-    // identifies which librclone RPC calls actually need to cross the boundary.
+    fn stat(&self, remote: &str, path: &str) -> Result<Option<RemoteItem>, String>;
+    fn list(
+        &self,
+        remote: &str,
+        path: &str,
+        recursive: bool,
+        filter: ListFilter,
+    ) -> Result<Vec<RemoteItem>, String>;
+    fn mkdir(&self, remote: &str, path: &str) -> Result<(), String>;
+    fn delete_file(&self, remote: &str, path: &str) -> Result<(), String>;
+    fn purge(&self, remote: &str, path: &str) -> Result<(), String>;
+    fn copy_to_remote(
+        &self,
+        local_path: &str,
+        remote: &str,
+        remote_path: &str,
+    ) -> Result<(), String>;
+    fn copy_to_local(
+        &self,
+        local_path: &str,
+        remote: &str,
+        remote_path: &str,
+    ) -> Result<(), String>;
+    fn delete_config(&self, remote: &str) -> Result<(), String>;
 }
 
 pub trait FsWatcher: Send + Sync {
