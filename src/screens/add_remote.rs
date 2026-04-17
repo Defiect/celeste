@@ -7,13 +7,14 @@
 //!   the token, we pass it to config/create)
 
 use iced::{
-    widget::{button, column, container, pick_list, row, text, text_input, Space},
+    widget::{button, column, container, pick_list, row, text_input, Space},
     Element, Length,
 };
 
 use crate::{
     services::auth_service::{OAuthProvider, WebDavVendor},
     theme::{PAGE_PADDING, ROW_SPACING, SECTION_SPACING},
+    widgets::text,
 };
 
 #[derive(Debug, Clone)]

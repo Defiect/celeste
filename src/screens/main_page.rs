@@ -4,13 +4,14 @@
 use std::collections::HashSet;
 
 use iced::{
-    widget::{button, column, container, row, scrollable, text, Space},
+    widget::{button, column, container, row, scrollable, Space},
     Element, Length,
 };
 
 use crate::{
     domain::remote::{Remote, RemoteId},
     theme::{PAGE_PADDING, ROW_SPACING, SECTION_SPACING},
+    widgets::text,
 };
 
 #[derive(Debug, Clone)]

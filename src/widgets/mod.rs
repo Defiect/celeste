@@ -4,3 +4,9 @@
 //! service calls.
 
 pub mod duration_picker;
+mod text_ext;
+
+/// Drop-in replacement for `iced::widget::text` that opts into
+/// `Shaping::Advanced` so cosmic-text's font fallback layer actually
+/// runs. Import this in every screen instead of `iced::widget::text`.
+pub use text_ext::text;

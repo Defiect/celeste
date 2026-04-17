@@ -601,6 +601,74 @@ impl CelesteApp {
 
 /// Launch the Iced application. Blocks until the window closes.
 pub fn run(repo: Arc<dyn Repository>, rclone: Arc<dyn RcloneClient>) -> iced::Result {
-    let settings = Settings::with_flags(Flags { repo, rclone });
+    let mut settings = Settings::with_flags(Flags { repo, rclone });
+    settings.fonts = fallback_fonts();
+    // Bias iced's default glyph lookup to the sans-serif family so
+    // cosmic-text's fallback layer resolves against the fonts we just
+    // loaded instead of a bare built-in. Without this the ⚠ and
+    // anything beyond basic Latin still falls through to tofu.
+    settings.default_font = iced::Font {
+        family: iced::font::Family::Name("Noto Sans"),
+        ..iced::Font::DEFAULT
+    };
     CelesteApp::run(settings)
+}
+
+/// Discover fallback fonts via fontconfig at startup and hand them to
+/// iced as `Settings::fonts`. iced 0.12's bundled default only covers
+/// Latin — without fallbacks, anything past ASCII (emoji, ⚠, Cyrillic,
+/// CJK, …) silently drops from the render.
+///
+/// Queries cover three tiers of glyph coverage:
+/// - emoji (color, e.g. Noto Color Emoji) for actual emoji;
+/// - a dedicated symbols font for ⚠ / arrows / checkmarks;
+/// - a general-purpose sans-serif for wide script coverage;
+/// - a monospace for the rare places that want it.
+///
+/// Failures (no `fc-match`, missing fonts, unreadable files) degrade
+/// gracefully — the app still runs, just without the extra coverage.
+/// We log each load/miss to stderr so the first "I see boxes" report
+/// is traceable.
+fn fallback_fonts() -> Vec<std::borrow::Cow<'static, [u8]>> {
+    [
+        "Noto Color Emoji",
+        "Noto Sans Symbols 2",
+        "Noto Sans",
+        "sans-serif",
+        "emoji",
+        "monospace",
+    ]
+    .iter()
+    .filter_map(|q| fc_match_read(q))
+    .map(std::borrow::Cow::Owned)
+    .collect()
+}
+
+fn fc_match_read(pattern: &str) -> Option<Vec<u8>> {
+    let out = std::process::Command::new("fc-match")
+        .args(["-f", "%{file}"])
+        .arg(pattern)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let path = String::from_utf8(out.stdout).ok()?;
+    let path = path.trim();
+    if path.is_empty() {
+        return None;
+    }
+    match std::fs::read(path) {
+        Ok(bytes) => {
+            eprintln!(
+                "fonts: loaded '{pattern}' -> {path} ({} bytes)",
+                bytes.len()
+            );
+            Some(bytes)
+        }
+        Err(err) => {
+            eprintln!("fonts: fc-match resolved '{pattern}' to {path} but read failed: {err}");
+            None
+        }
+    }
 }

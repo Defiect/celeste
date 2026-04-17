@@ -1,12 +1,17 @@
 //! Interval picker — presents the full set of supported [`Interval`]
 //! choices. When a `warn_below` threshold is supplied, options
 //! shorter than the threshold get a trailing ⚠ glyph to flag them
-//! to the user (provider-specific rate-limit tripwires, typically).
-//! The companion tooltip lives in the caller's layout.
+//! (provider-specific rate-limit tripwires, typically). The glyph
+//! renders via the fallback fonts loaded at startup (see
+//! `app::fallback_fonts`). The companion tooltip lives in the
+//! caller's layout.
 
 use std::fmt;
 
-use iced::{widget::pick_list, Element};
+use iced::{
+    widget::{pick_list, text::Shaping},
+    Element,
+};
 
 use crate::domain::remote::Interval;
 
@@ -66,5 +71,7 @@ pub fn view<Msg: 'static + Clone>(
             interval: current,
             warn: false,
         });
-    pick_list(options, Some(current_opt), move |o| on_change(o.interval)).into()
+    pick_list(options, Some(current_opt), move |o| on_change(o.interval))
+        .text_shaping(Shaping::Advanced)
+        .into()
 }

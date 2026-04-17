@@ -2,14 +2,14 @@
 //! warning for provider-specific rate-limit tripwires).
 
 use iced::{
-    widget::{checkbox, column, row, text, tooltip, Space},
+    widget::{checkbox, column, row, tooltip, Space},
     Element, Length,
 };
 
 use crate::{
     domain::remote::{Interval, Remote, SyncPolicy},
     theme::{ROW_SPACING, SECTION_SPACING},
-    widgets::duration_picker,
+    widgets::{duration_picker, text},
 };
 
 #[derive(Debug, Clone)]

@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use iced::{
-    widget::{button, column, container, row, scrollable, text, text_input, Rule, Space},
+    widget::{button, column, container, row, scrollable, text_input, Rule, Space},
     Element, Length,
 };
 
@@ -15,6 +15,7 @@ use crate::{
     },
     screens::settings,
     theme::{PAGE_PADDING, ROW_SPACING, SECTION_SPACING},
+    widgets::text,
 };
 
 #[derive(Debug, Clone)]
