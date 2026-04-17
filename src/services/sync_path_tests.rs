@@ -270,6 +270,64 @@ fn both_sides_newer_than_db_emits_conflict() {
     );
 }
 
+/// Create-then-delete race: rclone's copy_to_remote fails with "no
+/// such file or directory" because the user deleted the source file
+/// between our `path.exists()` check and rclone actually reading it.
+/// `push_tolerating_source_race` detects that the source is gone and
+/// reports `SourceRacedAway` — callers treat it as a silent no-op
+/// because the incoming fs_watcher Remove event (with no DB row) will
+/// correctly do nothing.
+#[test]
+fn push_tolerating_source_race_swallows_when_source_is_gone() {
+    use super::sync_path::{push_tolerating_source_race, PushOutcome};
+
+    let tmp = TempDir::new("spath_race");
+    // No file on disk → path.exists() is false.
+    let missing = tmp.path.join("ghost.txt");
+
+    let client = FakeRclone::default();
+    client.set_copy_to_remote(Err(
+        "failed to open source object: no such file or directory".to_owned(),
+    ));
+
+    let outcome = push_tolerating_source_race(
+        &client,
+        missing.to_str().unwrap(),
+        "TestRemote",
+        "ghost.txt",
+    );
+    assert!(
+        matches!(outcome, PushOutcome::SourceRacedAway),
+        "source-gone must produce SourceRacedAway, got Failed/Done instead",
+    );
+}
+
+/// When copy_to_remote fails but the source IS still on disk, the
+/// error is real and surfaces. Guards against the swallow path
+/// hiding genuine upload failures (permission denied, network
+/// error with the file still intact, etc.).
+#[test]
+fn push_tolerating_source_race_surfaces_real_errors() {
+    use super::sync_path::{push_tolerating_source_race, PushOutcome};
+
+    let tmp = TempDir::new("spath_real_err");
+    let local = tmp.write_file("stable.txt", b"still here");
+
+    let client = FakeRclone::default();
+    client.set_copy_to_remote(Err("permission denied".to_owned()));
+
+    let outcome = push_tolerating_source_race(
+        &client,
+        local.to_str().unwrap(),
+        "TestRemote",
+        "stable.txt",
+    );
+    assert!(
+        matches!(outcome, PushOutcome::Failed(_)),
+        "real errors (source still present) must not be swallowed",
+    );
+}
+
 /// Paths outside the configured sync_dir must be rejected. Guards
 /// against fs_watcher misfires that might leak paths from a
 /// sibling directory.

@@ -21,6 +21,38 @@ use crate::{
     util,
 };
 
+/// Outcome of a copy_to_remote that may race with a local delete.
+pub(crate) enum PushOutcome {
+    Done,
+    /// The source file was deleted between `path.exists()` and rclone
+    /// actually reading it — common during rapid create/delete testing.
+    /// No error surfaced; the incoming fs_watcher Remove event has no
+    /// DB row to mirror and will no-op, which is correct.
+    SourceRacedAway,
+    Failed(String),
+}
+
+pub(crate) fn push_tolerating_source_race(
+    client: &dyn RcloneClient,
+    local_path: &str,
+    remote_name: &str,
+    remote_path: &str,
+) -> PushOutcome {
+    match client.copy_to_remote(local_path, remote_name, remote_path) {
+        Ok(()) => PushOutcome::Done,
+        Err(err) => {
+            if !Path::new(local_path).exists() {
+                eprintln!(
+                    "sync: copy_to_remote raced with local delete for '{local_path}' — swallowing '{err}'."
+                );
+                PushOutcome::SourceRacedAway
+            } else {
+                PushOutcome::Failed(err)
+            }
+        }
+    }
+}
+
 /// Sync a single local path. The path must sit inside `sync_dir.local_path`.
 /// Directory paths are ignored — their child events already cover the files,
 /// and the periodic scheduler handles empty-dir and recursive-delete cases.
@@ -105,11 +137,18 @@ pub fn sync_single_path<FE>(
         match (db_item, remote_stat) {
             (None, None) => {
                 emit_status(tr::tr!("Uploading '{}'…", util::fmt_home(&local_path)));
-                if let Err(err) =
-                    client.copy_to_remote(&local_path, &remote.name, &remote_path)
-                {
-                    add_error(SyncError::General(local_path.clone(), err));
-                    return;
+                match push_tolerating_source_race(
+                    client,
+                    &local_path,
+                    &remote.name,
+                    &remote_path,
+                ) {
+                    PushOutcome::Done => {}
+                    PushOutcome::SourceRacedAway => return,
+                    PushOutcome::Failed(err) => {
+                        add_error(SyncError::General(local_path.clone(), err));
+                        return;
+                    }
                 }
                 record_insert(repo, sync_dir, &local_path, &remote_path, client, &remote.name);
             }
@@ -117,11 +156,18 @@ pub fn sync_single_path<FE>(
                 let remote_ts = rstat.mod_time.unix_timestamp();
                 if local_ts as i64 > remote_ts {
                     emit_status(tr::tr!("Uploading '{}'…", util::fmt_home(&local_path)));
-                    if let Err(err) =
-                        client.copy_to_remote(&local_path, &remote.name, &remote_path)
-                    {
-                        add_error(SyncError::General(local_path.clone(), err));
-                        return;
+                    match push_tolerating_source_race(
+                        client,
+                        &local_path,
+                        &remote.name,
+                        &remote_path,
+                    ) {
+                        PushOutcome::Done => {}
+                        PushOutcome::SourceRacedAway => return,
+                        PushOutcome::Failed(err) => {
+                            add_error(SyncError::General(local_path.clone(), err));
+                            return;
+                        }
                     }
                     record_insert(
                         repo,
@@ -168,11 +214,18 @@ pub fn sync_single_path<FE>(
                     ));
                 } else if local_changed {
                     emit_status(tr::tr!("Uploading '{}'…", util::fmt_home(&local_path)));
-                    if let Err(err) =
-                        client.copy_to_remote(&local_path, &remote.name, &remote_path)
-                    {
-                        add_error(SyncError::General(local_path.clone(), err));
-                        return;
+                    match push_tolerating_source_race(
+                        client,
+                        &local_path,
+                        &remote.name,
+                        &remote_path,
+                    ) {
+                        PushOutcome::Done => {}
+                        PushOutcome::SourceRacedAway => return,
+                        PushOutcome::Failed(err) => {
+                            add_error(SyncError::General(local_path.clone(), err));
+                            return;
+                        }
                     }
                     let new_remote_ts = client
                         .stat(&remote.name, &remote_path)
