@@ -1302,12 +1302,11 @@ pub fn launch(app: &Application, background: bool) {
             // Skip remotes whose interval hasn't elapsed yet, unless the UI /
             // a watcher explicitly asked for an immediate refresh.
             let interval = Duration::from_secs(remote.sync_interval_seconds.max(1) as u64);
-            if !refresh_now.contains(&remote.id) {
-                if let Some(last) = last_check_per_remote.get(&remote.id) {
-                    if last.elapsed() < interval {
-                        continue;
-                    }
-                }
+            if !refresh_now.contains(&remote.id)
+                && let Some(last) = last_check_per_remote.get(&remote.id)
+                && last.elapsed() < interval
+            {
+                continue;
             }
             // Process any remote deletion requests.
             {
