@@ -595,6 +595,19 @@ pub fn launch(app: &Application, background: bool) {
                 .margin_end(10)
                 .css_classes(vec!["heading".to_string()])
                 .build();
+            let refresh_now_button = Button::builder()
+                .icon_name("view-refresh-symbolic")
+                .tooltip_text(&tr::tr!("Refresh now"))
+                .halign(Align::End)
+                .valign(Align::Start)
+                .margin_end(6)
+                .build();
+            {
+                let remote_id = db_remote.id;
+                refresh_now_button.connect_clicked(move |_| {
+                    REFRESH_REQUESTS.lock().unwrap().insert(remote_id);
+                });
+            }
             let new_folder_button = Button::builder()
                 .icon_name("folder-new")
                 .halign(Align::End)
@@ -909,6 +922,7 @@ pub fn launch(app: &Application, background: bool) {
                 dialog.show();
             }));
             section.append(&label);
+            section.append(&refresh_now_button);
             section.append(&new_folder_button);
             section.append(&delete_remote_button);
             page.append(&section);
