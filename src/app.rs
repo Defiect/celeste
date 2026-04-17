@@ -205,6 +205,32 @@ impl Application for CelesteApp {
                     |id| Message::Main(main_page::Msg::Selected(id)),
                 )
             }
+            Message::Remote(remote_page::Msg::DeleteRemote(id, name)) => {
+                self.selected = None;
+                self.syncing.remove(&id);
+                self.sync_dirs.remove(&id);
+                self.last_sync_at.remove(&id);
+                self.sync_dir_drafts.remove(&id);
+                self.remotes.retain(|r| r.id != id);
+                let repo_blocking = self.repo.clone();
+                let repo_after = self.repo.clone();
+                let rclone = self.rclone.clone();
+                Command::perform(
+                    async move {
+                        tokio::task::spawn_blocking(move || {
+                            let _ = crate::services::remote_lifecycle::delete_remote(
+                                &name,
+                                &*repo_blocking,
+                                &*rclone,
+                            );
+                        })
+                        .await
+                        .ok();
+                        repo_after.list_remotes().await.unwrap_or_default()
+                    },
+                    Message::RemotesLoaded,
+                )
+            }
             Message::SyncStarted(id) => {
                 self.syncing.insert(id);
                 Command::none()

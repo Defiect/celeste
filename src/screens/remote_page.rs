@@ -26,6 +26,7 @@ pub enum Msg {
     DraftRemotePathChanged(String),
     AddSyncDir,
     DeleteSyncDir(String, String),
+    DeleteRemote(RemoteId, String),
 }
 
 pub fn view<'a>(
@@ -40,6 +41,8 @@ pub fn view<'a>(
         text(&remote.name).size(22),
         Space::with_width(Length::Fill),
         button(text("Refresh now")).on_press(Msg::RefreshNow(remote.id)),
+        button(text("Delete remote"))
+            .on_press(Msg::DeleteRemote(remote.id, remote.name.clone())),
     ]
     .spacing(ROW_SPACING)
     .align_items(iced::Alignment::Center);
