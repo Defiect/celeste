@@ -1,3 +1,8 @@
+//! Fresh schema. The old migrations were deleted wholesale — if an
+//! existing config dir has any of the legacy `seaql_migrations` rows the
+//! startup check refuses to boot and tells the user to delete
+//! `~/.config/celeste/` manually. See `infrastructure::persistence::mod`.
+
 use sea_orm::{ConnectionTrait, Statement};
 use sea_orm_migration::prelude::*;
 
@@ -10,10 +15,13 @@ impl MigrationTrait for Migration {
         let sql = r#"
             CREATE TABLE remotes (
                 id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
-                name TEXT NOT NULL
+                name TEXT NOT NULL,
+                sync_interval_seconds INTEGER NOT NULL DEFAULT 15,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                last_sync_at INTEGER NULL,
+                last_sync_status TEXT NULL
             );
-    
-    
+
             CREATE TABLE sync_dirs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
                 remote_id INTEGER NOT NULL,
@@ -21,7 +29,7 @@ impl MigrationTrait for Migration {
                 remote_path TEXT NOT NULL,
                 FOREIGN KEY(remote_id) REFERENCES remotes(id)
             );
-    
+
             CREATE TABLE sync_items (
                 id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
                 sync_dir_id INTEGER NOT NULL,
@@ -38,9 +46,9 @@ impl MigrationTrait for Migration {
 
     async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
         let sql = "
-            DROP TABLE `sync_items`;
-            DROP TABLE `sync_dirs`;
-            DROP TABLE `remotes`;
+            DROP TABLE sync_items;
+            DROP TABLE sync_dirs;
+            DROP TABLE remotes;
         ";
         let stmt = Statement::from_string(manager.get_database_backend(), sql.to_owned());
         manager.get_connection().execute(stmt).await.map(|_| ())

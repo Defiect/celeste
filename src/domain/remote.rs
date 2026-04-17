@@ -21,18 +21,45 @@ pub struct Remote {
     pub policy: SyncPolicy,
 }
 
+/// Per-remote sync cadence. Fixed to the two choices `5s` and `15s` —
+/// any other value coming out of the DB is clamped to the closer one.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SyncPolicy {
-    pub interval: Duration,
-    pub instant_sync: bool,
+    pub interval: Interval,
     pub enabled: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Interval {
+    FiveSeconds,
+    FifteenSeconds,
+}
+
+impl Interval {
+    pub fn duration(self) -> Duration {
+        Duration::from_secs(self.seconds())
+    }
+
+    pub fn seconds(self) -> u64 {
+        match self {
+            Interval::FiveSeconds => 5,
+            Interval::FifteenSeconds => 15,
+        }
+    }
+
+    pub fn from_seconds(secs: u64) -> Self {
+        if secs <= 9 {
+            Interval::FiveSeconds
+        } else {
+            Interval::FifteenSeconds
+        }
+    }
 }
 
 impl Default for SyncPolicy {
     fn default() -> Self {
         Self {
-            interval: Duration::from_secs(300),
-            instant_sync: false,
+            interval: Interval::FifteenSeconds,
             enabled: true,
         }
     }

@@ -4,7 +4,6 @@
 
 use std::{
     collections::HashMap,
-    path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -40,9 +39,6 @@ pub enum Message {
     WorkerReady(mpsc::Sender<SyncEvent>),
     SyncEventReceived(SyncEvent),
     Tick,
-    /// Batched fs_watcher events: one entry per remote, with the set of
-    /// paths that changed inside its sync_dirs.
-    FsChange(Vec<(RemoteId, Vec<PathBuf>)>),
 }
 
 pub struct CelesteApp {
@@ -136,22 +132,10 @@ impl Application for CelesteApp {
                 unreachable!()
             },
         );
-        let ticker = iced::time::every(Duration::from_secs(5)).map(|_| Message::Tick);
-        // Poll PENDING_FS each tick and forward the whole batch in a
-        // single FsChange — the fs_watcher already coalesces bursts, and
-        // the handler dispatches per-remote targeted syncs.
-        let fs_events = iced::time::every(Duration::from_millis(500)).map(|_| {
-            let batch: Vec<(RemoteId, Vec<PathBuf>)> = crate::pending_fs_events::drain()
-                .into_iter()
-                .map(|(raw_id, paths)| (RemoteId(raw_id), paths))
-                .collect();
-            if batch.is_empty() {
-                Message::Tick
-            } else {
-                Message::FsChange(batch)
-            }
-        });
-        Subscription::batch([events, ticker, fs_events])
+        // Single ticker at 1 Hz — interval checks are cheap, and the
+        // shortest allowed sync cadence is 5 s.
+        let ticker = iced::time::every(Duration::from_secs(1)).map(|_| Message::Tick);
+        Subscription::batch([events, ticker])
     }
 
     fn update(&mut self, message: Message) -> Command<Message> {
@@ -440,22 +424,6 @@ impl Application for CelesteApp {
                     Command::none()
                 }
             }
-            Message::FsChange(batch) => {
-                // Route each changed (remote, paths) to a path-targeted
-                // sync if the remote's instant_sync policy is on. A full
-                // refresh falls back to the periodic scheduler.
-                let mut cmds: Vec<Command<Message>> = Vec::new();
-                for (id, paths) in batch {
-                    let due = self
-                        .remotes
-                        .iter()
-                        .any(|r| r.id == id && r.policy.enabled && r.policy.instant_sync);
-                    if due && !self.syncing.contains(&id) {
-                        cmds.push(self.start_targeted_sync(id, paths));
-                    }
-                }
-                Command::batch(cmds)
-            }
             Message::Tick => {
                 // Check each enabled remote; if its interval has elapsed and
                 // it's not already syncing, kick off a new pass.
@@ -469,7 +437,7 @@ impl Application for CelesteApp {
                             && self
                                 .last_sync_at
                                 .get(&r.id)
-                                .map(|t| now.duration_since(*t) >= r.policy.interval)
+                                .map(|t| now.duration_since(*t) >= r.policy.interval.duration())
                                 .unwrap_or(true)
                     })
                     .map(|r| r.id)
@@ -571,69 +539,6 @@ impl Application for CelesteApp {
 }
 
 impl CelesteApp {
-    /// Spawn a path-targeted sync for one remote: process only the given
-    /// paths instead of walking the whole sync_dir tree. Falls back to a
-    /// full sync if any path points at something outside every sync_dir
-    /// (shouldn't happen — fs_watcher only watches sync_dir roots).
-    fn start_targeted_sync(
-        &mut self,
-        id: RemoteId,
-        paths: Vec<PathBuf>,
-    ) -> Command<Message> {
-        if self.syncing.contains(&id) {
-            return Command::none();
-        }
-        self.syncing.insert(id);
-        let repo = self.repo.clone();
-        let rclone = self.rclone.clone();
-        let events_tx = self.events_tx.clone();
-        Command::perform(
-            async move {
-                let remote = match repo.find_remote(id).await {
-                    Ok(Some(r)) => r,
-                    _ => return id,
-                };
-                let sync_dirs = repo.list_sync_dirs(id).await.unwrap_or_default();
-                let _ = tokio::task::spawn_blocking(move || {
-                    let emit = move |event: SyncEvent| {
-                        if let Some(tx) = &events_tx {
-                            let _ = tx.blocking_send(event);
-                        }
-                    };
-                    for path in paths {
-                        let Some(path_str) = path.to_str() else { continue };
-                        let Some(sd) = sync_dirs.iter().find(|sd| {
-                            path_str == sd.local_path
-                                || path_str.starts_with(&format!("{}/", sd.local_path))
-                        }) else {
-                            continue;
-                        };
-                        crate::services::sync_path::sync_single_path(
-                            &path,
-                            &remote,
-                            sd,
-                            &*repo,
-                            &*rclone,
-                            emit.clone(),
-                        );
-                    }
-                    // A targeted pass is short — leave a clean "Files are
-                    // synced." on each sync_dir the paths touched.
-                    for sd in &sync_dirs {
-                        emit(SyncEvent::SyncDirStatus {
-                            remote_id: remote.id,
-                            sync_dir_id: sd.id,
-                            text: tr::tr!("Files are synced."),
-                        });
-                    }
-                })
-                .await;
-                id
-            },
-            Message::SyncFinished,
-        )
-    }
-
     /// Spawn a sync pass for one remote. No-op if already syncing. Marks the
     /// remote as in-flight so the sidebar shows "(syncing…)" and returns
     /// a Command that will deliver `SyncFinished(id)` when the blocking
@@ -667,15 +572,12 @@ impl CelesteApp {
                         }
                     };
                     for sd in sync_dirs {
-                        let _ = crate::services::sync_dir_pass::run(
+                        let _ = crate::services::sync::run(
                             &remote,
                             &sd,
                             &*repo,
                             &*rclone,
                             emit.clone(),
-                            || {},
-                            || {},
-                            || false,
                         );
                     }
                 })

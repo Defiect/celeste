@@ -16,7 +16,6 @@ futures = "0.3.30"
 glob = "0.3.1"
 iced = { version = "0.12", features = ["tokio"] }
 librclone = { version = "0.6.3" }
-notify = "6.1"
 sea-orm = { version = "0.10.7", features = ["sqlx-sqlite", "runtime-async-std-rustls", "macros"] }
 sea-orm-migration = "0.10.7"
 serde = { version = "1.0.203", features = ["derive"] }

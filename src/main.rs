@@ -1,7 +1,6 @@
 pub mod app;
 pub mod domain;
 pub mod infrastructure;
-pub mod pending_fs_events;
 pub mod screens;
 pub mod services;
 #[cfg(test)]
@@ -19,8 +18,8 @@ use crate::{
     app::run as iced_run,
     domain::ports::{RcloneClient, Repository},
     infrastructure::{
-        fs_watcher,
         persistence::{
+            self,
             migrations::{Migrator, MigratorTrait},
             repository::SeaOrmRepository,
         },
@@ -41,7 +40,7 @@ fn main() {
     )
     .expect("failed to set rclone config path");
 
-    let mut db_path = config_dir;
+    let mut db_path = config_dir.clone();
     db_path.push("data.sqlite");
     if !db_path.exists() {
         std::fs::File::create(&db_path).expect("failed to create db file");
@@ -51,16 +50,70 @@ fn main() {
         db_path.display()
     )))
     .expect("failed to connect to the database");
+
+    if util::await_future(persistence::has_legacy_migrations(&db)) {
+        show_legacy_config_popup(&config_dir);
+        std::process::exit(0);
+    }
+
     util::await_future(Migrator::up(&db, None))
         .expect("failed to run database migrations");
-
-    // fs_watcher pushes matched (remote_id, paths) into a slot the Iced
-    // subscription polls.
-    let on_change: Arc<dyn Fn(i32, Vec<std::path::PathBuf>) + Send + Sync> =
-        Arc::new(pending_fs_events::push);
-    fs_watcher::spawn_with_callback(db.clone(), on_change);
 
     let repo: Arc<dyn Repository> = Arc::new(SeaOrmRepository::new(db));
     let rclone: Arc<dyn RcloneClient> = Arc::new(LibrcloneClient::new());
     iced_run(repo, rclone).expect("iced app exited with error");
+}
+
+fn show_legacy_config_popup(config_dir: &std::path::Path) {
+    use iced::{
+        widget::{button, column, text},
+        window, Application, Command, Element, Length, Settings, Theme,
+    };
+
+    struct LegacyPopup {
+        config_dir: String,
+    }
+
+    #[derive(Debug, Clone)]
+    enum Msg {
+        Ack,
+    }
+
+    impl Application for LegacyPopup {
+        type Executor = iced::executor::Default;
+        type Message = Msg;
+        type Theme = Theme;
+        type Flags = String;
+
+        fn new(config_dir: String) -> (Self, Command<Msg>) {
+            (Self { config_dir }, Command::none())
+        }
+
+        fn title(&self) -> String {
+            "Celeste — outdated configuration".to_owned()
+        }
+
+        fn update(&mut self, _msg: Msg) -> Command<Msg> {
+            window::close(window::Id::MAIN)
+        }
+
+        fn view(&self) -> Element<'_, Msg> {
+            column![
+                text("Outdated Celeste configuration detected").size(20),
+                text(format!(
+                    "The sync algorithm was rewritten and the database schema is no longer compatible.\n\nDelete the following directory and restart Celeste:\n\n  {}",
+                    self.config_dir,
+                ))
+                .size(14),
+                button(text("Close Celeste")).on_press(Msg::Ack),
+            ]
+            .spacing(16)
+            .padding(24)
+            .max_width(560)
+            .width(Length::Fill)
+            .into()
+        }
+    }
+
+    let _ = LegacyPopup::run(Settings::with_flags(config_dir.display().to_string()));
 }

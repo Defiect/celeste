@@ -1,14 +1,12 @@
 //! SeaORM-backed implementation of [`crate::domain::ports::Repository`].
 
-use std::time::Duration;
-
 use sea_orm::{
     ActiveValue, ColumnTrait, DatabaseConnection, EntityTrait, ModelTrait, QueryFilter,
 };
 
 use crate::domain::{
     ports::{BoxFuture, Repository, RepositoryError},
-    remote::{Remote, RemoteId, SyncPolicy},
+    remote::{Interval, Remote, RemoteId, SyncPolicy},
     sync::{SyncDir, SyncDirId, SyncItem, SyncItemId},
 };
 
@@ -34,8 +32,7 @@ fn map_remote(m: RemotesModel) -> Remote {
         id: RemoteId(m.id),
         name: m.name,
         policy: SyncPolicy {
-            interval: Duration::from_secs(m.sync_interval_seconds.max(1) as u64),
-            instant_sync: m.instant_sync != 0,
+            interval: Interval::from_seconds(m.sync_interval_seconds.max(1) as u64),
             enabled: m.enabled != 0,
         },
     }
@@ -191,8 +188,7 @@ impl Repository for SeaOrmRepository {
         Box::pin(async move {
             let active = RemotesActiveModel {
                 id: ActiveValue::Unchanged(id.0),
-                sync_interval_seconds: ActiveValue::Set(policy.interval.as_secs() as i32),
-                instant_sync: ActiveValue::Set(policy.instant_sync as i32),
+                sync_interval_seconds: ActiveValue::Set(policy.interval.seconds() as i32),
                 enabled: ActiveValue::Set(policy.enabled as i32),
                 ..Default::default()
             };
