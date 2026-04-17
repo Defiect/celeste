@@ -1,66 +1,45 @@
-use adw::glib::{self, MainContext};
-use futures::future::Future;
 use std::path::PathBuf;
 
-/// The ID of the app.
-pub static APP_ID: &str = "com.hunterwittenborn.Celeste";
+use futures::future::Future;
 
-/// Get the value out of a future.
+/// Block the current thread on a future. Safe from any thread;
+/// `block_on` has no main-context requirements.
 pub fn await_future<F: Future>(future: F) -> F::Output {
     futures::executor::block_on(future)
 }
 
-/// Run a closure in the background so that the UI can keep running.
-pub fn run_in_background<T: Send + 'static, F: FnOnce() -> T + Send + 'static>(f: F) -> T {
-    MainContext::default().block_on(blocking::unblock(f))
-}
-
-/// Format a directory with the user's home directory replaced with '~'.
+/// Replace the user's home-directory prefix with `~` for friendlier UI
+/// paths. Falls back to the raw path if `$HOME` isn't set.
 pub fn fmt_home(dir: &str) -> String {
-    let home_dir = glib::home_dir().into_os_string().into_string().unwrap();
-
-    match dir.strip_prefix(&home_dir) {
-        Some(string) => "~".to_string() + string,
+    let Some(home) = std::env::var_os("HOME") else {
+        return dir.to_string();
+    };
+    let home = home.into_string().unwrap_or_default();
+    match dir.strip_prefix(&home) {
+        Some(rest) => "~".to_string() + rest,
         None => dir.to_string(),
     }
 }
 
-/// Get the user's config directory.
+/// `${XDG_CONFIG_HOME:-$HOME/.config}/celeste`.
 pub fn get_config_dir() -> PathBuf {
-    let mut config_dir = glib::user_config_dir();
-    config_dir.push("celeste");
-    config_dir
-}
-
-/// Strip the slashes from the beginning and end of a string.
-pub fn strip_slashes(string: &str) -> String {
-    let stripped_prefix = match string.strip_prefix('/') {
-        Some(string) => string.to_string(),
-        None => string.to_string(),
+    let mut base = match std::env::var_os("XDG_CONFIG_HOME") {
+        Some(path) if !path.is_empty() => PathBuf::from(path),
+        _ => {
+            let mut home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+            home.push(".config");
+            home
+        }
     };
-
-    match stripped_prefix.strip_suffix('/') {
-        Some(string) => string.to_string(),
-        None => stripped_prefix,
-    }
+    base.push("celeste");
+    base
 }
 
-/// Macro to get the title of a window.
-#[macro_export]
-macro_rules! get_title {
-    ($($arg:tt)*) => {
-        tr::tr!($($arg)*) + " - Celeste"
-    }
-}
-
-pub use crate::get_title;
-
-/// Relaunch the application: spawn a detached copy of the same binary
-/// (without the `run-gui` subcommand so the new process becomes a fresh
-/// top-level supervisor) and exit the current one.
-pub fn restart_app() -> ! {
-    if let Ok(exe) = std::env::current_exe() {
-        let _ = std::process::Command::new(exe).spawn();
-    }
-    std::process::exit(0);
+/// Trim at most one leading and one trailing slash.
+pub fn strip_slashes(string: &str) -> String {
+    let stripped_prefix = string.strip_prefix('/').unwrap_or(string);
+    stripped_prefix
+        .strip_suffix('/')
+        .unwrap_or(stripped_prefix)
+        .to_string()
 }
