@@ -24,6 +24,7 @@ ksni = "0.2.2"
 lazy_static = "1.4.0"
 librclone = { version = "0.6.3" }
 nix = "0.26.4"
+notify = "6.1"
 rand = "0.8.5"
 regex = "1.10.5"
 rocket = "0.5.1"
