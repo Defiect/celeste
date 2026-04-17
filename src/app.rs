@@ -658,17 +658,5 @@ fn fc_match_read(pattern: &str) -> Option<Vec<u8>> {
     if path.is_empty() {
         return None;
     }
-    match std::fs::read(path) {
-        Ok(bytes) => {
-            eprintln!(
-                "fonts: loaded '{pattern}' -> {path} ({} bytes)",
-                bytes.len()
-            );
-            Some(bytes)
-        }
-        Err(err) => {
-            eprintln!("fonts: fc-match resolved '{pattern}' to {path} but read failed: {err}");
-            None
-        }
-    }
+    std::fs::read(path).ok()
 }
