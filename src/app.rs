@@ -58,6 +58,9 @@ pub struct CelesteApp {
     /// In-progress (local_path, remote_path) inputs for the Add sync_dir form
     /// on each remote page.
     sync_dir_drafts: HashMap<RemoteId, (String, String)>,
+    /// Transient banner text (e.g. "Add remote is only in the GTK UI
+    /// today"). Cleared on the next relevant interaction.
+    banner: Option<String>,
     /// Sender handed to us by the subscription worker; sync code clones this
     /// to emit events back into the event loop.
     events_tx: Option<mpsc::Sender<SyncEvent>>,
@@ -86,6 +89,7 @@ impl Application for CelesteApp {
             sync_dir_errors: HashMap::new(),
             last_sync_at: HashMap::new(),
             sync_dir_drafts: HashMap::new(),
+            banner: None,
             events_tx: None,
         };
         let repo = flags.repo;
@@ -165,7 +169,12 @@ impl Application for CelesteApp {
                 Command::batch(cmds)
             }
             Message::Main(main_page::Msg::AddRemote) => {
-                // TODO: invoke the login flow.
+                // Until the OAuth flow is ported, send the user to the GTK
+                // version for provisioning new remotes.
+                self.banner = Some(
+                    "Adding a new remote currently requires the GTK UI — run `celeste run-gui` to log in a provider; it will show up here automatically."
+                        .to_owned(),
+                );
                 Command::none()
             }
             Message::Remote(remote_page::Msg::Back) => {
@@ -337,7 +346,14 @@ impl Application for CelesteApp {
     }
 
     fn view(&self) -> Element<'_, Message> {
-        match self
+        use iced::widget::{column as icol, container as icontainer, text as itext};
+        let banner = self.banner.as_ref().map(|msg| {
+            icontainer(itext(msg).size(13))
+                .padding(8)
+                .style(iced::theme::Container::Box)
+        });
+
+        let inner: Element<Message> = match self
             .selected
             .and_then(|id| self.remotes.iter().find(|r| r.id == id))
         {
@@ -363,6 +379,11 @@ impl Application for CelesteApp {
             }
             None => main_page::view(&self.remotes, self.selected, &self.syncing)
                 .map(Message::Main),
+        };
+
+        match banner {
+            Some(b) => icol![b, inner].spacing(8).into(),
+            None => inner,
         }
     }
 }
