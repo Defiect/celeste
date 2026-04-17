@@ -61,17 +61,28 @@ pub fn sync_local_directory<FE, FO, FD, FC>(
     };
 
     let dir_string = local_dir.to_str().unwrap().to_owned();
+    // Walking files is NOT syncing — it's just checking. Render it as
+    // a pending event so the main status line is reserved for real
+    // transfer operations.
     let update_ui_progress = |dir: &str| {
-        // If this directory no longer exists in the database (i.e. from being
-        // deleted from the `sync_dir_deletion_queue`), then do nothing.
         if !sync_dir_still_exists() {
             return;
         }
-        let msg = tr::tr!("Synchronizing '{}'…", util::fmt_home(dir));
+        emit(SyncEvent::SyncDirPending {
+            remote_id: remote.id,
+            sync_dir_id: sync_dir.id,
+            text: tr::tr!("Examining '{}'…", util::fmt_home(dir)),
+        });
+    };
+    // Real rclone transfer helpers — these drive the primary status line.
+    let emit_status = |text: String| {
+        if !sync_dir_still_exists() {
+            return;
+        }
         emit(SyncEvent::SyncDirStatus {
             remote_id: remote.id,
             sync_dir_id: sync_dir.id,
-            text: msg,
+            text,
         });
     };
     update_ui_progress(&dir_string);
@@ -235,11 +246,17 @@ pub fn sync_local_directory<FE, FO, FD, FC>(
                     is_cancelled.clone(),
                 );
                 update_ui_progress(&local_path);
-            } else if let Err(err) =
-                client.copy_to_remote(&local_path, &remote.name, &remote_path)
-            {
-                add_error(SyncError::General(local_path.clone(), err));
-                return Err(());
+            } else {
+                emit_status(tr::tr!(
+                    "Uploading '{}'…",
+                    util::fmt_home(&local_path)
+                ));
+                if let Err(err) =
+                    client.copy_to_remote(&local_path, &remote.name, &remote_path)
+                {
+                    add_error(SyncError::General(local_path.clone(), err));
+                    return Err(());
+                }
             }
 
             Ok(client.stat(&remote.name, &remote_path)
@@ -277,11 +294,17 @@ pub fn sync_local_directory<FE, FO, FD, FC>(
                     is_cancelled.clone(),
                 );
                 update_ui_progress(&local_path);
-            } else if let Err(err) =
-                client.copy_to_local(&local_path, &remote.name, &remote_path)
-            {
-                add_error(SyncError::General(remote_path.clone(), err));
-                return Err(());
+            } else {
+                emit_status(tr::tr!(
+                    "Downloading '{}'…",
+                    util::fmt_home(&local_path)
+                ));
+                if let Err(err) =
+                    client.copy_to_local(&local_path, &remote.name, &remote_path)
+                {
+                    add_error(SyncError::General(remote_path.clone(), err));
+                    return Err(());
+                }
             }
 
             Ok(())
@@ -351,6 +374,10 @@ pub fn sync_local_directory<FE, FO, FD, FC>(
             } else if remote_item.is_none()
                 && local_utc_timestamp == db_model.last_local_timestamp as u64
             {
+                emit_status(tr::tr!(
+                    "Removing '{}' locally…",
+                    util::fmt_home(&local_path)
+                ));
                 if item.path().is_dir() {
                     if let Err(err) = fs::remove_dir_all(&local_path) {
                         add_error(SyncError::General(local_path.clone(), err.to_string()));
@@ -483,16 +510,23 @@ pub fn sync_remote_directory<FE, FO, FD, FC>(
         vec![]
     };
     let update_ui_progress = |dir: &str| {
-        // If this directory no longer exists in the database (i.e. from being
-        // deleted from the `sync_dir_deletion_queue`, do nothing).
         if !sync_dir_still_exists() {
             return;
         }
-        let msg = tr::tr!("Synchronizing '{}'…", dir);
+        emit(SyncEvent::SyncDirPending {
+            remote_id: remote.id,
+            sync_dir_id: sync_dir.id,
+            text: tr::tr!("Examining '{}' on remote…", dir),
+        });
+    };
+    let emit_status = |text: String| {
+        if !sync_dir_still_exists() {
+            return;
+        }
         emit(SyncEvent::SyncDirStatus {
             remote_id: remote.id,
             sync_dir_id: sync_dir.id,
-            text: msg,
+            text,
         });
     };
     update_ui_progress(remote_dir);
@@ -625,7 +659,10 @@ pub fn sync_remote_directory<FE, FO, FD, FC>(
                         return Err(());
                     }
                 }
-
+                emit_status(tr::tr!(
+                    "Uploading '{}'…",
+                    util::fmt_home(&local_path_string)
+                ));
                 if let Err(err) = client.copy_to_remote(
                     &local_path_string,
                     &remote.name,
@@ -699,16 +736,22 @@ pub fn sync_remote_directory<FE, FO, FD, FC>(
                     is_cancelled.clone(),
                 );
                 update_ui_progress(&remote_path_string);
-            } else if let Err(err) = client.copy_to_local(
-                &local_path_string,
-                &remote.name,
-                &remote_path_string,
-            ) {
-                add_error(SyncError::General(
-                    remote_path_string.clone(),
-                    err,
+            } else {
+                emit_status(tr::tr!(
+                    "Downloading '{}'…",
+                    util::fmt_home(&local_path_string)
                 ));
-                return Err(());
+                if let Err(err) = client.copy_to_local(
+                    &local_path_string,
+                    &remote.name,
+                    &remote_path_string,
+                ) {
+                    add_error(SyncError::General(
+                        remote_path_string.clone(),
+                        err,
+                    ));
+                    return Err(());
+                }
             }
 
             Ok(())
@@ -781,6 +824,10 @@ pub fn sync_remote_directory<FE, FO, FD, FC>(
             } else if !local_path.exists()
                 && remote_timestamp == db_model.last_remote_timestamp
             {
+                emit_status(tr::tr!(
+                    "Removing '{}' on remote…",
+                    remote_path_string
+                ));
                 if let Err(err) = client.purge(&remote.name, &remote_path_string) {
                     add_error(SyncError::General(
                         remote_path_string.clone(),
