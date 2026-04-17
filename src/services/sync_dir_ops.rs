@@ -1,26 +1,11 @@
-//! Per-sync-dir sync algorithm, extracted verbatim from `launch.rs`.
-//!
-//! This module is a transitional home: the code still depends on GTK widgets
-//! through [`SyncDir`] and the callbacks plumbed via `F1`/`F2`/`F3`. A
-//! follow-up pass replaces widget mutation with [`crate::domain::events::SyncEvent`]
-//! emissions so services can move off GTK entirely.
+//! Per-sync-dir sync algorithm. Framework-agnostic: the functions take a
+//! `update_status` callback and an `add_error` callback so the caller
+//! decides how to render progress and errors (GTK widget mutation in the
+//! current launch.rs path, Iced/`SyncEvent` emissions later).
 
-use std::{
-    boxed,
-    cell::RefCell,
-    collections::HashMap,
-    fs,
-    path::Path,
-    rc::Rc,
-    time::SystemTime,
-};
+use std::{cell::RefCell, fs, path::Path, time::SystemTime};
 
-use adw::{
-    gtk::{Box, Label, ListBox, ListBoxRow},
-    Bin,
-};
 use file_lock::{FileLock, FileOptions};
-use indexmap::IndexMap;
 use sea_orm::{entity::prelude::*, ActiveValue, DatabaseConnection};
 
 use crate::{
@@ -32,15 +17,11 @@ use crate::{
         RemotesModel, SyncDirsModel, SyncItemsActiveModel, SyncItemsColumn, SyncItemsEntity,
     },
     launch::CLOSE_REQUEST,
-    traits::prelude::*,
     util,
 };
 
 /// Name of the per-sync-dir ignore file (one glob per line).
 pub static FILE_IGNORE_NAME: &str = ".sync-exclude.lst";
-
-/// `remote name -> (local_path, remote_path) -> SyncDir widget group`.
-pub type DirectoryMap = Rc<RefCell<IndexMap<String, IndexMap<(String, String), SyncDir>>>>;
 
 /// Errors surfaced to the user for a single sync-dir pass.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -52,20 +33,6 @@ pub enum SyncError {
     BothMoreCurrent(String, String),
 }
 
-/// Widget group for a single sync-dir row. The GTK coupling here is why this
-/// module can't yet move out of the GTK build — that's the next step.
-pub struct SyncDir {
-    /// The parent stack for [`Self::container`].
-    pub parent_list: ListBox,
-    pub container: ListBoxRow,
-    pub status_icon: Bin,
-    pub error_status_text: Label,
-    pub status_text: Label,
-    pub error_list: ListBox,
-    pub error_items: HashMap<SyncError, Box>,
-    pub update_error_ui: boxed::Box<dyn Fn()>,
-}
-
 // Returning an [`Err<()>`] means this directory has to stop being synced
 // because it was in the deletion queue. Any other error should return an
 // [`Ok<()>`].
@@ -74,17 +41,18 @@ pub fn sync_local_directory<
     F1: Fn(SyncError) + Clone,
     F2: Fn() + Clone,
     F3: Fn() + Clone,
+    F4: Fn(&str) + Clone,
 >(
     local_dir: &Path,
     remote: &RemotesModel,
     sync_dir: &SyncDirsModel,
     db: &DatabaseConnection,
     client: &dyn RcloneClient,
-    directory_map: &DirectoryMap,
     synced_items: &RefCell<Vec<(String, String)>>,
     add_error: F1,
     check_open_requests: F2,
     process_deletion_requests: F3,
+    update_status: F4,
 ) {
     process_deletion_requests();
 
@@ -95,12 +63,8 @@ pub fn sync_local_directory<
         if !sync_dir.exists(db) {
             return;
         }
-
-        let ptr = directory_map.get_ref();
-        let dir_pair = (sync_dir.local_path.clone(), sync_dir.remote_path.clone());
-        let item = ptr.get(&remote.name).unwrap().get(&dir_pair).unwrap();
-        let status_string = tr::tr!("Checking '{}' for changes...", util::fmt_home(dir));
-        item.status_text.set_label(&status_string);
+        let msg = tr::tr!("Checking '{}' for changes...", util::fmt_home(dir));
+        update_status(&msg);
     };
     update_ui_progress(&dir_string);
     let directory = match fs::read_dir(local_dir) {
@@ -257,11 +221,11 @@ pub fn sync_local_directory<
                     sync_dir,
                     db,
                     client,
-                    directory_map,
                     synced_items,
                     add_error.clone(),
                     check_open_requests.clone(),
                     process_deletion_requests.clone(),
+                    update_status.clone(),
                 );
                 update_ui_progress(&local_path);
             } else if let Err(err) =
@@ -299,11 +263,11 @@ pub fn sync_local_directory<
                     sync_dir,
                     db,
                     client,
-                    directory_map,
                     synced_items,
                     add_error.clone(),
                     check_open_requests.clone(),
                     process_deletion_requests.clone(),
+                    update_status.clone(),
                 );
                 update_ui_progress(&local_path);
             } else if let Err(err) =
@@ -486,17 +450,18 @@ pub fn sync_remote_directory<
     F1: Fn(SyncError) + Clone,
     F2: Fn() + Clone,
     F3: Fn() + Clone,
+    F4: Fn(&str) + Clone,
 >(
     remote_dir: &str,
     remote: &RemotesModel,
     sync_dir: &SyncDirsModel,
     db: &DatabaseConnection,
     client: &dyn RcloneClient,
-    directory_map: &DirectoryMap,
     synced_items: &RefCell<Vec<(String, String)>>,
     add_error: F1,
     check_open_requests: F2,
     process_deletion_requests: F3,
+    update_status: F4,
 ) {
     process_deletion_requests();
 
@@ -528,12 +493,8 @@ pub fn sync_remote_directory<
         if !sync_dir.exists(db) {
             return;
         }
-
-        let ptr = directory_map.get_ref();
-        let dir_pair = (sync_dir.local_path.clone(), sync_dir.remote_path.clone());
-        let item = ptr.get(&remote.name).unwrap().get(&dir_pair).unwrap();
-        let status_string = tr::tr!("Checking '{}' on remote for changes...", dir);
-        item.status_text.set_label(&status_string);
+        let msg = tr::tr!("Checking '{}' on remote for changes...", dir);
+        update_status(&msg);
     };
     update_ui_progress(remote_dir);
     let items = match client.list(&remote.name, remote_dir, false, ListFilter::All) {
@@ -639,11 +600,11 @@ pub fn sync_remote_directory<
                     sync_dir,
                     db,
                     client,
-                    directory_map,
                     synced_items,
                     add_error.clone(),
                     check_open_requests.clone(),
                     process_deletion_requests.clone(),
+                    update_status.clone(),
                 );
                 update_ui_progress(&remote_path_string);
             } else {
@@ -723,11 +684,11 @@ pub fn sync_remote_directory<
                     sync_dir,
                     db,
                     client,
-                    directory_map,
                     synced_items,
                     add_error.clone(),
                     check_open_requests.clone(),
                     process_deletion_requests.clone(),
+                    update_status.clone(),
                 );
                 update_ui_progress(&remote_path_string);
             } else if let Err(err) = client.copy_to_local(

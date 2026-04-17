@@ -46,9 +46,24 @@ use std::{
 };
 
 use crate::services::sync_dir_ops::{
-    sync_local_directory, sync_remote_directory, DirectoryMap, SyncDir, SyncError,
-    FILE_IGNORE_NAME,
+    sync_local_directory, sync_remote_directory, SyncError, FILE_IGNORE_NAME,
 };
+
+/// `remote name -> (local_path, remote_path) -> SyncDir widget group`.
+type DirectoryMap = Rc<RefCell<IndexMap<String, IndexMap<(String, String), SyncDir>>>>;
+
+/// Widget group for a single sync-dir row. Lives on the GTK main thread and
+/// is mutated directly by the main loop; the services layer never sees this.
+struct SyncDir {
+    parent_list: ListBox,
+    container: ListBoxRow,
+    status_icon: Bin,
+    error_status_text: Label,
+    status_text: Label,
+    error_list: ListBox,
+    error_items: HashMap<SyncError, Box>,
+    update_error_ui: boxed::Box<dyn Fn()>,
+}
 
 // A [`Vec`] for a deletion queue to remove remotes.
 type RemoteDeletionQueue = Rc<RefCell<Vec<String>>>;
@@ -1696,17 +1711,33 @@ pub fn launch(app: &Application, background: bool) {
                     }
                 });
 
+                let update_status = glib::clone!(
+                    @strong directory_map, @strong remote, @strong sync_dir => move |text: &str| {
+                        let ptr = directory_map.get_ref();
+                        let dir_pair = (
+                            sync_dir.local_path.clone(),
+                            sync_dir.remote_path.clone(),
+                        );
+                        if let Some(item) = ptr
+                            .get(&remote.name)
+                            .and_then(|m| m.get(&dir_pair))
+                        {
+                            item.status_text.set_label(text);
+                        }
+                    }
+                );
+
                 sync_local_directory(
                     Path::new(&sync_dir.local_path),
                     &remote,
                     &sync_dir,
                     &db,
                     &rclone_client,
-                    &directory_map,
                     &synced_items,
                     &add_error,
                     &check_open_requests,
                     &process_deletion_requests,
+                    &update_status,
                 );
                 sync_remote_directory(
                     &sync_dir.remote_path,
@@ -1714,11 +1745,11 @@ pub fn launch(app: &Application, background: bool) {
                     &sync_dir,
                     &db,
                     &rclone_client,
-                    &directory_map,
                     &synced_items,
                     &add_error,
                     &check_open_requests,
                     &process_deletion_requests,
+                    &update_status,
                 );
 
                 // If a close request was sent in, quit.
