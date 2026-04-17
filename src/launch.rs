@@ -202,6 +202,11 @@ pub fn launch(app: &Application, background: bool) {
         return;
     }
 
+    // Start the instant-sync filesystem watcher. It queries the DB for every
+    // enabled remote with instant_sync=1 and pushes their id into
+    // REFRESH_REQUESTS whenever a file under their sync_dirs changes.
+    crate::infrastructure::fs_watcher::spawn(db.clone(), REFRESH_REQUESTS.clone());
+
     // Get our remotes.
     let mut remotes = util::await_future(RemotesEntity::find().all(&db)).unwrap();
 
