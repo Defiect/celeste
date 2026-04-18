@@ -20,7 +20,7 @@
 //!    reading) and silently skip in that case.
 
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeSet, HashMap, HashSet},
     fs,
     path::Path,
     time::{Instant, SystemTime},
@@ -89,6 +89,13 @@ pub struct Snapshot {
     pub remote: HashMap<String, RemoteItem>,
     pub local: HashMap<String, LocalEntry>,
     pub db: HashMap<String, SyncItem>,
+    /// Remote-key paths whose local walk hit an I/O error (read_dir,
+    /// file_type, or filename decoding failed). "Missing from `local`"
+    /// under any of these ancestors is *not* a deletion signal — it's
+    /// a walk glitch (most often a concurrent writer, e.g. Syncthing
+    /// racing Celeste on the same tree). The planner refuses to fire
+    /// `DeleteRemote` for anything whose ancestor chain lands here.
+    pub walk_unreliable: HashSet<String>,
 }
 
 impl Snapshot {
@@ -129,49 +136,105 @@ impl Snapshot {
             .collect();
 
         // 4. Local walk.
-        let local = walk_local(sync_dir);
+        let (local, walk_unreliable) = walk_local(sync_dir);
 
-        Ok(Snapshot { remote, local, db })
+        Ok(Snapshot {
+            remote,
+            local,
+            db,
+            walk_unreliable,
+        })
     }
 }
 
-fn walk_local(sync_dir: &SyncDir) -> HashMap<String, LocalEntry> {
+fn walk_local(sync_dir: &SyncDir) -> (HashMap<String, LocalEntry>, HashSet<String>) {
     let root = Path::new(&sync_dir.local_path);
     let mut out: HashMap<String, LocalEntry> = HashMap::new();
-    walk_dir(root, sync_dir, &mut out);
-    out
+    let mut unreliable: HashSet<String> = HashSet::new();
+    walk_dir(
+        root,
+        sync_dir,
+        &mut out,
+        &mut unreliable,
+        &sync_dir.remote_path,
+    );
+    (out, unreliable)
 }
 
+/// Walks `dir`, populating `out` with every entry and recording any I/O
+/// failure in `unreliable`. `current_dir_key` is the remote-key path of
+/// `dir` itself (empty string for the root when `sync_dir.remote_path`
+/// is empty). All errors are logged to stderr so the next incident is
+/// traceable without having to reproduce it under a debugger.
 fn walk_dir(
     dir: &Path,
     sync_dir: &SyncDir,
     out: &mut HashMap<String, LocalEntry>,
+    unreliable: &mut HashSet<String>,
+    current_dir_key: &str,
 ) {
-    let Ok(read) = fs::read_dir(dir) else { return };
-    for entry in read.flatten() {
-        let path = entry.path();
-        let file_type = match entry.file_type() {
-            Ok(t) => t,
-            Err(_) => continue,
+    let read = match fs::read_dir(dir) {
+        Ok(r) => r,
+        Err(err) => {
+            eprintln!(
+                "sync: walk read_dir failed for '{}' (key='{current_dir_key}'): {err}; marking subtree unreliable.",
+                dir.display(),
+            );
+            unreliable.insert(current_dir_key.to_owned());
+            return;
+        }
+    };
+    for entry in read {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(err) => {
+                eprintln!(
+                    "sync: walk entry iteration failed under '{}' (key='{current_dir_key}'): {err}; marking subtree unreliable.",
+                    dir.display(),
+                );
+                unreliable.insert(current_dir_key.to_owned());
+                continue;
+            }
         };
         let name = match entry.file_name().into_string() {
             Ok(n) => n,
-            Err(_) => continue,
+            Err(raw) => {
+                eprintln!(
+                    "sync: walk file_name non-UTF8 under '{}' (bytes={:?}); marking subtree unreliable.",
+                    dir.display(),
+                    raw,
+                );
+                unreliable.insert(current_dir_key.to_owned());
+                continue;
+            }
         };
         if crate::services::editor_temp::is_editor_temp(&name) {
             continue;
         }
-        let Some(local_path_str) = path.to_str() else { continue };
-        let relative = match local_path_str
-            .strip_prefix(&format!("{}/", sync_dir.local_path))
-        {
-            Some(r) => r.to_owned(),
-            None => continue,
-        };
-        let remote_key = if sync_dir.remote_path.is_empty() {
-            relative
+        let remote_key = if current_dir_key.is_empty() {
+            name.clone()
         } else {
-            format!("{}/{}", sync_dir.remote_path, relative)
+            format!("{current_dir_key}/{name}")
+        };
+        let file_type = match entry.file_type() {
+            Ok(t) => t,
+            Err(err) => {
+                eprintln!(
+                    "sync: walk file_type failed for '{}' (key='{remote_key}'): {err}; marking entry unreliable.",
+                    entry.path().display(),
+                );
+                unreliable.insert(remote_key);
+                continue;
+            }
+        };
+        let path = entry.path();
+        let Some(local_path_str) = path.to_str() else {
+            eprintln!(
+                "sync: walk path non-UTF8 for '{}' (key='{remote_key}'); marking entry unreliable.",
+                path.display(),
+            );
+            unreliable.insert(remote_key);
+            continue;
         };
         let mtime_secs = entry
             .metadata()
@@ -181,7 +244,7 @@ fn walk_dir(
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
         out.insert(
-            remote_key,
+            remote_key.clone(),
             LocalEntry {
                 absolute_path: local_path_str.to_owned(),
                 is_dir: file_type.is_dir(),
@@ -189,7 +252,7 @@ fn walk_dir(
             },
         );
         if file_type.is_dir() {
-            walk_dir(&path, sync_dir, out);
+            walk_dir(&path, sync_dir, out, unreliable, &remote_key);
         }
     }
 }
@@ -303,6 +366,31 @@ fn parent_has_tracked_sibling<T>(
     !any_expected
 }
 
+/// Does `path`, or any of its ancestor directories up to the sync-dir
+/// root, appear in `unreliable`? Used to refuse `DeleteRemote` when the
+/// local walk reported an I/O error anywhere along the chain — the
+/// "local is missing" signal isn't trustworthy under a broken walk,
+/// regardless of how healthy the siblings look.
+fn ancestor_in_set(path: &str, unreliable: &HashSet<String>) -> bool {
+    if unreliable.is_empty() {
+        return false;
+    }
+    if unreliable.contains(path) {
+        return true;
+    }
+    let mut p = path;
+    loop {
+        let parent = parent_of(p);
+        if unreliable.contains(parent) {
+            return true;
+        }
+        if parent == p {
+            return false;
+        }
+        p = parent;
+    }
+}
+
 fn phase(a: &Action) -> u8 {
     match a {
         Action::Upload { is_dir: true, .. } | Action::Download { is_dir: true, .. } => 0,
@@ -399,12 +487,24 @@ fn plan_one(
                 is_dir: l.is_dir,
             })
         }
-        // Was tracked, local gone — mirror delete remotely. Symmetric
-        // sibling check on the local walk: refuse to propagate a delete
-        // when the walk for this parent shows no DB-tracked siblings.
-        // Catches concurrent-writer (e.g. Syncthing) races that empty
-        // a subtree of the walk mid-pass.
+        // Was tracked, local gone — mirror delete remotely. Two
+        // guards before we fire anything destructive:
+        //   1. Ancestor reliability. If the local walk reported an
+        //      I/O error anywhere in this path's chain, the absence
+        //      isn't a deletion signal — it's a walk glitch (most
+        //      commonly a concurrent writer like Syncthing racing
+        //      Celeste mid-readdir). Refuse.
+        //   2. Sibling presence. Weaker backstop for paths whose
+        //      ancestors look healthy but whose parent holds other
+        //      DB-tracked rows that didn't make the walk either.
         (None, Some(r), Some(_)) => {
+            if ancestor_in_set(&r.path, &snapshot.walk_unreliable) {
+                eprintln!(
+                    "sync: SKIP DeleteRemote for '{}' — local walk reported an error on this path or an ancestor; preserving remote copy.",
+                    r.path,
+                );
+                return None;
+            }
             if !parent_has_tracked_sibling(
                 &r.path,
                 &snapshot.local,

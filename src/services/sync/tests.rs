@@ -517,6 +517,99 @@ fn delete_remote_skipped_when_parent_walk_has_no_db_siblings() {
     }
 }
 
+/// A walk I/O error on a subtree (simulated via chmod 000 so read_dir
+/// fails) must NOT cascade into `DeleteRemote` for items under that
+/// subtree. The unreliable set is the primary guard; the pass ends
+/// without destructive calls to the client.
+///
+/// This is the regression for the 2026-04-18 ProtonDrive incident
+/// where Syncthing was racing Celeste on the same tree: an entry's
+/// `file_type()` returned ENOENT mid-walk, the entry got silently
+/// dropped, the child appeared "missing locally", and `DeleteRemote`
+/// trashed both.
+#[test]
+fn walk_read_dir_error_blocks_delete_remote_under_subtree() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = TempDir::new("sync_walk_err");
+    // Layout: one healthy file at root, one unreadable subtree with a
+    // tracked child. The unreadable subtree is the simulation of the
+    // failure mode.
+    let healthy = tmp.write_file("ok.txt", b"x");
+    touch_mtime(&healthy, 1_700_000_000);
+    let trapped_dir = tmp.write_file("trap/child.txt", b"x");
+    touch_mtime(&trapped_dir, 1_700_000_000);
+    let trap_dir_path = tmp.path.join("trap");
+    fs::set_permissions(&trap_dir_path, fs::Permissions::from_mode(0o000)).unwrap();
+    // Cleanup guard — restore so TempDir can be dropped even if the
+    // assertion below panics.
+    struct Restore(PathBuf);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let _ = fs::set_permissions(&self.0, fs::Permissions::from_mode(0o755));
+        }
+    }
+    let _restore = Restore(trap_dir_path.clone());
+
+    let repo = FakeRepo::new();
+    repo.insert_item(
+        SyncDirId(1),
+        healthy.to_str().unwrap(),
+        "ok.txt",
+        1_700_000_000,
+        1_700_000_000,
+    );
+    repo.insert_item(
+        SyncDirId(1),
+        trapped_dir.to_str().unwrap(),
+        "trap/child.txt",
+        1_700_000_000,
+        1_700_000_000,
+    );
+
+    let client = FakeRclone::default();
+    client.set_list(
+        "",
+        Ok(vec![
+            remote_item("ok.txt", false, 1_700_000_000),
+            remote_item("trap", true, 1_700_000_000),
+            remote_item("trap/child.txt", false, 1_700_000_000),
+        ]),
+    );
+
+    let (outcome, _events) = run_full(&tmp, &repo, &client);
+    assert_eq!(outcome, Outcome::Synced);
+    assert!(
+        client.delete_file_calls.lock().unwrap().is_empty(),
+        "no file deletes may fire while the walk reported an error on the subtree",
+    );
+    assert!(
+        client.purge_calls.lock().unwrap().is_empty(),
+        "no directory purges may fire either",
+    );
+    assert!(
+        repo.has_item(trapped_dir.to_str().unwrap(), "trap/child.txt"),
+        "DB row for trapped child must survive the pass",
+    );
+}
+
+/// `ancestor_in_set` walks up to the empty-string root. Regression for
+/// the edge where the unreliable flag is on the root itself.
+#[test]
+fn ancestor_in_set_walks_up_to_root() {
+    let mut set = HashSet::new();
+    assert!(!ancestor_in_set("a/b/c", &set));
+    set.insert("a/b".to_owned());
+    assert!(ancestor_in_set("a/b/c", &set));
+    assert!(ancestor_in_set("a/b", &set));
+    assert!(!ancestor_in_set("a", &set));
+
+    let mut root_set = HashSet::new();
+    root_set.insert(String::new());
+    assert!(ancestor_in_set("any/path", &root_set));
+    assert!(ancestor_in_set("a", &root_set));
+}
+
 /// Editor swap files are filtered from the local walk — never show up
 /// as new items.
 #[test]
