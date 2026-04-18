@@ -22,9 +22,9 @@ impl MigrationTrait for Migration {
                 last_sync_status TEXT NULL,
                 -- Which adapter drives this remote: "rclone" (default,
                 -- via librclone's backends) or "native-proton" (our
-                -- own ProtonDrive client in native-go/). Populated
-                -- when the remote is added; never changes for an
-                -- existing row.
+                -- own ProtonDrive client in native-go/). Stamped when
+                -- the remote is added; never mutated on an existing
+                -- row.
                 backend TEXT NOT NULL DEFAULT 'rclone',
                 -- Path to the persisted session blob for native-
                 -- backend remotes. NULL for rclone-backed remotes
