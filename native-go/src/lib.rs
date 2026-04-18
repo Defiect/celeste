@@ -16,7 +16,13 @@ pub mod ffi {
     include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 }
 
-use std::{ffi::CStr, os::raw::c_char};
+use std::{
+    ffi::{CStr, CString},
+    os::raw::c_char,
+    path::Path,
+};
+
+use serde::{Deserialize, Serialize};
 
 /// Initialize the Go runtime, rclone's librclone, and prepare the
 /// native Proton client for use. Must be called once at process
@@ -65,15 +71,166 @@ pub fn rpc<S1: Into<String>, S2: Into<String>>(method: S1, input: S2) -> Result<
     }
 }
 
-/// Phase 1 smoke test for the native ProtonDrive surface. Exercises
-/// the cgo boundary to `go-proton-api` without making any network
-/// calls. Returns an identity string; later phases add real session /
-/// list / upload / download / trash entry points.
+/// Smoke ping across the cgo boundary to `go-proton-api`. Constructs
+/// a Manager on the Go side and throws it away; no network work. Used
+/// during startup to verify the combined Go archive linked correctly.
 pub fn proton_drive_version() -> String {
-    let raw = unsafe { ffi::ProtonDrive_Version() };
+    read_c_string(unsafe { ffi::ProtonDrive_Version() })
+}
+
+/// Native ProtonDrive client — safe wrappers around the `ProtonDrive_*`
+/// cgo entry points.
+pub mod proton {
+    use super::{call_json, ffi, invoke_raw};
+    use std::path::Path;
+
+    /// Credentials required for a fresh login. `mailbox_password` is
+    /// only needed for two-password accounts; `two_fa` only for those
+    /// with TOTP enabled — when required and missing, `login` returns
+    /// `Err` with a descriptive message.
+    #[derive(Clone, Debug, Default, serde::Serialize)]
+    pub struct LoginParams {
+        pub username: String,
+        pub password: String,
+        #[serde(skip_serializing_if = "String::is_empty")]
+        pub mailbox_password: String,
+        #[serde(skip_serializing_if = "String::is_empty")]
+        pub two_fa: String,
+    }
+
+    /// Reusable credential — the JSON shape stored on disk and handed
+    /// back from `login` / `resume`. `uid` is the session handle used
+    /// by subsequent operations.
+    #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+    pub struct ReusableCredential {
+        pub uid: String,
+        pub access_token: String,
+        pub refresh_token: String,
+        pub salted_key_pass: String,
+    }
+
+    /// Log in to ProtonDrive with username + password (+ optional
+    /// TOTP / mailbox password). Returns the reusable credential on
+    /// success; error string on failure (bad password, missing 2FA,
+    /// transport error, etc.).
+    pub fn login(params: &LoginParams) -> Result<ReusableCredential, String> {
+        call_json::<_, ReusableCredential>(
+            |payload| unsafe { ffi::ProtonDrive_Login(payload) },
+            params,
+        )
+    }
+
+    /// Log out — revokes the session server-side AND drops local state.
+    pub fn logout(uid: &str) -> Result<(), String> {
+        invoke_raw(
+            |payload| unsafe { ffi::ProtonDrive_Logout(payload) },
+            &serde_json::json!({ "uid": uid }),
+        )?;
+        Ok(())
+    }
+
+    /// Persist the named session's reusable credential blob to disk.
+    /// File is written with 0600 perms (Unix) by the Go side.
+    pub fn save_session(uid: &str, path: &Path) -> Result<(), String> {
+        invoke_raw(
+            |payload| unsafe { ffi::ProtonDrive_SaveSession(payload) },
+            &serde_json::json!({
+                "uid": uid,
+                "path": path.to_string_lossy(),
+            }),
+        )?;
+        Ok(())
+    }
+
+    /// Rehydrate a session from a credential blob previously written
+    /// by `save_session`. Returns the credential so the caller can
+    /// pick up the `uid`.
+    pub fn resume_session(path: &Path) -> Result<ReusableCredential, String> {
+        call_json::<_, ReusableCredential>(
+            |payload| unsafe { ffi::ProtonDrive_ResumeSession(payload) },
+            &serde_json::json!({ "path": path.to_string_lossy() }),
+        )
+    }
+
+    /// Internal: the caller-visible error type for every `ProtonDrive_*`
+    /// entry point is just a String, to keep the FFI boundary narrow.
+    /// Errors-as-strings leaves room to add structured variants later
+    /// without churning the Rust surface.
+    ///
+    /// (Re-exported Envelope type so downstream users can write their
+    /// own FFI wrappers on top of the raw bindings if needed.)
+    pub use super::Envelope as RawEnvelope;
+    pub use super::call_json as raw_call_json;
+    pub use super::invoke_raw as raw_invoke;
+}
+
+// ----------------- internal plumbing -----------------
+
+/// The JSON envelope every `ProtonDrive_*` shim returns. `data` is
+/// absent on failure; `error` is absent on success.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct Envelope {
+    pub ok: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub error: String,
+}
+
+/// Call a `ProtonDrive_*` shim that takes a JSON payload and returns
+/// a JSON envelope — parse the envelope into `T`, returning the
+/// server-side error string as `Err` when the shim reports failure.
+pub fn call_json<P, T>(
+    shim: impl FnOnce(*mut c_char) -> *mut c_char,
+    params: &P,
+) -> Result<T, String>
+where
+    P: Serialize,
+    T: for<'de> Deserialize<'de>,
+{
+    let value = invoke_raw(shim, params)?;
+    let Some(value) = value else {
+        return Err("shim returned OK but no data to deserialise".to_owned());
+    };
+    serde_json::from_value(value).map_err(|e| format!("invalid response shape: {e}"))
+}
+
+/// Call a `ProtonDrive_*` shim and return the raw `data` field of its
+/// envelope (Some on success with payload, None on success without).
+pub fn invoke_raw<P>(
+    shim: impl FnOnce(*mut c_char) -> *mut c_char,
+    params: &P,
+) -> Result<Option<serde_json::Value>, String>
+where
+    P: Serialize,
+{
+    let json = serde_json::to_string(params).map_err(|e| e.to_string())?;
+    let c_params = CString::new(json).map_err(|e| e.to_string())?;
+    let raw = shim(c_params.as_ptr() as *mut c_char);
+    let envelope_json = read_c_string(raw);
+    let envelope: Envelope = serde_json::from_str(&envelope_json)
+        .map_err(|e| format!("invalid envelope from Go: {e} — body was: {envelope_json}"))?;
+    if !envelope.ok {
+        return Err(envelope.error);
+    }
+    Ok(envelope.data)
+}
+
+/// Read a `*mut c_char` returned from the Go side and free it via
+/// `RcloneFreeString` (which maps to the same allocator Go used to
+/// `C.CString` the bytes). Never panics; non-UTF-8 bytes are replaced.
+fn read_c_string(raw: *mut c_char) -> String {
+    if raw.is_null() {
+        return String::new();
+    }
     let out = unsafe { CStr::from_ptr(raw) }
         .to_string_lossy()
         .into_owned();
     unsafe { ffi::RcloneFreeString(raw) };
     out
 }
+
+// `Path` / `Serialize` need to be in scope somewhere or unused-imports
+// screams; re-assert here.
+#[allow(dead_code)]
+fn _path_used_somewhere(_p: &Path) {}

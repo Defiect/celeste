@@ -1,0 +1,321 @@
+package drive
+
+// Session lifecycle for the native Proton Drive client. Handles the
+// login flow (username + password [+ TOTP]), keyring unlock, and
+// token persistence in a small on-disk file Celeste owns. Ported and
+// trimmed from Proton-API-Bridge/common/user.go + keyring.go.
+//
+// Phase 2 scope: in-memory session + opaque UID handle exposed over
+// cgo, plus save/load of the reusable credential blob. Subsequent
+// phases attach Drive operations (list, upload, download, trash) to
+// the Session type.
+
+import (
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"os"
+	"sync"
+
+	"github.com/ProtonMail/go-proton-api"
+	"github.com/ProtonMail/gopenpgp/v2/crypto"
+)
+
+// AppVersion sent in the `AppVersion` header for every Proton API
+// call. Proton's server validates the platform prefix against a
+// whitelist; we follow rclone's proven format and piggyback on the
+// `macos-drive` platform slot with our own version + tag so the
+// upstream-side rate-limit telemetry still distinguishes Celeste
+// from rclone.
+const AppVersion = "macos-drive@0.1.0+celeste-native"
+
+// Errors that can surface through the FFI boundary. Message text is
+// the only thing the Rust side sees — keep them short and actionable.
+var (
+	ErrUsernamePasswordRequired = errors.New("username and password are required")
+	ErrMailboxPasswordRequired  = errors.New("this account uses two-password mode; a mailbox password is required")
+	ErrTwoFARequired            = errors.New("this account requires a 2FA code")
+	ErrFailedToUnlockUserKeys   = errors.New("failed to unlock user keys with the provided password")
+	ErrSessionNotFound          = errors.New("no active session for the given UID")
+	ErrInvalidSessionFile       = errors.New("session file is missing or malformed")
+)
+
+// Session owns everything we need to make authenticated calls to
+// Proton Drive. The Manager holds the HTTP client + rate limit state;
+// the Client holds the authenticated session. Keyrings are unlocked
+// and cached in memory.
+type Session struct {
+	m *proton.Manager
+	c *proton.Client
+
+	// Reusable credential blob. Safe to persist — the saltedKeyPass
+	// is the only crypto-sensitive piece and base64 of that was the
+	// storage format Bridge used.
+	UID           string
+	AccessToken   string
+	RefreshToken  string
+	SaltedKeyPass string // base64(saltedKeyPass bytes)
+
+	// In-memory unlocked keyrings. Cleared on Close().
+	userKR  *crypto.KeyRing
+	addrKRs map[string]*crypto.KeyRing
+	addrs   map[string]proton.Address
+}
+
+// LoginParams is the input to [Login] / FFI entry point.
+type LoginParams struct {
+	Username        string `json:"username"`
+	Password        string `json:"password"`
+	MailboxPassword string `json:"mailbox_password,omitempty"`
+	TwoFA           string `json:"two_fa,omitempty"`
+}
+
+// Login performs a fresh username+password (+ optional TOTP / mailbox
+// password) authentication and decrypts the user / address keyrings.
+// Caller may immediately Save() the returned session to persist
+// tokens.
+func Login(ctx context.Context, p LoginParams) (*Session, error) {
+	if p.Username == "" || p.Password == "" {
+		return nil, ErrUsernamePasswordRequired
+	}
+	m := proton.New(proton.WithAppVersion(AppVersion))
+	c, auth, err := m.NewClientWithLogin(ctx, p.Username, []byte(p.Password))
+	if err != nil {
+		m.Close()
+		return nil, err
+	}
+	if auth.TwoFA.Enabled&proton.HasTOTP != 0 {
+		if p.TwoFA == "" {
+			c.Close()
+			m.Close()
+			return nil, ErrTwoFARequired
+		}
+		if err := c.Auth2FA(ctx, proton.Auth2FAReq{TwoFactorCode: p.TwoFA}); err != nil {
+			c.Close()
+			m.Close()
+			return nil, err
+		}
+	}
+
+	var keyPass []byte
+	if auth.PasswordMode == proton.TwoPasswordMode {
+		if p.MailboxPassword == "" {
+			c.Close()
+			m.Close()
+			return nil, ErrMailboxPasswordRequired
+		}
+		keyPass = []byte(p.MailboxPassword)
+	} else {
+		keyPass = []byte(p.Password)
+	}
+
+	userKR, addrKRs, addrs, saltedKeyPass, err := unlockAccount(ctx, c, keyPass, nil)
+	if err != nil {
+		c.Close()
+		m.Close()
+		return nil, err
+	}
+
+	return &Session{
+		m:             m,
+		c:             c,
+		UID:           auth.UID,
+		AccessToken:   auth.AccessToken,
+		RefreshToken:  auth.RefreshToken,
+		SaltedKeyPass: base64.StdEncoding.EncodeToString(saltedKeyPass),
+		userKR:        userKR,
+		addrKRs:       addrKRs,
+		addrs:         addrs,
+	}, nil
+}
+
+// Resume rebuilds a Session from a previously-saved credential blob
+// without going through NewClientWithLogin. The saltedKeyPass is
+// reused to skip the password/salt dance.
+func Resume(ctx context.Context, cred ReusableCredential) (*Session, error) {
+	saltedKeyPass, err := base64.StdEncoding.DecodeString(cred.SaltedKeyPass)
+	if err != nil {
+		return nil, err
+	}
+	m := proton.New(proton.WithAppVersion(AppVersion))
+	c := m.NewClient(cred.UID, cred.AccessToken, cred.RefreshToken)
+	userKR, addrKRs, addrs, _, err := unlockAccount(ctx, c, nil, saltedKeyPass)
+	if err != nil {
+		c.Close()
+		m.Close()
+		return nil, err
+	}
+	return &Session{
+		m:             m,
+		c:             c,
+		UID:           cred.UID,
+		AccessToken:   cred.AccessToken,
+		RefreshToken:  cred.RefreshToken,
+		SaltedKeyPass: cred.SaltedKeyPass,
+		userKR:        userKR,
+		addrKRs:       addrKRs,
+		addrs:         addrs,
+	}, nil
+}
+
+// unlockAccount mirrors Bridge's getAccountKRs: fetches user +
+// addresses, derives saltedKeyPass from keyPass when needed, and
+// unlocks the full keyring set. Exactly one of keyPass /
+// saltedKeyPass must be non-nil.
+func unlockAccount(
+	ctx context.Context,
+	c *proton.Client,
+	keyPass, saltedKeyPass []byte,
+) (*crypto.KeyRing, map[string]*crypto.KeyRing, map[string]proton.Address, []byte, error) {
+	user, err := c.GetUser(ctx)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	addrsArr, err := c.GetAddresses(ctx)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	if saltedKeyPass == nil {
+		if keyPass == nil {
+			return nil, nil, nil, nil, errors.New("either keyPass or saltedKeyPass must be set")
+		}
+		salts, err := c.GetSalts(ctx)
+		if err != nil {
+			return nil, nil, nil, nil, err
+		}
+		saltedKeyPass, err = salts.SaltForKey(keyPass, user.Keys.Primary().ID)
+		if err != nil {
+			return nil, nil, nil, nil, err
+		}
+	}
+	userKR, addrKRs, err := proton.Unlock(user, addrsArr, saltedKeyPass, nil)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	if userKR.CountDecryptionEntities() == 0 {
+		return nil, nil, nil, nil, ErrFailedToUnlockUserKeys
+	}
+	addrs := make(map[string]proton.Address, len(addrsArr))
+	for _, a := range addrsArr {
+		addrs[a.Email] = a
+	}
+	return userKR, addrKRs, addrs, saltedKeyPass, nil
+}
+
+// ReusableCredential is the persisted session blob. JSON-encoded on
+// disk. Contains the fields needed to call Resume() later without
+// re-prompting the user.
+type ReusableCredential struct {
+	UID           string `json:"uid"`
+	AccessToken   string `json:"access_token"`
+	RefreshToken  string `json:"refresh_token"`
+	SaltedKeyPass string `json:"salted_key_pass"`
+}
+
+// AsCredential returns the persistable subset of the session.
+func (s *Session) AsCredential() ReusableCredential {
+	return ReusableCredential{
+		UID:           s.UID,
+		AccessToken:   s.AccessToken,
+		RefreshToken:  s.RefreshToken,
+		SaltedKeyPass: s.SaltedKeyPass,
+	}
+}
+
+// Save writes the session's reusable credential to `path`. Permissions
+// are 0600 — only Celeste's user should be able to read the file.
+func (s *Session) Save(path string) error {
+	data, err := json.MarshalIndent(s.AsCredential(), "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0600)
+}
+
+// LoadCredential reads a credential blob from disk. Caller passes it
+// to Resume() to rehydrate a session.
+func LoadCredential(path string) (ReusableCredential, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ReusableCredential{}, err
+	}
+	var cred ReusableCredential
+	if err := json.Unmarshal(data, &cred); err != nil {
+		return ReusableCredential{}, ErrInvalidSessionFile
+	}
+	if cred.UID == "" || cred.AccessToken == "" || cred.RefreshToken == "" || cred.SaltedKeyPass == "" {
+		return ReusableCredential{}, ErrInvalidSessionFile
+	}
+	return cred, nil
+}
+
+// Close tears down the session's clients and wipes unlocked keyrings
+// from memory. Safe to call multiple times.
+func (s *Session) Close() {
+	if s.userKR != nil {
+		s.userKR.ClearPrivateParams()
+		s.userKR = nil
+	}
+	for _, kr := range s.addrKRs {
+		kr.ClearPrivateParams()
+	}
+	s.addrKRs = nil
+	s.addrs = nil
+	if s.c != nil {
+		s.c.Close()
+		s.c = nil
+	}
+	if s.m != nil {
+		s.m.Close()
+		s.m = nil
+	}
+}
+
+// Logout revokes the session on Proton's side (invalidating the
+// refresh token) and then Close()s local state.
+func (s *Session) Logout(ctx context.Context) error {
+	if s.c == nil {
+		return nil
+	}
+	err := s.c.AuthDelete(ctx)
+	s.Close()
+	return err
+}
+
+// -----------------------------------------------------------------
+// Session registry — keyed by UID so cgo callers can hand a short
+// string handle across the FFI boundary instead of a raw pointer.
+
+var (
+	registryMu sync.RWMutex
+	registry   = make(map[string]*Session)
+)
+
+// Register stores a session and returns its UID.
+func Register(s *Session) string {
+	registryMu.Lock()
+	defer registryMu.Unlock()
+	registry[s.UID] = s
+	return s.UID
+}
+
+// Lookup retrieves a session by UID. Returns (nil, ErrSessionNotFound)
+// if the session isn't registered.
+func Lookup(uid string) (*Session, error) {
+	registryMu.RLock()
+	defer registryMu.RUnlock()
+	s, ok := registry[uid]
+	if !ok {
+		return nil, ErrSessionNotFound
+	}
+	return s, nil
+}
+
+// Unregister removes a session from the registry. Does NOT call
+// Close() — caller is responsible for cleanup.
+func Unregister(uid string) {
+	registryMu.Lock()
+	defer registryMu.Unlock()
+	delete(registry, uid)
+}
