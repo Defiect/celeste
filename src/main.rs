@@ -24,10 +24,18 @@ use crate::{
             repository::SeaOrmRepository,
         },
         rclone::LibrcloneClient,
+        stderr_capture,
     },
 };
 
 fn main() {
+    // Tap stderr before librclone's Go runtime can grab it — that's the
+    // only way to catch the `WARN[...] Too many requests` lines rclone's
+    // backends emit when they silently retry a 429. Falls back to a no-op
+    // if the platform can't hand us a pipe; sync keeps working, we just
+    // lose rate-limit detection for the run.
+    let _stderr = stderr_capture::install();
+
     // rclone config file lives next to our SQLite DB in ~/.config/celeste.
     let config_dir = util::get_config_dir();
     std::fs::create_dir_all(&config_dir).expect("failed to create config dir");

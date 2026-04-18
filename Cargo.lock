@@ -741,6 +741,7 @@ dependencies = [
  "futures",
  "glob",
  "iced",
+ "libc",
  "librclone",
  "sea-orm",
  "sea-orm-migration",

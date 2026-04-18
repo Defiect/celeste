@@ -1,10 +1,10 @@
 //! Per-remote detail page: header with Refresh now, (future) sync-dirs list,
 //! and the Sync Settings panel.
 
-use std::collections::HashMap;
+use std::{collections::HashMap, time::Duration};
 
 use iced::{
-    widget::{button, column, container, row, scrollable, text_input, Rule, Space},
+    widget::{button, column, container, row, scrollable, text_input, tooltip, Rule, Space},
     Element, Length,
 };
 
@@ -37,10 +37,45 @@ pub fn view<'a>(
     pending: &'a HashMap<SyncDirId, String>,
     errors: &'a HashMap<SyncDirId, Vec<SyncError>>,
     draft: (&'a str, &'a str),
+    next_sync_eta: Option<(Duration, bool)>,
 ) -> Element<'a, Msg> {
+    let countdown: Element<'a, Msg> = match next_sync_eta {
+        Some((remaining, in_backoff)) => {
+            let label = format!("next sync in {}", format_duration(remaining));
+            let countdown_text = text(label).size(12);
+            if in_backoff {
+                tooltip(
+                    row![
+                        countdown_text,
+                        Space::with_width(Length::Fixed(4.0)),
+                        text("⚠").size(14),
+                    ]
+                    .align_items(iced::Alignment::Center),
+                    text(
+                        "Backoff active — the provider returned rate-limit \
+                         warnings on the last pass, so Celeste will skip \
+                         the next cycles before trying again. The more \
+                         consecutive degraded passes, the more cycles are \
+                         skipped. Resets on the next clean pass.",
+                    )
+                    .size(12),
+                    tooltip::Position::Bottom,
+                )
+                .gap(8)
+                .padding(8)
+                .into()
+            } else {
+                countdown_text.into()
+            }
+        }
+        None => text("paused").size(12).into(),
+    };
+
     let header = row![
         button(text("←")).on_press(Msg::Back),
         text(&remote.name).size(22),
+        Space::with_width(Length::Fixed(12.0)),
+        countdown,
         Space::with_width(Length::Fill),
         button(text("Refresh now")).on_press(Msg::RefreshNow(remote.id)),
         button(text("Delete remote"))
@@ -124,4 +159,38 @@ pub fn view<'a>(
     )
     .padding(PAGE_PADDING)
     .into()
+}
+
+/// Humanise a `Duration` for the sync countdown: "0s" when we're due
+/// right now, compact "Xs" / "XmYs" / "XhYm" otherwise.
+fn format_duration(d: Duration) -> String {
+    let secs = d.as_secs();
+    if secs == 0 {
+        return "0s".to_owned();
+    }
+    let minutes = secs / 60;
+    let seconds = secs % 60;
+    let hours = minutes / 60;
+    let minutes_rem = minutes % 60;
+    if hours > 0 {
+        format!("{hours}h{minutes_rem:02}m")
+    } else if minutes > 0 {
+        format!("{minutes}m{seconds:02}s")
+    } else {
+        format!("{seconds}s")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_duration;
+    use std::time::Duration;
+
+    #[test]
+    fn format_duration_shapes() {
+        assert_eq!(format_duration(Duration::ZERO), "0s");
+        assert_eq!(format_duration(Duration::from_secs(9)), "9s");
+        assert_eq!(format_duration(Duration::from_secs(65)), "1m05s");
+        assert_eq!(format_duration(Duration::from_secs(3_900)), "1h05m");
+    }
 }

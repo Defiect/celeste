@@ -63,6 +63,40 @@ impl ProviderKind {
             _ => None,
         }
     }
+
+    /// Substrings that, when spotted in rclone's stderr during a pass,
+    /// mark the pass as *degraded* — the backend was internally retrying
+    /// rate-limits and any `Ok(...)` it returned may reflect partial
+    /// data. All substrings must match within the same log line.
+    ///
+    /// Return an empty slice for backends we don't have a marker set
+    /// for yet; those passes can never be flagged degraded and will
+    /// run as before.
+    pub fn rate_limit_markers(self) -> &'static [&'static [&'static str]] {
+        match self {
+            // go-proton-api prints `status=429` alongside its package
+            // tag on every retry; Proton's own API also surfaces
+            // "Too many recent API requests".
+            ProviderKind::ProtonDrive => &[
+                &["go-proton-api", "status=429"],
+                &["go-proton-api", "Too many requests"],
+                &["Too many recent API requests"],
+            ],
+            // Google Drive quota / per-minute limits — the error
+            // message pattern rclone surfaces alongside any internal
+            // retry warnings.
+            ProviderKind::GDrive => &[
+                &["rateLimitExceeded"],
+                &["userRateLimitExceeded"],
+                &["Quota exceeded"],
+            ],
+            // Dropbox / pCloud / WebDAV etc. don't have a characterised
+            // marker set yet. Leaving empty means "never flag as
+            // degraded"; we keep the current (pre-backoff) behaviour
+            // on them.
+            _ => &[],
+        }
+    }
 }
 
 #[derive(Clone, Debug)]

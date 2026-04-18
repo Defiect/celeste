@@ -21,7 +21,9 @@ use crate::{
         remote::{ProviderKind, Remote, RemoteId},
         sync::{SyncDir, SyncDirId, SyncError},
     },
+    infrastructure::stderr_capture::{self, CaptureHandle},
     screens::{add_remote, main_page, remote_page, settings},
+    services::sync::Outcome,
     theme,
 };
 
@@ -38,10 +40,24 @@ pub enum Message {
     SyncDirsLoaded(RemoteId, Vec<SyncDir>),
     PolicySaved,
     SyncStarted(RemoteId),
-    SyncFinished(RemoteId),
+    SyncFinished(RemoteId, PassVerdict),
     WorkerReady(mpsc::Sender<SyncEvent>),
     SyncEventReceived(SyncEvent),
     Tick,
+}
+
+/// Aggregate outcome across every sync_dir of one remote's pass. The
+/// scheduler uses this to drive linear backoff on provider rate-limits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PassVerdict {
+    /// Every sync_dir finished cleanly.
+    Clean,
+    /// At least one sync_dir detected rate-limiting (stderr tap fired).
+    /// Scheduler bumps `consecutive_degraded` and skips more cycles.
+    Degraded,
+    /// Pass aborted for a non-rate-limit reason (cancel, list error,
+    /// suspect listing). Backoff counter is left alone.
+    Aborted,
 }
 
 pub struct CelesteApp {
@@ -78,6 +94,18 @@ pub struct CelesteApp {
     /// sync pass to bail out between actions — the app sets it when
     /// the user disables a remote (or the app shuts down).
     cancel_flags: HashMap<RemoteId, Arc<AtomicBool>>,
+    /// Consecutive degraded (rate-limited) passes per remote. Drives
+    /// the linear backoff — reset to 0 on the next clean pass.
+    consecutive_degraded: HashMap<RemoteId, u32>,
+    /// Remaining sync cycles to skip before attempting another pass on
+    /// this remote. Set to `consecutive_degraded` right after a
+    /// Degraded verdict, decremented on each tick that would otherwise
+    /// have fired a pass.
+    syncs_to_skip: HashMap<RemoteId, u32>,
+    /// Stderr ring-buffer handle — shared by every sync pass so each
+    /// can ask "did any provider rate-limit warning fire since my
+    /// pass_start?". Installed once at process startup.
+    stderr_capture: CaptureHandle,
 }
 
 pub struct Flags {
@@ -108,6 +136,9 @@ impl Application for CelesteApp {
             add_remote_draft: None,
             events_tx: None,
             cancel_flags: HashMap::new(),
+            consecutive_degraded: HashMap::new(),
+            syncs_to_skip: HashMap::new(),
+            stderr_capture: stderr_capture::handle(),
         };
         let repo = flags.repo;
         let load = Command::perform(
@@ -423,9 +454,34 @@ impl Application for CelesteApp {
                 self.syncing.insert(id);
                 Command::none()
             }
-            Message::SyncFinished(id) => {
+            Message::SyncFinished(id, verdict) => {
                 self.syncing.remove(&id);
                 self.last_sync_at.insert(id, Instant::now());
+                match verdict {
+                    PassVerdict::Clean => {
+                        self.consecutive_degraded.remove(&id);
+                        self.syncs_to_skip.remove(&id);
+                    }
+                    PassVerdict::Degraded => {
+                        // Linear backoff: skip N cycles after the N-th
+                        // consecutive degraded pass. N=1 the first
+                        // time, N=2 the next, and so on — resets the
+                        // moment a pass lands clean. Rclone already
+                        // does exponential on its side; the linear
+                        // layer just stops us hammering.
+                        let n = self
+                            .consecutive_degraded
+                            .entry(id)
+                            .and_modify(|c| *c = c.saturating_add(1))
+                            .or_insert(1);
+                        self.syncs_to_skip.insert(id, *n);
+                    }
+                    PassVerdict::Aborted => {
+                        // Intentionally leave counters as-is: an abort
+                        // caused by cancel / suspect listing isn't a
+                        // signal the backend is overloaded.
+                    }
+                }
                 // Clear lingering "Synchronizing '/foo'…" strings left on
                 // each sync_dir row — the pass is done, those are stale.
                 if let Some(dirs) = self.sync_dirs.get(&id) {
@@ -444,22 +500,44 @@ impl Application for CelesteApp {
             }
             Message::Tick => {
                 // Check each enabled remote; if its interval has elapsed and
-                // it's not already syncing, kick off a new pass.
+                // it's not already syncing, kick off a new pass. Remotes
+                // currently inside a backoff window have `syncs_to_skip > 0`
+                // — we decrement, stamp last_sync_at, and skip this cycle
+                // so the next interval's tick does the same until the
+                // counter hits zero.
                 let now = Instant::now();
-                let due: Vec<RemoteId> = self
+                let mut due: Vec<RemoteId> = Vec::new();
+                let remote_ids: Vec<(RemoteId, std::time::Duration)> = self
                     .remotes
                     .iter()
-                    .filter(|r| {
-                        r.policy.enabled
-                            && !self.syncing.contains(&r.id)
-                            && self
-                                .last_sync_at
-                                .get(&r.id)
-                                .map(|t| now.duration_since(*t) >= r.policy.interval.duration())
-                                .unwrap_or(true)
-                    })
-                    .map(|r| r.id)
+                    .filter(|r| r.policy.enabled && !self.syncing.contains(&r.id))
+                    .map(|r| (r.id, r.policy.interval.duration()))
                     .collect();
+                for (id, interval) in remote_ids {
+                    let elapsed = self
+                        .last_sync_at
+                        .get(&id)
+                        .map(|t| now.duration_since(*t))
+                        .unwrap_or(interval);
+                    if elapsed < interval {
+                        continue;
+                    }
+                    if let Some(skip) = self.syncs_to_skip.get(&id).copied()
+                        && skip > 0
+                    {
+                        let remaining = skip - 1;
+                        if remaining == 0 {
+                            self.syncs_to_skip.remove(&id);
+                        } else {
+                            self.syncs_to_skip.insert(id, remaining);
+                        }
+                        // Advance the baseline so we wait another full
+                        // interval before the next skip decision.
+                        self.last_sync_at.insert(id, now);
+                        continue;
+                    }
+                    due.push(id);
+                }
                 let cmds: Vec<Command<Message>> =
                     due.into_iter().map(|id| self.start_sync(id)).collect();
                 Command::batch(cmds)
@@ -551,6 +629,7 @@ impl Application for CelesteApp {
                     .get(&remote.id)
                     .map(|(l, r)| (l.as_str(), r.as_str()))
                     .unwrap_or(("", ""));
+                let eta = self.next_sync_eta(remote.id);
                 remote_page::view(
                     remote,
                     dirs,
@@ -558,6 +637,7 @@ impl Application for CelesteApp {
                     &self.sync_dir_pending,
                     &self.sync_dir_errors,
                     (draft_local, draft_remote),
+                    eta,
                 )
                 .map(Message::Remote)
             }
@@ -596,14 +676,15 @@ impl CelesteApp {
         let repo = self.repo.clone();
         let rclone = self.rclone.clone();
         let events_tx = self.events_tx.clone();
+        let stderr_capture = self.stderr_capture.clone();
         Command::perform(
             async move {
                 let remote = match repo.find_remote(id).await {
                     Ok(Some(r)) => r,
-                    _ => return id,
+                    _ => return (id, PassVerdict::Aborted),
                 };
                 let sync_dirs = repo.list_sync_dirs(id).await.unwrap_or_default();
-                let _ = tokio::task::spawn_blocking(move || {
+                let verdict = tokio::task::spawn_blocking(move || {
                     let emit = move |event: SyncEvent| {
                         if let Some(tx) = &events_tx {
                             let _ = tx.blocking_send(event);
@@ -613,25 +694,92 @@ impl CelesteApp {
                         let f = flag.clone();
                         move || f.load(Ordering::Acquire)
                     };
+                    // The stderr probe: any line containing *all* of a
+                    // provider's marker substrings, received on or
+                    // after `since`, flips the pass to Degraded. The
+                    // marker table lives on `ProviderKind`; unknown
+                    // providers get an empty table and never degrade.
+                    let markers: &'static [&'static [&'static str]] =
+                        remote.provider_kind.map_or(&[], |k| k.rate_limit_markers());
+                    let stderr_for_probe = stderr_capture.clone();
+                    let rate_limit_seen_since = move |since: Instant| -> bool {
+                        if markers.is_empty() {
+                            return false;
+                        }
+                        stderr_for_probe
+                            .any_line_since(since, |line| {
+                                markers
+                                    .iter()
+                                    .any(|m| m.iter().all(|needle| line.contains(needle)))
+                            })
+                    };
+                    let mut any_degraded = false;
+                    let mut any_error = false;
+                    let mut any_synced = false;
                     for sd in sync_dirs {
                         if is_cancelled() {
                             break;
                         }
-                        let _ = crate::services::sync::run(
+                        match crate::services::sync::run(
                             &remote,
                             &sd,
                             &*repo,
                             &*rclone,
                             emit.clone(),
                             is_cancelled.clone(),
-                        );
+                            rate_limit_seen_since.clone(),
+                        ) {
+                            Outcome::Synced => any_synced = true,
+                            Outcome::Degraded => any_degraded = true,
+                            Outcome::Aborted => any_error = true,
+                        }
+                    }
+                    if any_degraded {
+                        PassVerdict::Degraded
+                    } else if any_synced {
+                        PassVerdict::Clean
+                    } else if any_error {
+                        PassVerdict::Aborted
+                    } else {
+                        // No sync_dirs to run (or everything cancelled
+                        // before the first). Treat as clean-ish — no
+                        // reason to accrue backoff.
+                        PassVerdict::Clean
                     }
                 })
-                .await;
-                id
+                .await
+                .unwrap_or(PassVerdict::Aborted);
+                (id, verdict)
             },
-            Message::SyncFinished,
+            |(id, v)| Message::SyncFinished(id, v),
         )
+    }
+
+    /// Time until the scheduler will next attempt this remote, plus a
+    /// flag telling the caller whether the remote is currently in a
+    /// backoff window (next attempt will be a skip, not a real pass).
+    /// Returns `None` when the remote is disabled.
+    pub fn next_sync_eta(&self, id: RemoteId) -> Option<(std::time::Duration, bool)> {
+        let remote = self.remotes.iter().find(|r| r.id == id)?;
+        if !remote.policy.enabled {
+            return None;
+        }
+        let interval = remote.policy.interval.duration();
+        let now = Instant::now();
+        let base_remaining = match self.last_sync_at.get(&id) {
+            Some(t) => {
+                let elapsed = now.duration_since(*t);
+                interval.saturating_sub(elapsed)
+            }
+            None => std::time::Duration::ZERO,
+        };
+        let in_backoff = self
+            .syncs_to_skip
+            .get(&id)
+            .copied()
+            .unwrap_or(0)
+            > 0;
+        Some((base_remaining, in_backoff))
     }
 }
 

@@ -23,7 +23,7 @@ use std::{
     collections::{BTreeSet, HashMap},
     fs,
     path::Path,
-    time::SystemTime,
+    time::{Instant, SystemTime},
 };
 
 use crate::{
@@ -39,13 +39,20 @@ use crate::{
 #[cfg(test)]
 mod tests;
 
-/// Outcome of a single [`run`] call. `Synced` means the plan was applied in
-/// full; `Aborted` means the snapshot safety check refused to act and no
-/// destructive work ran.
+/// Outcome of a single [`run`] call.
+///
+/// - `Synced`: the plan was applied in full.
+/// - `Aborted`: the pass refused to act (cancelled, list error, or the
+///   listing-sanity check refused — the snapshot couldn't be trusted).
+/// - `Degraded`: the pass detected provider rate-limiting (e.g. Proton
+///   Drive's `status=429` retry warnings in stderr) and skipped the
+///   apply step. Drives the scheduler's linear backoff so we stop
+///   hammering a distressed API.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Outcome {
     Synced,
     Aborted,
+    Degraded,
 }
 
 #[derive(Clone, Debug)]
@@ -70,10 +77,12 @@ pub enum BuildError {
 const LISTING_SANITY_THRESHOLD: usize = 5;
 
 /// The listing must contain at least this fraction of the DB row count,
-/// otherwise it's deemed suspect. 1/3 survives normal transient
-/// deletions (user cleaning up a few files) but catches the "API
-/// returned almost nothing" rate-limit case.
-const LISTING_SANITY_NUMERATOR: usize = 1;
+/// otherwise it's deemed suspect. 2/3 catches the ProtonDrive case where
+/// rate-limiting lets `operations/list` return a partial-but-not-empty
+/// listing (e.g. ~40-70% of items). Legitimate deletions over 1/3 of the
+/// tree in a single pass are rare and simply defer to the next tick —
+/// safer than nuking local or remote on a half-listing.
+const LISTING_SANITY_NUMERATOR: usize = 2;
 const LISTING_SANITY_DENOMINATOR: usize = 3;
 
 pub struct Snapshot {
@@ -224,12 +233,21 @@ pub fn plan(snapshot: &Snapshot, sync_dir: &SyncDir) -> Vec<Action> {
         .chain(snapshot.local.keys())
         .chain(snapshot.db.keys())
         .collect();
+    let db_by_parent = group_db_keys_by_parent(&snapshot.db);
     let mut out = Vec::new();
     for key in keys {
         let local = snapshot.local.get(key);
         let remote = snapshot.remote.get(key);
         let db = snapshot.db.get(key);
-        if let Some(action) = plan_one(key, local, remote, db, sync_dir) {
+        if let Some(action) = plan_one(
+            key,
+            local,
+            remote,
+            db,
+            sync_dir,
+            snapshot,
+            &db_by_parent,
+        ) {
             out.push(action);
         }
     }
@@ -238,6 +256,51 @@ pub fn plan(snapshot: &Snapshot, sync_dir: &SyncDir) -> Vec<Action> {
     // group, shorter paths first so parents precede children.
     out.sort_by_key(|a| (phase(a), a_path(a).len(), a_path(a).to_owned()));
     out
+}
+
+fn parent_of(path: &str) -> &str {
+    path.rfind('/').map_or("", |i| &path[..i])
+}
+
+fn group_db_keys_by_parent(
+    db: &HashMap<String, SyncItem>,
+) -> HashMap<&str, Vec<&str>> {
+    let mut out: HashMap<&str, Vec<&str>> = HashMap::new();
+    for key in db.keys() {
+        out.entry(parent_of(key)).or_default().push(key.as_str());
+    }
+    out
+}
+
+/// Is at least one DB-tracked sibling of `path` (under the same parent,
+/// excluding itself) present in `items`? Returns `true` also when the
+/// DB has no other siblings recorded under that parent — that's the
+/// legitimate "last file in its parent" case and must not block the
+/// delete. Returns `false` only when the DB says siblings should exist
+/// but none of them appear in `items`, indicating the listing / walk
+/// for that parent is untrustworthy (rate-limit, cache flush, mid-
+/// write race).
+fn parent_has_tracked_sibling<T>(
+    path: &str,
+    items: &HashMap<String, T>,
+    db_by_parent: &HashMap<&str, Vec<&str>>,
+) -> bool {
+    let parent = parent_of(path);
+    let siblings = match db_by_parent.get(parent) {
+        Some(v) => v,
+        None => return true,
+    };
+    let mut any_expected = false;
+    for sibling in siblings {
+        if *sibling == path {
+            continue;
+        }
+        any_expected = true;
+        if items.contains_key(*sibling) {
+            return true;
+        }
+    }
+    !any_expected
 }
 
 fn phase(a: &Action) -> u8 {
@@ -267,6 +330,8 @@ fn plan_one(
     remote: Option<&RemoteItem>,
     db: Option<&SyncItem>,
     sync_dir: &SyncDir,
+    snapshot: &Snapshot,
+    db_by_parent: &HashMap<&str, Vec<&str>>,
 ) -> Option<Action> {
     match (local, remote, db) {
         (None, None, None) => None,
@@ -310,18 +375,54 @@ fn plan_one(
                 })
             }
         }
-        // Was tracked, remote gone — mirror delete locally.
-        (Some(l), None, Some(_)) => Some(Action::DeleteLocal {
-            local_path: l.absolute_path.clone(),
-            remote_path: remote_path.to_owned(),
-            is_dir: l.is_dir,
-        }),
-        // Was tracked, local gone — mirror delete remotely.
-        (None, Some(r), Some(_)) => Some(Action::DeleteRemote {
-            local_path: derive_local_path(&r.path, sync_dir),
-            remote_path: r.path.clone(),
-            is_dir: r.is_dir,
-        }),
+        // Was tracked, remote gone — mirror delete locally. Require a
+        // DB-tracked sibling of this item to also appear in the listing;
+        // otherwise the listing for this parent is untrustworthy (rate-
+        // limit / cache flush) and we refuse to destroy the local copy.
+        // Equivalent of the GoogleDrive-era sibling verification in
+        // 6117026, adapted to the snapshot algorithm.
+        (Some(l), None, Some(_)) => {
+            if !parent_has_tracked_sibling(
+                remote_path,
+                &snapshot.remote,
+                db_by_parent,
+            ) {
+                eprintln!(
+                    "sync: SKIP DeleteLocal for '{remote_path}' — listing has no DB-tracked siblings under '{}' (likely rate-limited / cache flush); preserving local copy.",
+                    parent_of(remote_path),
+                );
+                return None;
+            }
+            Some(Action::DeleteLocal {
+                local_path: l.absolute_path.clone(),
+                remote_path: remote_path.to_owned(),
+                is_dir: l.is_dir,
+            })
+        }
+        // Was tracked, local gone — mirror delete remotely. Symmetric
+        // sibling check on the local walk: refuse to propagate a delete
+        // when the walk for this parent shows no DB-tracked siblings.
+        // Catches concurrent-writer (e.g. Syncthing) races that empty
+        // a subtree of the walk mid-pass.
+        (None, Some(r), Some(_)) => {
+            if !parent_has_tracked_sibling(
+                &r.path,
+                &snapshot.local,
+                db_by_parent,
+            ) {
+                eprintln!(
+                    "sync: SKIP DeleteRemote for '{}' — walk has no DB-tracked siblings under '{}' (likely concurrent-write race); preserving remote copy.",
+                    r.path,
+                    parent_of(&r.path),
+                );
+                return None;
+            }
+            Some(Action::DeleteRemote {
+                local_path: derive_local_path(&r.path, sync_dir),
+                remote_path: r.path.clone(),
+                is_dir: r.is_dir,
+            })
+        }
         // Full triple — compare timestamps against the recorded values.
         (Some(l), Some(r), Some(db)) => {
             let local_changed = l.mtime_secs > db.last_local_timestamp;
@@ -379,18 +480,21 @@ fn db_local_path(remote_path: &str, sync_dir: &SyncDir) -> String {
 /// bail out promptly when the user disables the remote or shuts down
 /// the app — in-flight rclone calls still run to completion (we can't
 /// interrupt `copy_to_remote` cleanly), but nothing new fires.
-pub fn run<FE, FC>(
+pub fn run<FE, FC, FD>(
     remote: &Remote,
     sync_dir: &SyncDir,
     repo: &dyn Repository,
     client: &dyn RcloneClient,
     emit: FE,
     is_cancelled: FC,
+    rate_limit_seen_since: FD,
 ) -> Outcome
 where
     FE: Fn(SyncEvent) + Clone,
     FC: Fn() -> bool + Clone,
+    FD: Fn(Instant) -> bool + Clone,
 {
+    let pass_start = Instant::now();
     let emit_pending = |text: String| {
         emit(SyncEvent::SyncDirPending {
             remote_id: remote.id,
@@ -414,7 +518,27 @@ where
     };
 
     emit_pending(tr::tr!("Listing remote (may take a while)…"));
-    let snapshot = match Snapshot::build(remote, sync_dir, repo, client) {
+    let snapshot_result = Snapshot::build(remote, sync_dir, repo, client);
+
+    // Classify rate-limit *before* we commit to a success/failure path:
+    // list failures caused by quota exhaustion still need to route
+    // through the Degraded / backoff branch, not be treated as plain
+    // network errors that retry at the normal cadence.
+    let rate_limited_during_list = rate_limit_seen_since(pass_start);
+    if rate_limited_during_list {
+        eprintln!(
+            "sync: DEGRADED for '{}' — rate-limit warnings observed during listing; skipping this pass for backoff.",
+            remote.name,
+        );
+        emit_error(SyncError::General(
+            sync_dir.remote_path.clone(),
+            tr::tr!("Rate-limit warnings detected during listing; skipping this pass for backoff."),
+        ));
+        emit_status(tr::tr!("Sync skipped — provider rate-limited."));
+        return Outcome::Degraded;
+    }
+
+    let snapshot = match snapshot_result {
         Ok(s) => s,
         Err(BuildError::ListFailed(err)) => {
             eprintln!("sync: list failed for {}: {err}", remote.name);
@@ -452,6 +576,20 @@ where
     if is_cancelled() {
         emit_status(tr::tr!("Sync cancelled."));
         return Outcome::Aborted;
+    }
+    // Post-apply check: even if the pass reached the end cleanly, a
+    // rate-limit warning at any point during upload/download means the
+    // backend was stressed. Flag Degraded so the scheduler backs off
+    // before the next tick — we don't undo the work we already did.
+    if rate_limit_seen_since(pass_start) {
+        eprintln!(
+            "sync: pass for '{}' completed but rate-limit warnings surfaced during apply; flagging Degraded for backoff.",
+            remote.name,
+        );
+        emit_status(tr::tr!(
+            "Files are synced — provider rate-limited, backing off next tick."
+        ));
+        return Outcome::Degraded;
     }
     emit_status(tr::tr!("Files are synced."));
     Outcome::Synced

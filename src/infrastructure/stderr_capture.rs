@@ -1,0 +1,212 @@
+//! Process-wide stderr tap. Installs once at startup, before librclone
+//! is initialised, so that every warning rclone (and its backends) print
+//! to fd 2 lands in a timestamped ring buffer we can query from the
+//! sync code. Everything is still forwarded to the real stderr so the
+//! user's terminal output stays unchanged.
+//!
+//! The motivation is provider-level rate-limiting: rclone's ProtonDrive
+//! backend retries 429s internally and eventually returns `Ok(partial)`
+//! from `operations/list`. The only signal we have that the call was
+//! stressed is the `WARN[...] Too many requests` line emitted by
+//! `go-proton-api`. Scraping stderr gives us that signal without
+//! waiting for rclone to surface retry counters via its RPC.
+//!
+//! Unix-only. `dup2` on fd 2 is the trick; spawning a reader thread on
+//! the read end of the pipe keeps the buffer warm. The original stderr
+//! is `dup`-saved first so lines are forwarded back — tests, other
+//! parts of Celeste, and any child process stay visible.
+
+use std::{
+    collections::VecDeque,
+    io::{BufRead, BufReader, Write},
+    os::fd::{FromRawFd, IntoRawFd, OwnedFd},
+    sync::{Arc, Mutex, OnceLock},
+    thread,
+    time::Instant,
+};
+
+/// Upper bound on the stderr ring — a few thousand lines is plenty for
+/// the "did rate limits fire during this sync pass?" query and keeps
+/// memory use flat.
+const RING_CAPACITY: usize = 4_096;
+
+#[derive(Clone, Debug)]
+pub struct CapturedLine {
+    pub received_at: Instant,
+    pub text: String,
+}
+
+#[derive(Clone)]
+pub struct CaptureHandle {
+    inner: Arc<Mutex<VecDeque<CapturedLine>>>,
+}
+
+impl CaptureHandle {
+    /// Does any captured line arriving at or after `since` match any of
+    /// the given substrings? Used by the sync layer to turn "was the
+    /// pass stressed?" into a boolean. Cheap enough to call twice per
+    /// pass.
+    pub fn any_line_since<F>(&self, since: Instant, mut predicate: F) -> bool
+    where
+        F: FnMut(&str) -> bool,
+    {
+        let guard = self.inner.lock().unwrap();
+        guard
+            .iter()
+            .rev()
+            .take_while(|l| l.received_at >= since)
+            .any(|l| predicate(&l.text))
+    }
+}
+
+static GLOBAL: OnceLock<CaptureHandle> = OnceLock::new();
+
+/// Install the stderr tap. Call exactly once, from `main`, **before**
+/// any FFI layer touches fd 2 (in particular before
+/// `librclone::initialize`). Repeat calls return the previously-installed
+/// handle.
+pub fn install() -> CaptureHandle {
+    if let Some(existing) = GLOBAL.get() {
+        return existing.clone();
+    }
+    let handle = match install_inner() {
+        Ok(h) => h,
+        Err(err) => {
+            // Falling back to an empty buffer keeps the rest of the app
+            // working; we just lose rate-limit detection for this run.
+            eprintln!("stderr_capture: install failed: {err} — rate-limit detection disabled.");
+            CaptureHandle {
+                inner: Arc::new(Mutex::new(VecDeque::new())),
+            }
+        }
+    };
+    let _ = GLOBAL.set(handle.clone());
+    handle
+}
+
+/// Retrieve the handle installed by [`install`]. Returns an empty-buffer
+/// handle if install was never called (unit tests).
+pub fn handle() -> CaptureHandle {
+    GLOBAL
+        .get()
+        .cloned()
+        .unwrap_or_else(|| CaptureHandle {
+            inner: Arc::new(Mutex::new(VecDeque::new())),
+        })
+}
+
+fn install_inner() -> Result<CaptureHandle, String> {
+    // Duplicate the current stderr so the reader thread can still write
+    // through to the user's terminal.
+    let saved = unsafe { libc::dup(libc::STDERR_FILENO) };
+    if saved < 0 {
+        return Err(format!("dup(stderr) failed: {}", std::io::Error::last_os_error()));
+    }
+    let saved_stderr = unsafe { OwnedFd::from_raw_fd(saved) };
+
+    // Create the pipe whose writer replaces stderr.
+    let mut fds = [0i32; 2];
+    let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
+    if rc != 0 {
+        return Err(format!("pipe() failed: {}", std::io::Error::last_os_error()));
+    }
+    let read_fd = unsafe { OwnedFd::from_raw_fd(fds[0]) };
+    let write_fd = unsafe { OwnedFd::from_raw_fd(fds[1]) };
+
+    // Redirect stderr to the write end.
+    let rc = unsafe { libc::dup2(write_fd.into_raw_fd(), libc::STDERR_FILENO) };
+    if rc < 0 {
+        return Err(format!(
+            "dup2(pipe, stderr) failed: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+
+    let ring = Arc::new(Mutex::new(VecDeque::with_capacity(RING_CAPACITY)));
+    let ring_for_thread = ring.clone();
+
+    thread::Builder::new()
+        .name("stderr-capture".to_owned())
+        .spawn(move || reader_loop(read_fd, saved_stderr, ring_for_thread))
+        .map_err(|e| format!("spawn reader: {e}"))?;
+
+    Ok(CaptureHandle { inner: ring })
+}
+
+fn reader_loop(
+    read_fd: OwnedFd,
+    saved_stderr: OwnedFd,
+    ring: Arc<Mutex<VecDeque<CapturedLine>>>,
+) {
+    let file = std::fs::File::from(read_fd);
+    let mut reader = BufReader::new(file);
+    let mut sink = std::fs::File::from(saved_stderr);
+    let mut line = String::new();
+    loop {
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) => break, // writer end closed
+            Ok(_) => {
+                // Forward verbatim first so the real stderr stays live
+                // even if the ring lock is briefly held.
+                let _ = sink.write_all(line.as_bytes());
+                let _ = sink.flush();
+
+                let received_at = Instant::now();
+                let mut guard = ring.lock().unwrap();
+                if guard.len() == RING_CAPACITY {
+                    guard.pop_front();
+                }
+                guard.push_back(CapturedLine {
+                    received_at,
+                    text: line.clone(),
+                });
+            }
+            Err(_) => break,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    /// The handle returned when `install` was never called must behave
+    /// like an empty ring — no false positives.
+    #[test]
+    fn uninstalled_handle_has_no_matches() {
+        let h = CaptureHandle {
+            inner: Arc::new(Mutex::new(VecDeque::new())),
+        };
+        assert!(!h.any_line_since(Instant::now(), |s| s.contains("429")));
+    }
+
+    /// A line inserted before `since` must not count; one inserted
+    /// after must.
+    #[test]
+    fn only_lines_after_the_cutoff_count() {
+        let ring = Arc::new(Mutex::new(VecDeque::new()));
+        let h = CaptureHandle {
+            inner: ring.clone(),
+        };
+
+        let before = Instant::now();
+        ring.lock().unwrap().push_back(CapturedLine {
+            received_at: before,
+            text: "status=429 too many requests".to_owned(),
+        });
+        std::thread::sleep(Duration::from_millis(5));
+        let cutoff = Instant::now();
+        std::thread::sleep(Duration::from_millis(5));
+        ring.lock().unwrap().push_back(CapturedLine {
+            received_at: Instant::now(),
+            text: "fresh 429 warning".to_owned(),
+        });
+
+        assert!(h.any_line_since(cutoff, |s| s.contains("429")));
+        assert!(!h.any_line_since(cutoff, |s| s.contains("no-such-token")));
+        // Pushing the cutoff back to `before` makes the older line visible.
+        assert!(h.any_line_since(before, |s| s.contains("too many requests")));
+    }
+}
