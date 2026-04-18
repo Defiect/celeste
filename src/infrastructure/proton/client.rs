@@ -1,0 +1,237 @@
+//! [`RcloneClient`] implementation that talks directly to Proton via
+//! the native Go archive. The sync engine sees this behind
+//! `&dyn RcloneClient` and doesn't know anything has changed; all
+//! it ever passes are string paths, which this client translates to
+//! ProtonDrive link IDs by walking the tree from the session's root.
+//!
+//! Scope of this initial impl:
+//!   - One remote per Celeste instance. `remote` arg is accepted but
+//!     only logged — every call routes to the single native session
+//!     this client was constructed with.
+//!   - No cache. Each call walks root → target, listing each
+//!     intermediate folder. First-pass good-enough for a known
+//!     small sync tree; later optimise with a linkID cache keyed
+//!     by remote_path.
+//!   - `ListFilter` is honoured (`All` / `Dirs` / `Files`).
+//!     `recursive` is implemented by in-Rust recursion over the
+//!     native API's non-recursive listings — the FFI surface
+//!     doesn't yet carry a `recursive` flag.
+//!   - `copy_to_remote` needs a parent link ID + basename; we split
+//!     `remote_path` on the trailing slash and resolve the parent
+//!     portion.
+//!   - `delete_config` is a no-op at this layer — the session blob
+//!     is owned by the higher-level auth flow that constructed us.
+//!   - `create_config` is unused; the native path takes a typed
+//!     credential blob rather than an rclone JSON body.
+//!   - `remote_type` returns the fixed string `"native-proton"`.
+
+use std::path::Path;
+
+use time::OffsetDateTime;
+
+// Celeste aliases the `celeste-native-sys` crate as `librclone` via
+// `package =` in Cargo.toml — see the combined-archive commit. We pull
+// the native Proton helpers off it here.
+use librclone::proton as proton_ffi;
+
+use crate::domain::{
+    ports::RcloneClient,
+    sync::{ListFilter, RemoteItem},
+};
+
+/// Native ProtonDrive adapter. Owns the session UID the native-go
+/// layer returns from `ProtonDrive_Login` / `ProtonDrive_ResumeSession`.
+#[derive(Clone, Debug)]
+pub struct NativeProtonClient {
+    uid: String,
+}
+
+impl NativeProtonClient {
+    /// Wrap a UID the caller already got from a `login` / `resume`
+    /// call. The session must be registered on the Go side.
+    pub fn new(uid: String) -> Self {
+        Self { uid }
+    }
+
+    pub fn uid(&self) -> &str {
+        &self.uid
+    }
+
+    /// Resolve a Proton-relative path (e.g. `"Foo/bar.txt"`,
+    /// possibly empty for the root) to its link ID. Walks from the
+    /// session root, listing each intermediate folder and matching
+    /// by decrypted `Entry.name`. Returns `Ok(None)` when any
+    /// segment is absent.
+    fn resolve_path(&self, path: &str) -> Result<Option<String>, String> {
+        let trimmed = path.trim_matches('/');
+        if trimmed.is_empty() {
+            return Ok(Some(proton_ffi::root_link_id(&self.uid)?));
+        }
+        let mut current = proton_ffi::root_link_id(&self.uid)?;
+        for segment in trimmed.split('/') {
+            let entries = proton_ffi::list_directory(&self.uid, &current)?;
+            match entries.into_iter().find(|e| e.name == segment) {
+                Some(entry) => current = entry.link_id,
+                None => return Ok(None),
+            }
+        }
+        Ok(Some(current))
+    }
+
+    /// Resolve a path to `(parent_link_id, basename)` — needed for
+    /// create / upload / mkdir where we only have the full remote
+    /// path. An empty path resolves to (root, "") which is invalid
+    /// for those callers; surface as an error.
+    fn resolve_parent(&self, path: &str) -> Result<(String, String), String> {
+        let trimmed = path.trim_matches('/');
+        if trimmed.is_empty() {
+            return Err("cannot operate on root itself".to_owned());
+        }
+        let (parent_path, basename) = match trimmed.rsplit_once('/') {
+            Some((p, b)) => (p, b),
+            None => ("", trimmed),
+        };
+        let parent_id = match self.resolve_path(parent_path)? {
+            Some(id) => id,
+            None => return Err(format!("parent path '{parent_path}' not found")),
+        };
+        Ok((parent_id, basename.to_owned()))
+    }
+}
+
+fn entry_to_remote_item(entry: proton_ffi::Entry, path_prefix: &str) -> RemoteItem {
+    let full_path = if path_prefix.is_empty() {
+        entry.name.clone()
+    } else {
+        format!("{path_prefix}/{}", entry.name)
+    };
+    RemoteItem {
+        is_dir: entry.is_dir,
+        path: full_path,
+        name: entry.name,
+        mod_time: OffsetDateTime::from_unix_timestamp(entry.mod_time_unix)
+            .unwrap_or_else(|_| OffsetDateTime::UNIX_EPOCH),
+    }
+}
+
+impl RcloneClient for NativeProtonClient {
+    fn stat(&self, _remote: &str, path: &str) -> Result<Option<RemoteItem>, String> {
+        let Some(link_id) = self.resolve_path(path)? else {
+            return Ok(None);
+        };
+        let Some(entry) = proton_ffi::stat(&self.uid, &link_id)? else {
+            return Ok(None);
+        };
+        // Bridge leaves the root's name empty; callers pass the
+        // requested path so we preserve that in the returned item.
+        let name = if entry.name.is_empty() {
+            path.trim_matches('/').rsplit_once('/').map_or(
+                path.trim_matches('/').to_owned(),
+                |(_, base)| base.to_owned(),
+            )
+        } else {
+            entry.name.clone()
+        };
+        Ok(Some(RemoteItem {
+            is_dir: entry.is_dir,
+            path: path.trim_matches('/').to_owned(),
+            name,
+            mod_time: OffsetDateTime::from_unix_timestamp(entry.mod_time_unix)
+                .unwrap_or_else(|_| OffsetDateTime::UNIX_EPOCH),
+        }))
+    }
+
+    fn list(
+        &self,
+        _remote: &str,
+        path: &str,
+        recursive: bool,
+        filter: ListFilter,
+    ) -> Result<Vec<RemoteItem>, String> {
+        fn keep(filter: ListFilter, is_dir: bool) -> bool {
+            match filter {
+                ListFilter::All => true,
+                ListFilter::Dirs => is_dir,
+                ListFilter::Files => !is_dir,
+            }
+        }
+        let trimmed = path.trim_matches('/').to_owned();
+        let Some(link_id) = self.resolve_path(&trimmed)? else {
+            return Ok(Vec::new());
+        };
+        let mut out = Vec::new();
+        let mut stack: Vec<(String, String)> = vec![(link_id, trimmed)];
+        while let Some((cur_link, cur_path)) = stack.pop() {
+            let entries = proton_ffi::list_directory(&self.uid, &cur_link)?;
+            for entry in entries {
+                let is_dir = entry.is_dir;
+                let next_link = entry.link_id.clone();
+                let item = entry_to_remote_item(entry, &cur_path);
+                let next_path = item.path.clone();
+                if keep(filter, is_dir) {
+                    out.push(item);
+                }
+                if recursive && is_dir {
+                    stack.push((next_link, next_path));
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    fn mkdir(&self, _remote: &str, path: &str) -> Result<(), String> {
+        let (parent, name) = self.resolve_parent(path)?;
+        proton_ffi::create_folder(&self.uid, &parent, &name)?;
+        Ok(())
+    }
+
+    fn delete_file(&self, _remote: &str, path: &str) -> Result<(), String> {
+        let Some(link_id) = self.resolve_path(path)? else {
+            return Err(format!("path '{path}' not found on remote"));
+        };
+        proton_ffi::trash_link(&self.uid, &link_id)
+    }
+
+    fn purge(&self, _remote: &str, path: &str) -> Result<(), String> {
+        // Proton's TrashChildren on a folder cascades server-side,
+        // so `purge` and `delete_file` collapse to the same call.
+        self.delete_file(_remote, path)
+    }
+
+    fn copy_to_remote(
+        &self,
+        local_path: &str,
+        _remote: &str,
+        remote_path: &str,
+    ) -> Result<(), String> {
+        let (parent, name) = self.resolve_parent(remote_path)?;
+        proton_ffi::upload_file(&self.uid, &parent, &name, Path::new(local_path))?;
+        Ok(())
+    }
+
+    fn copy_to_local(
+        &self,
+        local_path: &str,
+        _remote: &str,
+        remote_path: &str,
+    ) -> Result<(), String> {
+        let Some(link_id) = self.resolve_path(remote_path)? else {
+            return Err(format!("path '{remote_path}' not found on remote"));
+        };
+        proton_ffi::download_file(&self.uid, &link_id, Path::new(local_path))
+    }
+
+    fn delete_config(&self, _remote: &str) -> Result<(), String> {
+        // Session lifecycle is owned by the auth layer that
+        // constructed this client — nothing to clean up here.
+        Ok(())
+    }
+
+    fn create_config(&self, _payload_json: String) -> Result<(), String> {
+        Err("native-proton client does not accept rclone-style create_config payloads".to_owned())
+    }
+
+    fn remote_type(&self, _remote: &str) -> Result<Option<String>, String> {
+        Ok(Some("native-proton".to_owned()))
+    }
+}
