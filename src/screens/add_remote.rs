@@ -7,7 +7,7 @@
 //!   the token, we pass it to config/create)
 
 use iced::{
-    widget::{button, column, container, pick_list, row, text::Shaping, text_input, tooltip, Space},
+    widget::{button, column, container, pick_list, row, text::Shaping, text_input, Space},
     Element, Length,
 };
 
@@ -31,26 +31,35 @@ pub enum Msg {
     Cancel,
 }
 
+/// The set of backends Celeste's sync algorithm has been exercised
+/// against. WebDAV / Nextcloud / Owncloud / Dropbox / pCloud are
+/// deliberately absent from the Add Remote picker: the snapshot
+/// algorithm is backend-agnostic so they should work, but none of them
+/// have been rate-limit-tested the way Proton and Google have. The
+/// enum variants stay in place so the auth / RPC code paths keep
+/// compiling — just the UI surface is slimmed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProviderKind {
+    #[allow(dead_code)]
     WebDav,
+    #[allow(dead_code)]
     Nextcloud,
+    #[allow(dead_code)]
     Owncloud,
     ProtonDrive,
+    #[allow(dead_code)]
     Dropbox,
     GDrive,
+    #[allow(dead_code)]
     PCloud,
 }
 
 impl ProviderKind {
-    pub const ALL: [ProviderKind; 7] = [
-        ProviderKind::WebDav,
-        ProviderKind::Nextcloud,
-        ProviderKind::Owncloud,
+    /// Providers visible in the Add Remote UI today. Order matches the
+    /// picker: Proton first (most recently tested), Google next.
+    pub const ALL: [ProviderKind; 2] = [
         ProviderKind::ProtonDrive,
-        ProviderKind::Dropbox,
         ProviderKind::GDrive,
-        ProviderKind::PCloud,
     ];
 
     pub fn webdav_vendor(self) -> Option<WebDavVendor> {
@@ -83,39 +92,23 @@ impl ProviderKind {
         matches!(self, ProviderKind::ProtonDrive)
     }
 
-    /// Whether this provider has been exercised against the current
-    /// sync algorithm. Everything except Google Drive and Proton Drive
-    /// gets a ⚠ glyph in the picker plus a hover-tooltip explaining
-    /// the situation.
-    pub fn is_tested(self) -> bool {
-        matches!(self, ProviderKind::GDrive | ProviderKind::ProtonDrive)
-    }
 }
 
-/// Pick-list wrapper that prefixes untested providers with a ⚠ glyph.
-/// The ProviderKind itself stays context-free; only the dropdown
-/// presentation is annotated.
+/// Pick-list wrapper over `ProviderKind`. Kept as a distinct type so
+/// future UI annotations (e.g. per-provider glyphs) have a place to
+/// live without polluting the core enum.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ProviderOption(ProviderKind);
 
 impl std::fmt::Display for ProviderOption {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(f)?;
-        if !self.0.is_tested() {
-            f.write_str("  ⚠")?;
-        }
-        Ok(())
+        self.0.fmt(f)
     }
 }
 
-const PROVIDER_OPTIONS: [ProviderOption; 7] = [
-    ProviderOption(ProviderKind::WebDav),
-    ProviderOption(ProviderKind::Nextcloud),
-    ProviderOption(ProviderKind::Owncloud),
+const PROVIDER_OPTIONS: [ProviderOption; 2] = [
     ProviderOption(ProviderKind::ProtonDrive),
-    ProviderOption(ProviderKind::Dropbox),
     ProviderOption(ProviderKind::GDrive),
-    ProviderOption(ProviderKind::PCloud),
 ];
 
 impl std::fmt::Display for ProviderKind {
@@ -178,32 +171,9 @@ pub fn view(draft: &Draft) -> Element<'_, Msg> {
     .text_shaping(Shaping::Advanced)
     .placeholder("Pick a provider");
 
-    let untested_note: Element<'_, Msg> = match draft.provider {
-        Some(p) if !p.is_tested() => tooltip(
-            text("⚠").size(16),
-            text(
-                "This provider hasn't been tested against the current sync \
-                 algorithm yet. It should work (rclone handles the transport \
-                 and the sync logic is backend-agnostic), but you'd be the \
-                 first to try it.",
-            )
-            .size(12),
-            tooltip::Position::Right,
-        )
-        .gap(8)
-        .padding(8)
-        .into(),
-        _ => Space::with_width(Length::Shrink).into(),
-    };
-
-    let provider_row = row![
-        field_label("Type"),
-        picker,
-        Space::with_width(Length::Fixed(8.0)),
-        untested_note,
-    ]
-    .align_items(iced::Alignment::Center)
-    .spacing(8);
+    let provider_row = row![field_label("Type"), picker,]
+        .align_items(iced::Alignment::Center)
+        .spacing(8);
 
     let mut body = column![heading, name_row, provider_row].spacing(SECTION_SPACING);
 
