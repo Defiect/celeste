@@ -712,7 +712,27 @@ where
     }
     let actions = plan(&snapshot, sync_dir);
     log_plan_summary(remote, sync_dir, &snapshot, &actions);
-    apply(actions, &snapshot, remote, sync_dir, repo, client, &emit, &is_cancelled);
+    // Replace the "Listing remote…" pending with a phase-level
+    // description of what apply() is about to do. Without this, a
+    // multi-hundred-action pass (e.g. first-ever sync of a large
+    // remote) leaves the user staring at "Listing…" for as long as
+    // the per-action status churn takes to dominate the UI.
+    if !actions.is_empty() {
+        emit_pending(tr::tr!(
+            "Applying {} actions (0 done)…",
+            actions.len()
+        ));
+    }
+    apply(
+        actions,
+        &snapshot,
+        remote,
+        sync_dir,
+        repo,
+        client,
+        &emit,
+        &is_cancelled,
+    );
 
     if is_cancelled() {
         emit_status(tr::tr!("Sync cancelled."));
@@ -749,8 +769,16 @@ fn apply<FE, FC>(
     FE: Fn(SyncEvent) + Clone,
     FC: Fn() -> bool + Clone,
 {
+    let total = actions.len();
     let emit_status = |text: String| {
         emit(SyncEvent::SyncDirStatus {
+            remote_id: remote.id,
+            sync_dir_id: sync_dir.id,
+            text,
+        });
+    };
+    let emit_pending_local = |text: String| {
+        emit(SyncEvent::SyncDirPending {
             remote_id: remote.id,
             sync_dir_id: sync_dir.id,
             text,
@@ -764,10 +792,23 @@ fn apply<FE, FC>(
         });
     };
 
-    for action in actions {
+    for (idx, action) in actions.into_iter().enumerate() {
         if is_cancelled() {
             return;
         }
+        // Refresh the phase-pending line roughly every 16 actions so a
+        // long apply (e.g. 1800+ downloads on first sync of a large
+        // remote) reports progress even when the per-action status is
+        // changing faster than the eye can follow. Cheap — one event
+        // per batch, same channel as everything else.
+        if idx > 0 && idx.is_multiple_of(16) {
+            emit_pending_local(tr::tr!(
+                "Applying {} actions ({} done)…",
+                total,
+                idx
+            ));
+        }
+        let pos = idx + 1;
         match action {
             Action::Upload {
                 local_path,
@@ -784,7 +825,12 @@ fn apply<FE, FC>(
                         continue;
                     }
                 } else {
-                    emit_status(tr::tr!("Uploading '{}'…", util::fmt_home(&local_path)));
+                    emit_status(tr::tr!(
+                        "[{}/{}] Uploading '{}'…",
+                        pos,
+                        total,
+                        util::fmt_home(&local_path)
+                    ));
                     if let Err(err) =
                         client.copy_to_remote(&local_path, &remote.name, &remote_path)
                     {
@@ -816,7 +862,12 @@ fn apply<FE, FC>(
                     if let Some(parent) = Path::new(&local_path).parent() {
                         let _ = fs::create_dir_all(parent);
                     }
-                    emit_status(tr::tr!("Downloading '{}'…", util::fmt_home(&local_path)));
+                    emit_status(tr::tr!(
+                        "[{}/{}] Downloading '{}'…",
+                        pos,
+                        total,
+                        util::fmt_home(&local_path)
+                    ));
                     if let Err(err) =
                         client.copy_to_local(&local_path, &remote.name, &remote_path)
                     {
@@ -836,7 +887,9 @@ fn apply<FE, FC>(
                     remote.name, remote_path
                 );
                 emit_status(tr::tr!(
-                    "Removing '{}' locally…",
+                    "[{}/{}] Removing '{}' locally…",
+                    pos,
+                    total,
                     util::fmt_home(&local_path)
                 ));
                 let res = if is_dir {
@@ -863,7 +916,12 @@ fn apply<FE, FC>(
                     "sync: DELETE mirror-remote remote={} path={}",
                     remote.name, remote_path
                 );
-                emit_status(tr::tr!("Removing '{}' on remote…", remote_path));
+                emit_status(tr::tr!(
+                    "[{}/{}] Removing '{}' on remote…",
+                    pos,
+                    total,
+                    remote_path
+                ));
                 let res = if is_dir {
                     client.purge(&remote.name, &remote_path)
                 } else {
