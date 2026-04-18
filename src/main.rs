@@ -42,6 +42,11 @@ fn main() {
     let mut rclone_config = config_dir.clone();
     rclone_config.push("rclone.conf");
     librclone::initialize();
+    // Phase 1 smoke: the rclone RPC surface and the native-Go
+    // ProtonDrive surface share one Go runtime. Print the native
+    // identity string once at startup to confirm linking. Doesn't hit
+    // the network; later phases replace this with real Drive calls.
+    eprintln!("celeste: native-go identity = {}", librclone::proton_drive_version());
     librclone::rpc(
         "config/setpath",
         json!({ "path": rclone_config }).to_string(),

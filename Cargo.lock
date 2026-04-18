@@ -736,13 +736,13 @@ dependencies = [
 name = "celeste"
 version = "0.8.3"
 dependencies = [
+ "celeste-native-sys",
  "clap 4.6.1",
  "file-lock",
  "futures",
  "glob",
  "iced",
  "libc",
- "librclone",
  "sea-orm",
  "sea-orm-migration",
  "serde",
@@ -750,6 +750,13 @@ dependencies = [
  "time",
  "tokio",
  "tr",
+]
+
+[[package]]
+name = "celeste-native-sys"
+version = "0.1.0"
+dependencies = [
+ "bindgen",
 ]
 
 [[package]]
@@ -2321,24 +2328,6 @@ name = "libm"
 version = "0.2.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4ec2a862134d2a7d32d7983ddcdd1c4923530833c9f2ea1a44fc5fa473989058"
-
-[[package]]
-name = "librclone"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5ada852c4b9e698f89a1e46c4836667aba17672da79cb97ded2feb536cec96ad"
-dependencies = [
- "librclone-sys",
-]
-
-[[package]]
-name = "librclone-sys"
-version = "0.9.0+rclone-v1.69.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eac437fba29fefb25cbcd4164691c8a2a0f087a9eae152d4375c8db3fdf0c622"
-dependencies = [
- "bindgen",
-]
 
 [[package]]
 name = "libredox"

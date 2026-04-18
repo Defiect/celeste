@@ -16,7 +16,10 @@ futures = "0.3.32"
 glob = "0.3.3"
 iced = { version = "0.12", features = ["tokio"] }
 libc = "0.2"
-librclone = "0.9.0"
+# Celeste's combined Go archive — provides the librclone RPC surface
+# (drop-in replacement for the upstream `librclone` crate) plus the
+# native ProtonDrive entry points. See `native-go/` for the Go side.
+librclone = { package = "celeste-native-sys", path = "native-go" }
 sea-orm = { version = "0.10.7", features = ["sqlx-sqlite", "runtime-async-std-rustls", "macros"] }
 sea-orm-migration = "0.10.7"
 serde = { version = "1.0.228", features = ["derive"] }

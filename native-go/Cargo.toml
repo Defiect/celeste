@@ -1,0 +1,25 @@
+[package]
+name = "celeste-native-sys"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+description = "Celeste's combined Go archive: rclone librclone RPC + native ProtonDrive (go-proton-api) shims."
+publish = false
+build = "build.rs"
+# Go sources + submodules live next to this manifest; exclude .git/.github
+# from package if we ever decide to publish.
+include = [
+    "Cargo.toml",
+    "build.rs",
+    "src/**",
+    "go.mod",
+    "go.sum",
+    "wrapper.go",
+]
+
+[lib]
+name = "celeste_native_sys"
+path = "src/lib.rs"
+
+[build-dependencies]
+bindgen = "0.71"

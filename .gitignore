@@ -2,3 +2,9 @@
 /celeste_*.snap
 /target
 /src/style.css
+
+# native-go: the `go build -buildmode=c-archive` output. Emitted by
+# native-go/build.rs at OUT_DIR, and occasionally produced at the
+# crate root when running `go build` ad-hoc.
+/native-go/libceleste_native.a
+/native-go/libceleste_native.h
