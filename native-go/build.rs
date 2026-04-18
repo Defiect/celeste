@@ -81,6 +81,8 @@ fn main() {
         .allowlist_function("ProtonDrive_DownloadFile")
         .allowlist_function("ProtonDrive_CreateFolder")
         .allowlist_function("ProtonDrive_UploadFile")
+        .allowlist_function("ProtonDrive_TrashLink")
+        .allowlist_function("ProtonDrive_PermanentDeleteLink")
         .allowlist_type("RcloneRPCResult")
         .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
         .generate()

@@ -443,5 +443,54 @@ func ProtonDrive_UploadFile(paramsJSON *C.char) *C.char {
 	return okResult(id)
 }
 
+// ProtonDrive_TrashLink moves the named link into Proton's Trash.
+// Works for both files and folders; for folders Proton's server
+// cascade-trashes the contents. Input JSON:
+// `{"uid":"...","link_id":"..."}`; result data is null on success.
+//
+//export ProtonDrive_TrashLink
+func ProtonDrive_TrashLink(paramsJSON *C.char) *C.char {
+	var p struct {
+		UID    string `json:"uid"`
+		LinkID string `json:"link_id"`
+	}
+	if err := json.Unmarshal([]byte(C.GoString(paramsJSON)), &p); err != nil {
+		return errResult(err)
+	}
+	sess, err := drive.Lookup(p.UID)
+	if err != nil {
+		return errResult(err)
+	}
+	if err := sess.TrashLink(context.Background(), p.LinkID); err != nil {
+		return errResult(err)
+	}
+	return okResult(nil)
+}
+
+// ProtonDrive_PermanentDeleteLink removes a link outright (no trash
+// recovery window). Celeste's sync engine should NOT call this —
+// mirror deletes route through TrashLink so the user has a window
+// to restore. Exposed for completeness and for explicit
+// "empty trash" UX later.
+//
+//export ProtonDrive_PermanentDeleteLink
+func ProtonDrive_PermanentDeleteLink(paramsJSON *C.char) *C.char {
+	var p struct {
+		UID    string `json:"uid"`
+		LinkID string `json:"link_id"`
+	}
+	if err := json.Unmarshal([]byte(C.GoString(paramsJSON)), &p); err != nil {
+		return errResult(err)
+	}
+	sess, err := drive.Lookup(p.UID)
+	if err != nil {
+		return errResult(err)
+	}
+	if err := sess.PermanentDeleteLink(context.Background(), p.LinkID); err != nil {
+		return errResult(err)
+	}
+	return okResult(nil)
+}
+
 // main is required by cgo for c-archive builds; body intentionally empty.
 func main() {}

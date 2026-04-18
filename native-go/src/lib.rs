@@ -250,6 +250,33 @@ pub mod proton {
         )
     }
 
+    // ---------------- Destructive ----------------
+
+    /// Move the named link into Proton's Trash. Works for files and
+    /// folders; Proton cascade-trashes a folder's contents
+    /// server-side. One link ID per call — the cgo shim constructs
+    /// the `TrashChildren` request body with exactly this ID.
+    pub fn trash_link(uid: &str, link_id: &str) -> Result<(), String> {
+        invoke_raw(
+            |payload| unsafe { ffi::ProtonDrive_TrashLink(payload) },
+            &serde_json::json!({ "uid": uid, "link_id": link_id }),
+        )?;
+        Ok(())
+    }
+
+    /// Permanently delete the named link (no Trash recovery window).
+    /// Celeste's sync engine should NOT call this — mirror deletes
+    /// go through `trash_link` so the user keeps a restore window.
+    /// Exposed so an explicit "empty trash for this item" UX can
+    /// hook it later.
+    pub fn permanent_delete_link(uid: &str, link_id: &str) -> Result<(), String> {
+        invoke_raw(
+            |payload| unsafe { ffi::ProtonDrive_PermanentDeleteLink(payload) },
+            &serde_json::json!({ "uid": uid, "link_id": link_id }),
+        )?;
+        Ok(())
+    }
+
     /// Internal: the caller-visible error type for every `ProtonDrive_*`
     /// entry point is just a String, to keep the FFI boundary narrow.
     /// Errors-as-strings leaves room to add structured variants later
