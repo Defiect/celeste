@@ -6,7 +6,7 @@ use sea_orm::{
 
 use crate::domain::{
     ports::{BoxFuture, Repository, RepositoryError},
-    remote::{Interval, Remote, RemoteId, SyncPolicy},
+    remote::{Backend, Interval, Remote, RemoteId, SyncPolicy},
     sync::{SyncDir, SyncDirId, SyncItem, SyncItemId},
 };
 
@@ -37,6 +37,8 @@ fn map_remote(m: RemotesModel) -> Remote {
         },
         // Enriched in the app layer via RcloneClient::remote_type.
         provider_kind: None,
+        backend: Backend::from_db_str(&m.backend),
+        session_path: m.session_path,
     }
 }
 

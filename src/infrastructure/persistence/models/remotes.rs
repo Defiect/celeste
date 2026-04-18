@@ -14,6 +14,13 @@ pub struct Model {
     pub enabled: i32,
     pub last_sync_at: Option<i64>,
     pub last_sync_status: Option<String>,
+    /// Which adapter drives this remote. `"rclone"` (default) means
+    /// the rclone RPC surface in librclone; `"native-proton"` means
+    /// our direct-go-proton-api client in `infrastructure::proton`.
+    pub backend: String,
+    /// Path to the persisted session blob — populated only for
+    /// native-backend remotes; `NULL` for rclone ones.
+    pub session_path: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

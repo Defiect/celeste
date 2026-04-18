@@ -19,7 +19,18 @@ impl MigrationTrait for Migration {
                 sync_interval_seconds INTEGER NOT NULL DEFAULT 15,
                 enabled INTEGER NOT NULL DEFAULT 1,
                 last_sync_at INTEGER NULL,
-                last_sync_status TEXT NULL
+                last_sync_status TEXT NULL,
+                -- Which adapter drives this remote: "rclone" (default,
+                -- via librclone's backends) or "native-proton" (our
+                -- own ProtonDrive client in native-go/). Populated
+                -- when the remote is added; never changes for an
+                -- existing row.
+                backend TEXT NOT NULL DEFAULT 'rclone',
+                -- Path to the persisted session blob for native-
+                -- backend remotes. NULL for rclone-backed remotes
+                -- (rclone owns their config). Resolved under
+                -- ~/.config/celeste/.
+                session_path TEXT NULL
             );
 
             CREATE TABLE sync_dirs (

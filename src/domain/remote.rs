@@ -107,6 +107,45 @@ pub struct Remote {
     /// Filled in after load by the app layer via `RcloneClient::remote_type`.
     /// Drives provider-specific UI hints (interval warnings, defaults).
     pub provider_kind: Option<ProviderKind>,
+    /// Which adapter owns this remote at runtime. New rows default
+    /// to `Backend::Rclone`; ProtonDrive remotes added via the
+    /// native auth flow are stamped `Backend::NativeProton`.
+    pub backend: Backend,
+    /// For native-backend remotes, the filesystem path to the
+    /// persisted session blob that `celeste-native-sys` reads with
+    /// `ProtonDrive_ResumeSession`. `None` for rclone remotes.
+    pub session_path: Option<String>,
+}
+
+/// Which adapter drives a given remote. Kept as a plain enum rather
+/// than a trait object so it can be persisted to the DB as a string
+/// and pattern-matched on in the sync scheduler's routing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Backend {
+    /// librclone's RPC surface — every backend rclone supports.
+    Rclone,
+    /// Native ProtonDrive client in `infrastructure::proton`.
+    NativeProton,
+}
+
+impl Backend {
+    /// Parse the DB-stored string form. Unknown strings fall back
+    /// to `Rclone` — old rows (or rows from a future schema we
+    /// haven't learned about yet) keep working.
+    pub fn from_db_str(s: &str) -> Self {
+        match s {
+            "native-proton" => Self::NativeProton,
+            _ => Self::Rclone,
+        }
+    }
+
+    /// The string form stored in the DB.
+    pub fn as_db_str(self) -> &'static str {
+        match self {
+            Self::Rclone => "rclone",
+            Self::NativeProton => "native-proton",
+        }
+    }
 }
 
 /// Per-remote sync cadence. Fixed to a handful of discrete choices —
@@ -189,6 +228,8 @@ mod tests {
                 enabled: true,
             },
             provider_kind: kind,
+            backend: Backend::Rclone,
+            session_path: None,
         }
     }
 

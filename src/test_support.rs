@@ -22,7 +22,7 @@ use time::OffsetDateTime;
 
 use crate::domain::{
     ports::{BoxFuture, RcloneClient, Repository, RepositoryError},
-    remote::{Remote, RemoteId, SyncPolicy},
+    remote::{Backend, Remote, RemoteId, SyncPolicy},
     sync::{ListFilter, RemoteItem, SyncDir, SyncDirId, SyncItem, SyncItemId},
 };
 
@@ -451,6 +451,8 @@ pub fn remote(id: i32, name: &str) -> Remote {
         name: name.to_owned(),
         policy: SyncPolicy::default(),
         provider_kind: None,
+        backend: Backend::Rclone,
+        session_path: None,
     }
 }
 
