@@ -371,6 +371,46 @@ fn parent_has_tracked_sibling<T>(
 /// local walk reported an I/O error anywhere along the chain — the
 /// "local is missing" signal isn't trustworthy under a broken walk,
 /// regardless of how healthy the siblings look.
+/// Emit a single stderr line summarising the snapshot shape and the
+/// planned action counts. Lets the user tell at a glance whether a
+/// "DELETE mirror-remote" is one-off (e.g. a manual delete mirroring
+/// cleanly) or the start of a cascade they want to interrupt.
+fn log_plan_summary(
+    remote: &Remote,
+    sync_dir: &SyncDir,
+    snapshot: &Snapshot,
+    actions: &[Action],
+) {
+    let (mut uploads, mut downloads) = (0usize, 0usize);
+    let (mut delete_local, mut delete_remote) = (0usize, 0usize);
+    let (mut conflicts, mut clear_rows) = (0usize, 0usize);
+    for a in actions {
+        match a {
+            Action::Upload { .. } => uploads += 1,
+            Action::Download { .. } => downloads += 1,
+            Action::DeleteLocal { .. } => delete_local += 1,
+            Action::DeleteRemote { .. } => delete_remote += 1,
+            Action::Conflict { .. } => conflicts += 1,
+            Action::ClearDbRow { .. } => clear_rows += 1,
+        }
+    }
+    eprintln!(
+        "sync: plan for remote='{}' dir='{}' — snapshot(db={}, listing={}, walk={}, walk_unreliable={}); actions(upload={}, download={}, delete_local={}, delete_remote={}, conflict={}, clear_db_row={}).",
+        remote.name,
+        sync_dir.remote_path,
+        snapshot.db.len(),
+        snapshot.remote.len(),
+        snapshot.local.len(),
+        snapshot.walk_unreliable.len(),
+        uploads,
+        downloads,
+        delete_local,
+        delete_remote,
+        conflicts,
+        clear_rows,
+    );
+}
+
 fn ancestor_in_set(path: &str, unreliable: &HashSet<String>) -> bool {
     if unreliable.is_empty() {
         return false;
@@ -671,6 +711,7 @@ where
         return Outcome::Aborted;
     }
     let actions = plan(&snapshot, sync_dir);
+    log_plan_summary(remote, sync_dir, &snapshot, &actions);
     apply(actions, &snapshot, remote, sync_dir, repo, client, &emit, &is_cancelled);
 
     if is_cancelled() {
