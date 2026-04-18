@@ -1,8 +1,14 @@
-//! Live Proton login + Drive read round-trip.
+//! Live Proton login + Drive round-trip (read AND write).
 //!
 //! Reads credentials from env vars — keeps them out of shell history
 //! and argv — then exercises: login → save → resume → list root →
-//! stat first child (if any) → download first file (if any) → logout.
+//! stat first child (if any) → download first file (if any) →
+//! create a scratch folder under the root → upload a small scratch
+//! file into it → logout.
+//!
+//! Set `PROTON_WRITE_SMOKE=1` to enable the write portion (folder +
+//! upload). Off by default so it doesn't litter the user's Drive on
+//! every invocation.
 //!
 //!     PROTON_USERNAME=alice@proton.me \
 //!     PROTON_PASSWORD='…' \
@@ -138,6 +144,49 @@ fn main() {
         }
     } else {
         eprintln!("  (no files at root to download — skipping download smoke)");
+    }
+
+    // Opt-in write smoke. Skipped by default so the Drive doesn't
+    // accumulate scratch folders between runs.
+    if env::var("PROTON_WRITE_SMOKE").ok().as_deref() == Some("1") {
+        let folder_name = format!("celeste-native-smoke-{}", std::process::id());
+        eprintln!("  creating folder '{folder_name}' under root…");
+        match proton::create_folder(&resumed.uid, "", &folder_name) {
+            Ok(id) => {
+                eprintln!("    folder OK, link id = {id}");
+                // Upload a tiny scratch file into the new folder.
+                let payload = format!(
+                    "celeste native proton upload smoke — pid {} — hello from cgo!\n",
+                    std::process::id()
+                );
+                let src = env::temp_dir().join(format!(
+                    "celeste-proton-upload-src-{}.txt",
+                    std::process::id()
+                ));
+                if let Err(err) = std::fs::write(&src, &payload) {
+                    eprintln!("    scratch write failed: {err}");
+                } else {
+                    eprintln!(
+                        "  uploading '{}' ({} bytes) into folder…",
+                        src.display(),
+                        payload.len()
+                    );
+                    match proton::upload_file(
+                        &resumed.uid,
+                        &id,
+                        src.file_name().unwrap().to_string_lossy().as_ref(),
+                        &src,
+                    ) {
+                        Ok(file_id) => eprintln!("    upload OK, file link id = {file_id}"),
+                        Err(err) => eprintln!("    upload failed: {err}"),
+                    }
+                }
+                let _ = std::fs::remove_file(&src);
+            }
+            Err(err) => eprintln!("    create_folder failed: {err}"),
+        }
+    } else {
+        eprintln!("  (PROTON_WRITE_SMOKE not set — skipping create_folder / upload smoke)");
     }
 
     // Clean up: log out the resumed session (which revokes the shared

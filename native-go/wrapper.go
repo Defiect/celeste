@@ -390,5 +390,58 @@ func ProtonDrive_DownloadFile(paramsJSON *C.char) *C.char {
 	return okResult(nil)
 }
 
+// ProtonDrive_CreateFolder creates a folder named `name` under
+// `parent_link_id` (empty parent = session root). Input
+// `{"uid":"...","parent_link_id":"...","name":"..."}`; result data
+// is the new folder's link ID as a string.
+//
+//export ProtonDrive_CreateFolder
+func ProtonDrive_CreateFolder(paramsJSON *C.char) *C.char {
+	var p struct {
+		UID          string `json:"uid"`
+		ParentLinkID string `json:"parent_link_id"`
+		Name         string `json:"name"`
+	}
+	if err := json.Unmarshal([]byte(C.GoString(paramsJSON)), &p); err != nil {
+		return errResult(err)
+	}
+	sess, err := drive.Lookup(p.UID)
+	if err != nil {
+		return errResult(err)
+	}
+	id, err := sess.CreateFolder(context.Background(), p.ParentLinkID, p.Name)
+	if err != nil {
+		return errResult(err)
+	}
+	return okResult(id)
+}
+
+// ProtonDrive_UploadFile uploads a local file as a new child of
+// `parent_link_id` with the given `name`. Input JSON:
+// `{"uid":"...","parent_link_id":"...","name":"...","src_path":"..."}`.
+// Result data is the new file's link ID.
+//
+//export ProtonDrive_UploadFile
+func ProtonDrive_UploadFile(paramsJSON *C.char) *C.char {
+	var p struct {
+		UID          string `json:"uid"`
+		ParentLinkID string `json:"parent_link_id"`
+		Name         string `json:"name"`
+		SrcPath      string `json:"src_path"`
+	}
+	if err := json.Unmarshal([]byte(C.GoString(paramsJSON)), &p); err != nil {
+		return errResult(err)
+	}
+	sess, err := drive.Lookup(p.UID)
+	if err != nil {
+		return errResult(err)
+	}
+	id, err := sess.UploadFile(context.Background(), p.ParentLinkID, p.Name, p.SrcPath)
+	if err != nil {
+		return errResult(err)
+	}
+	return okResult(id)
+}
+
 // main is required by cgo for c-archive builds; body intentionally empty.
 func main() {}

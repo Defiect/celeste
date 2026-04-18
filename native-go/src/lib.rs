@@ -213,6 +213,43 @@ pub mod proton {
         Ok(())
     }
 
+    // ---------------- Drive write ----------------
+
+    /// Create a new folder named `name` under `parent_link_id`. Pass
+    /// an empty string for `parent_link_id` to target the session
+    /// root. Returns the new folder's link ID.
+    pub fn create_folder(uid: &str, parent_link_id: &str, name: &str) -> Result<String, String> {
+        call_json::<_, String>(
+            |payload| unsafe { ffi::ProtonDrive_CreateFolder(payload) },
+            &serde_json::json!({
+                "uid": uid,
+                "parent_link_id": parent_link_id,
+                "name": name,
+            }),
+        )
+    }
+
+    /// Upload the local file at `src_path` as a new child of
+    /// `parent_link_id`, named `name`. Returns the new file's link
+    /// ID. Blocks until the upload completes — no progress callback
+    /// yet.
+    pub fn upload_file(
+        uid: &str,
+        parent_link_id: &str,
+        name: &str,
+        src_path: &Path,
+    ) -> Result<String, String> {
+        call_json::<_, String>(
+            |payload| unsafe { ffi::ProtonDrive_UploadFile(payload) },
+            &serde_json::json!({
+                "uid": uid,
+                "parent_link_id": parent_link_id,
+                "name": name,
+                "src_path": src_path.to_string_lossy(),
+            }),
+        )
+    }
+
     /// Internal: the caller-visible error type for every `ProtonDrive_*`
     /// entry point is just a String, to keep the FFI boundary narrow.
     /// Errors-as-strings leaves room to add structured variants later
