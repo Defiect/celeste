@@ -61,6 +61,24 @@ type Session struct {
 	userKR  *crypto.KeyRing
 	addrKRs map[string]*crypto.KeyRing
 	addrs   map[string]proton.Address
+
+	// Drive state populated by bootstrapDrive (see drive.go). All
+	// later Drive operations read these fields; they're nil only
+	// between Login()/Resume() and the bootstrap's completion.
+	mainShare        *proton.Share
+	mainShareKR      *crypto.KeyRing
+	defaultAddrKR    *crypto.KeyRing
+	rootLink         *proton.Link
+	signatureAddress string
+}
+
+// RootLinkID returns the main share's root folder ID. Callers use this
+// as the starting point for directory listings.
+func (s *Session) RootLinkID() string {
+	if s.rootLink == nil {
+		return ""
+	}
+	return s.rootLink.LinkID
 }
 
 // LoginParams is the input to [Login] / FFI entry point.
@@ -117,7 +135,7 @@ func Login(ctx context.Context, p LoginParams) (*Session, error) {
 		return nil, err
 	}
 
-	return &Session{
+	sess := &Session{
 		m:             m,
 		c:             c,
 		UID:           auth.UID,
@@ -127,7 +145,12 @@ func Login(ctx context.Context, p LoginParams) (*Session, error) {
 		userKR:        userKR,
 		addrKRs:       addrKRs,
 		addrs:         addrs,
-	}, nil
+	}
+	if err := sess.bootstrapDrive(ctx); err != nil {
+		sess.Close()
+		return nil, err
+	}
+	return sess, nil
 }
 
 // Resume rebuilds a Session from a previously-saved credential blob
@@ -146,7 +169,7 @@ func Resume(ctx context.Context, cred ReusableCredential) (*Session, error) {
 		m.Close()
 		return nil, err
 	}
-	return &Session{
+	sess := &Session{
 		m:             m,
 		c:             c,
 		UID:           cred.UID,
@@ -156,7 +179,12 @@ func Resume(ctx context.Context, cred ReusableCredential) (*Session, error) {
 		userKR:        userKR,
 		addrKRs:       addrKRs,
 		addrs:         addrs,
-	}, nil
+	}
+	if err := sess.bootstrapDrive(ctx); err != nil {
+		sess.Close()
+		return nil, err
+	}
+	return sess, nil
 }
 
 // unlockAccount mirrors Bridge's getAccountKRs: fetches user +
@@ -262,6 +290,13 @@ func (s *Session) Close() {
 	}
 	s.addrKRs = nil
 	s.addrs = nil
+	if s.mainShareKR != nil {
+		s.mainShareKR.ClearPrivateParams()
+		s.mainShareKR = nil
+	}
+	s.defaultAddrKR = nil
+	s.mainShare = nil
+	s.rootLink = nil
 	if s.c != nil {
 		s.c.Close()
 		s.c = nil

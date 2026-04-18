@@ -152,6 +152,67 @@ pub mod proton {
         )
     }
 
+    // ---------------- Drive read ----------------
+
+    /// One child of a folder (or a single stat target). Matches
+    /// `drive.Entry` on the Go side. `mod_time_unix` is a seconds
+    /// timestamp; `size` is the link's stored size (for files that's
+    /// encrypted size, not plaintext — Proton stores plaintext size
+    /// in the revision XAttr, which we don't parse yet).
+    #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+    pub struct Entry {
+        pub link_id: String,
+        pub parent_link_id: String,
+        pub name: String,
+        pub is_dir: bool,
+        pub size: i64,
+        pub mod_time_unix: i64,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        pub mime_type: String,
+    }
+
+    /// Return the root folder's link ID for the logged-in session.
+    pub fn root_link_id(uid: &str) -> Result<String, String> {
+        call_json::<_, String>(
+            |payload| unsafe { ffi::ProtonDrive_RootLinkID(payload) },
+            &serde_json::json!({ "uid": uid }),
+        )
+    }
+
+    /// List the active children of `link_id` (pass an empty string to
+    /// list the session's root). Names are decrypted; sort order is
+    /// whatever Proton returns.
+    pub fn list_directory(uid: &str, link_id: &str) -> Result<Vec<Entry>, String> {
+        call_json::<_, Vec<Entry>>(
+            |payload| unsafe { ffi::ProtonDrive_ListDirectory(payload) },
+            &serde_json::json!({ "uid": uid, "link_id": link_id }),
+        )
+    }
+
+    /// Metadata for a single link. Returns `Ok(None)` when the link
+    /// exists but is not in the active state (matches the semantics
+    /// the sync engine's `stat` port expects from its client trait).
+    pub fn stat(uid: &str, link_id: &str) -> Result<Option<Entry>, String> {
+        call_json::<_, Option<Entry>>(
+            |payload| unsafe { ffi::ProtonDrive_Stat(payload) },
+            &serde_json::json!({ "uid": uid, "link_id": link_id }),
+        )
+    }
+
+    /// Download the active revision of a file link to `dest_path`,
+    /// creating parent directories as needed. Blocks until complete.
+    pub fn download_file(uid: &str, link_id: &str, dest_path: &Path) -> Result<(), String> {
+        invoke_raw(
+            |payload| unsafe { ffi::ProtonDrive_DownloadFile(payload) },
+            &serde_json::json!({
+                "uid": uid,
+                "link_id": link_id,
+                "dest_path": dest_path.to_string_lossy(),
+            }),
+        )?;
+        Ok(())
+    }
+
     /// Internal: the caller-visible error type for every `ProtonDrive_*`
     /// entry point is just a String, to keep the FFI boundary narrow.
     /// Errors-as-strings leaves room to add structured variants later

@@ -1,7 +1,8 @@
-//! Live Proton login round-trip.
+//! Live Proton login + Drive read round-trip.
 //!
 //! Reads credentials from env vars — keeps them out of shell history
-//! and argv — then exercises: login → save → resume → logout.
+//! and argv — then exercises: login → save → resume → list root →
+//! stat first child (if any) → download first file (if any) → logout.
 //!
 //!     PROTON_USERNAME=alice@proton.me \
 //!     PROTON_PASSWORD='…' \
@@ -68,6 +69,76 @@ fn main() {
         resumed.uid,
         resumed.uid == cred.uid
     );
+
+    // Drive read smoke on the resumed session. The original UID is
+    // shared so either works — we'll use the resumed one because it's
+    // the one we'll still have after the original times out.
+    let root_id = match proton::root_link_id(&resumed.uid) {
+        Ok(id) => id,
+        Err(err) => {
+            eprintln!("root_link_id failed: {err}");
+            let _ = proton::logout(&resumed.uid);
+            std::process::exit(1);
+        }
+    };
+    eprintln!("  root link id = {root_id}");
+
+    let entries = match proton::list_directory(&resumed.uid, "") {
+        Ok(e) => e,
+        Err(err) => {
+            eprintln!("list_directory failed: {err}");
+            let _ = proton::logout(&resumed.uid);
+            std::process::exit(1);
+        }
+    };
+    eprintln!("  root entries: {}", entries.len());
+    for e in entries.iter().take(8) {
+        eprintln!(
+            "    - {:<30}  {}  size={}  mtime={}",
+            e.name,
+            if e.is_dir { "dir " } else { "file" },
+            e.size,
+            e.mod_time_unix
+        );
+    }
+    if entries.len() > 8 {
+        eprintln!("    … ({} more)", entries.len() - 8);
+    }
+
+    // Stat the first child to confirm the shape round-trips, then
+    // download the first file (if any) to a temp path.
+    if let Some(first) = entries.first() {
+        match proton::stat(&resumed.uid, &first.link_id) {
+            Ok(Some(entry)) => eprintln!("  stat({}) = {} bytes, is_dir={}", entry.name, entry.size, entry.is_dir),
+            Ok(None) => eprintln!("  stat({}) returned None (non-active)", first.name),
+            Err(err) => eprintln!("  stat failed: {err}"),
+        }
+    }
+    if let Some(first_file) = entries.iter().find(|e| !e.is_dir) {
+        let dl_path = env::temp_dir().join(format!(
+            "celeste-proton-dl-smoke-{}",
+            std::process::id()
+        ));
+        eprintln!(
+            "  downloading '{}' ({} bytes) → {}…",
+            first_file.name,
+            first_file.size,
+            dl_path.display()
+        );
+        match proton::download_file(&resumed.uid, &first_file.link_id, &dl_path) {
+            Ok(()) => {
+                let meta = std::fs::metadata(&dl_path);
+                eprintln!(
+                    "    downloaded OK, local bytes = {}",
+                    meta.map(|m| m.len() as i64).unwrap_or(-1)
+                );
+                let _ = std::fs::remove_file(&dl_path);
+            }
+            Err(err) => eprintln!("    download failed: {err}"),
+        }
+    } else {
+        eprintln!("  (no files at root to download — skipping download smoke)");
+    }
 
     // Clean up: log out the resumed session (which revokes the shared
     // refresh token), drop the file.

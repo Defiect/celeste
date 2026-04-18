@@ -297,5 +297,98 @@ func ProtonDrive_ResumeSession(paramsJSON *C.char) *C.char {
 	return okResult(sess.AsCredential())
 }
 
+// ProtonDrive_RootLinkID returns the active-volume root link's ID for
+// the named session. Input JSON `{"uid":"..."}`; result data is the
+// string link ID. Handy for callers that want to start their
+// traversal at the root without hard-coding a separate call.
+//
+//export ProtonDrive_RootLinkID
+func ProtonDrive_RootLinkID(paramsJSON *C.char) *C.char {
+	var p struct {
+		UID string `json:"uid"`
+	}
+	if err := json.Unmarshal([]byte(C.GoString(paramsJSON)), &p); err != nil {
+		return errResult(err)
+	}
+	sess, err := drive.Lookup(p.UID)
+	if err != nil {
+		return errResult(err)
+	}
+	return okResult(sess.RootLinkID())
+}
+
+// ProtonDrive_ListDirectory lists the active children of a folder.
+// Input `{"uid":"...","link_id":"..."}`; `link_id` empty means list
+// the root. Result data is a JSON array of drive.Entry.
+//
+//export ProtonDrive_ListDirectory
+func ProtonDrive_ListDirectory(paramsJSON *C.char) *C.char {
+	var p struct {
+		UID    string `json:"uid"`
+		LinkID string `json:"link_id"`
+	}
+	if err := json.Unmarshal([]byte(C.GoString(paramsJSON)), &p); err != nil {
+		return errResult(err)
+	}
+	sess, err := drive.Lookup(p.UID)
+	if err != nil {
+		return errResult(err)
+	}
+	entries, err := sess.ListDirectory(context.Background(), p.LinkID)
+	if err != nil {
+		return errResult(err)
+	}
+	return okResult(entries)
+}
+
+// ProtonDrive_Stat returns metadata for a single link (file or
+// folder). Input `{"uid":"...","link_id":"..."}`; result data is a
+// `drive.Entry`, or null if the link is not in the active state.
+//
+//export ProtonDrive_Stat
+func ProtonDrive_Stat(paramsJSON *C.char) *C.char {
+	var p struct {
+		UID    string `json:"uid"`
+		LinkID string `json:"link_id"`
+	}
+	if err := json.Unmarshal([]byte(C.GoString(paramsJSON)), &p); err != nil {
+		return errResult(err)
+	}
+	sess, err := drive.Lookup(p.UID)
+	if err != nil {
+		return errResult(err)
+	}
+	entry, err := sess.Stat(context.Background(), p.LinkID)
+	if err != nil {
+		return errResult(err)
+	}
+	return okResult(entry)
+}
+
+// ProtonDrive_DownloadFile downloads the active revision of a file
+// link to a local path. Input `{"uid":"...","link_id":"...","dest_path":"..."}`.
+// Blocks until the download is complete; result data is null on
+// success.
+//
+//export ProtonDrive_DownloadFile
+func ProtonDrive_DownloadFile(paramsJSON *C.char) *C.char {
+	var p struct {
+		UID      string `json:"uid"`
+		LinkID   string `json:"link_id"`
+		DestPath string `json:"dest_path"`
+	}
+	if err := json.Unmarshal([]byte(C.GoString(paramsJSON)), &p); err != nil {
+		return errResult(err)
+	}
+	sess, err := drive.Lookup(p.UID)
+	if err != nil {
+		return errResult(err)
+	}
+	if err := sess.DownloadFile(context.Background(), p.LinkID, p.DestPath); err != nil {
+		return errResult(err)
+	}
+	return okResult(nil)
+}
+
 // main is required by cgo for c-archive builds; body intentionally empty.
 func main() {}
