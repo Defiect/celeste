@@ -16,13 +16,18 @@ use serde_json::json;
 
 use crate::{
     app::run as iced_run,
-    domain::ports::{RcloneClient, Repository},
+    domain::{
+        ports::{RcloneClient, Repository},
+        remote::Backend,
+    },
     infrastructure::{
+        client_router::ClientRouter,
         persistence::{
             self,
             migrations::{Migrator, MigratorTrait},
             repository::SeaOrmRepository,
         },
+        proton::client::NativeProtonClient,
         rclone::LibrcloneClient,
         stderr_capture,
     },
@@ -70,8 +75,55 @@ fn main() {
         .expect("failed to run database migrations");
 
     let repo: Arc<dyn Repository> = Arc::new(SeaOrmRepository::new(db));
-    let rclone: Arc<dyn RcloneClient> = Arc::new(LibrcloneClient::new());
-    iced_run(repo, rclone).expect("iced app exited with error");
+
+    // Per-remote client router. librclone is the default — Celeste's
+    // existing rclone-backed remotes keep working unchanged. Each
+    // native-backend remote resumes its saved session up front so
+    // the UID is registered before the first sync tick fires.
+    let default_client: Arc<dyn RcloneClient> = Arc::new(LibrcloneClient::new());
+    let router = Arc::new(ClientRouter::new(default_client));
+    resume_native_sessions(&*repo, &router);
+    iced_run(repo, router).expect("iced app exited with error");
+}
+
+/// Load every remote from the DB, and for those flagged
+/// `Backend::NativeProton` resume the saved session (if any), wrap
+/// the UID in a [`NativeProtonClient`], and register it on the
+/// router keyed by remote name. Failures are logged and skipped —
+/// the remote just stays without an override and the sync scheduler
+/// will surface normal errors when it tries to reach it.
+fn resume_native_sessions(repo: &dyn Repository, router: &ClientRouter) {
+    let remotes = util::await_future(repo.list_remotes()).unwrap_or_default();
+    for remote in remotes {
+        if remote.backend != Backend::NativeProton {
+            continue;
+        }
+        let Some(path) = remote.session_path.as_deref() else {
+            eprintln!(
+                "celeste: native-proton remote '{}' has no session_path; skipping resume.",
+                remote.name,
+            );
+            continue;
+        };
+        match librclone::proton::resume_session(std::path::Path::new(path)) {
+            Ok(cred) => {
+                router.register(
+                    remote.name.clone(),
+                    Arc::new(NativeProtonClient::new(cred.uid)),
+                );
+                eprintln!(
+                    "celeste: native-proton session resumed for '{}'.",
+                    remote.name,
+                );
+            }
+            Err(err) => {
+                eprintln!(
+                    "celeste: native-proton resume failed for '{}': {err}",
+                    remote.name,
+                );
+            }
+        }
+    }
 }
 
 fn show_legacy_config_popup(config_dir: &std::path::Path) {
