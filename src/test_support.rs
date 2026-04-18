@@ -144,6 +144,13 @@ impl Repository for FakeRepo {
     fn insert_remote(&self, _name: String) -> BoxFuture<'_, Result<RemoteId, RepositoryError>> {
         Box::pin(async { Ok(RemoteId(1)) })
     }
+    fn insert_native_proton_remote(
+        &self,
+        _name: String,
+        _session_path: String,
+    ) -> BoxFuture<'_, Result<RemoteId, RepositoryError>> {
+        Box::pin(async { Ok(RemoteId(1)) })
+    }
     fn delete_remote(&self, _id: RemoteId) -> BoxFuture<'_, Result<(), RepositoryError>> {
         Box::pin(async { Ok(()) })
     }

@@ -8,7 +8,7 @@
 //! - [`add_proton_drive_remote`] — Proton Drive (username + password +
 //!   optional 2FA, no browser step).
 
-use std::process::Command;
+use std::{path::{Path, PathBuf}, process::Command, sync::Arc};
 
 use serde_json::json;
 
@@ -17,6 +17,7 @@ use crate::{
         ports::{RcloneClient, Repository},
         remote::{ProviderKind, RemoteId, SyncPolicy},
     },
+    infrastructure::{client_router::ClientRouter, proton::client::NativeProtonClient},
     util,
 };
 
@@ -80,29 +81,41 @@ pub fn add_webdav_remote(
 }
 
 /// Proton Drive: username + password + optional TOTP. No browser step.
+///
+/// Uses the native Proton client (no rclone in the path). Logs in
+/// against Proton's API, writes the persistable credential blob to
+/// `config_dir/proton-session-<name>.json`, inserts the remote with
+/// `backend = native-proton`, and registers the session's UID on the
+/// router so the sync engine picks up the native adapter
+/// immediately.
 pub fn add_proton_drive_remote(
     name: &str,
     username: &str,
     password: &str,
     totp: &str,
+    config_dir: &Path,
     repo: &dyn Repository,
-    client: &dyn RcloneClient,
+    router: &ClientRouter,
 ) -> Result<RemoteId, String> {
-    let payload = json!({
-        "name": name,
-        "parameters": {
-            "username": username,
-            "password": password,
-            "2fa": totp,
-        },
-        "type": "protondrive",
-        "opt": { "obscure": true },
-    })
-    .to_string();
+    let params = librclone::proton::LoginParams {
+        username: username.to_owned(),
+        password: password.to_owned(),
+        two_fa: totp.to_owned(),
+        mailbox_password: String::new(),
+    };
+    let cred = librclone::proton::login(&params)?;
 
-    client.create_config(payload)?;
-    let id = util::await_future(repo.insert_remote(name.to_owned()))
-        .map_err(|e| e.to_string())?;
+    let session_path = proton_session_path(config_dir, name);
+    if let Some(parent) = session_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    librclone::proton::save_session(&cred.uid, &session_path)?;
+
+    let id = util::await_future(
+        repo.insert_native_proton_remote(name.to_owned(), session_path.display().to_string()),
+    )
+    .map_err(|e| e.to_string())?;
+
     // Proton Drive rate-limits short polls; ship the provider-specific
     // default interval so the user doesn't have to discover this the
     // hard way.
@@ -111,7 +124,24 @@ pub fn add_proton_drive_remote(
         enabled: true,
     };
     let _ = util::await_future(repo.set_policy(id, policy));
+
+    router.register(
+        name.to_owned(),
+        Arc::new(NativeProtonClient::new(cred.uid)),
+    );
     Ok(id)
+}
+
+/// Where the native-backed Proton session blob lives for a remote
+/// named `name`. Kept in one place so the add / resume / delete flows
+/// agree on the location. Sanitises the name so unusual characters
+/// don't hit the filesystem.
+fn proton_session_path(config_dir: &Path, name: &str) -> PathBuf {
+    let safe: String = name
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '-' | '_') { c } else { '_' })
+        .collect();
+    config_dir.join(format!("proton-session-{safe}.json"))
 }
 
 /// OAuth providers that use `rclone authorize` for token capture.
@@ -242,6 +272,18 @@ mod tests {
         fn insert_remote(
             &self,
             name: String,
+        ) -> BoxFuture<'_, Result<RemoteId, RepositoryError>> {
+            let mut inserted = self.inserted.lock().unwrap();
+            inserted.push(name);
+            let mut next = self.next_id.lock().unwrap();
+            *next += 1;
+            let id = RemoteId(*next);
+            Box::pin(async move { Ok(id) })
+        }
+        fn insert_native_proton_remote(
+            &self,
+            name: String,
+            _session_path: String,
         ) -> BoxFuture<'_, Result<RemoteId, RepositoryError>> {
             let mut inserted = self.inserted.lock().unwrap();
             inserted.push(name);

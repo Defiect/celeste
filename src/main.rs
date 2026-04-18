@@ -83,7 +83,7 @@ fn main() {
     let default_client: Arc<dyn RcloneClient> = Arc::new(LibrcloneClient::new());
     let router = Arc::new(ClientRouter::new(default_client));
     resume_native_sessions(&*repo, &router);
-    iced_run(repo, router).expect("iced app exited with error");
+    iced_run(repo, router, config_dir).expect("iced app exited with error");
 }
 
 /// Load every remote from the DB, and for those flagged

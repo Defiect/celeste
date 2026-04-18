@@ -122,6 +122,26 @@ impl Repository for SeaOrmRepository {
         })
     }
 
+    fn insert_native_proton_remote(
+        &self,
+        name: String,
+        session_path: String,
+    ) -> BoxFuture<'_, Result<RemoteId, RepositoryError>> {
+        Box::pin(async move {
+            let active = RemotesActiveModel {
+                name: ActiveValue::Set(name),
+                backend: ActiveValue::Set(Backend::NativeProton.as_db_str().to_owned()),
+                session_path: ActiveValue::Set(Some(session_path)),
+                ..Default::default()
+            };
+            let res = RemotesEntity::insert(active)
+                .exec(&self.db)
+                .await
+                .map_err(map_err)?;
+            Ok(RemoteId(res.last_insert_id))
+        })
+    }
+
     fn delete_remote(&self, id: RemoteId) -> BoxFuture<'_, Result<(), RepositoryError>> {
         Box::pin(async move {
             RemotesEntity::delete_by_id(id.0)

@@ -14,6 +14,8 @@ use std::{
 use iced::{executor, subscription, Application, Command, Element, Settings, Subscription, Theme};
 use tokio::sync::mpsc;
 
+use std::path::PathBuf;
+
 use crate::{
     domain::{
         events::SyncEvent,
@@ -21,7 +23,10 @@ use crate::{
         remote::{ProviderKind, Remote, RemoteId},
         sync::{SyncDir, SyncDirId, SyncError},
     },
-    infrastructure::stderr_capture::{self, CaptureHandle},
+    infrastructure::{
+        client_router::ClientRouter,
+        stderr_capture::{self, CaptureHandle},
+    },
     screens::{add_remote, main_page, remote_page, settings},
     services::sync::Outcome,
     theme,
@@ -62,7 +67,15 @@ pub enum PassVerdict {
 
 pub struct CelesteApp {
     repo: Arc<dyn Repository>,
-    rclone: Arc<dyn RcloneClient>,
+    /// Client router — dispatches RcloneClient calls per-remote.
+    /// `Arc<ClientRouter>` rather than `Arc<dyn RcloneClient>` so the
+    /// add-/delete-remote paths can register / unregister native
+    /// sessions on it; sync code downcasts on the fly (ClientRouter
+    /// implements RcloneClient).
+    rclone: Arc<ClientRouter>,
+    /// User's Celeste config dir — needed so the native Proton
+    /// add-remote flow knows where to put session blobs.
+    config_dir: PathBuf,
     remotes: Vec<Remote>,
     sync_dirs: HashMap<RemoteId, Vec<SyncDir>>,
     selected: Option<RemoteId>,
@@ -110,7 +123,8 @@ pub struct CelesteApp {
 
 pub struct Flags {
     pub repo: Arc<dyn Repository>,
-    pub rclone: Arc<dyn RcloneClient>,
+    pub rclone: Arc<ClientRouter>,
+    pub config_dir: PathBuf,
 }
 
 impl Application for CelesteApp {
@@ -123,6 +137,7 @@ impl Application for CelesteApp {
         let state = Self {
             repo: flags.repo.clone(),
             rclone: flags.rclone,
+            config_dir: flags.config_dir,
             remotes: Vec::new(),
             sync_dirs: HashMap::new(),
             selected: None,
@@ -286,12 +301,20 @@ impl Application for CelesteApp {
                             let user = draft.user.clone();
                             let pass = draft.pass.clone();
                             let totp = draft.totp.clone();
+                            let router = self.rclone.clone();
+                            let config_dir = self.config_dir.clone();
                             draft.busy = true;
                             return Command::perform(
                                 async move {
                                     tokio::task::spawn_blocking(move || {
                                         crate::services::auth_service::add_proton_drive_remote(
-                                            &name, &user, &pass, &totp, &*repo, &*rclone,
+                                            &name,
+                                            &user,
+                                            &pass,
+                                            &totp,
+                                            &config_dir,
+                                            &*repo,
+                                            &*router,
                                         )
                                     })
                                     .await
@@ -431,6 +454,10 @@ impl Application for CelesteApp {
                 self.last_sync_at.remove(&id);
                 self.sync_dir_drafts.remove(&id);
                 self.remotes.retain(|r| r.id != id);
+                // Drop any native-proton override so the router
+                // stops routing its (now-gone) name to a stale
+                // session.
+                self.rclone.unregister(&name);
                 let repo_blocking = self.repo.clone();
                 let repo_after = self.repo.clone();
                 let rclone = self.rclone.clone();
@@ -784,8 +811,16 @@ impl CelesteApp {
 }
 
 /// Launch the Iced application. Blocks until the window closes.
-pub fn run(repo: Arc<dyn Repository>, rclone: Arc<dyn RcloneClient>) -> iced::Result {
-    let mut settings = Settings::with_flags(Flags { repo, rclone });
+pub fn run(
+    repo: Arc<dyn Repository>,
+    rclone: Arc<ClientRouter>,
+    config_dir: PathBuf,
+) -> iced::Result {
+    let mut settings = Settings::with_flags(Flags {
+        repo,
+        rclone,
+        config_dir,
+    });
     settings.fonts = fallback_fonts();
     // Bias iced's default glyph lookup to the sans-serif family so
     // cosmic-text's fallback layer resolves against the fonts we just

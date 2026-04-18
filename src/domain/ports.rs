@@ -45,6 +45,15 @@ pub trait Repository: Send + Sync {
         &self,
         name: String,
     ) -> BoxFuture<'_, Result<RemoteId, RepositoryError>>;
+    /// Insert a remote whose adapter is the native ProtonDrive client.
+    /// `session_path` is the absolute path to the persisted credential
+    /// blob the app-start flow will later feed to
+    /// `ProtonDrive_ResumeSession`.
+    fn insert_native_proton_remote(
+        &self,
+        name: String,
+        session_path: String,
+    ) -> BoxFuture<'_, Result<RemoteId, RepositoryError>>;
     fn delete_remote(&self, id: RemoteId) -> BoxFuture<'_, Result<(), RepositoryError>>;
     /// Delete a remote, all of its sync_dirs, and all of their sync_items.
     fn cascade_delete_remote(
