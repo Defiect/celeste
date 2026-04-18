@@ -8,3 +8,10 @@
 # crate root when running `go build` ad-hoc.
 /native-go/libceleste_native.a
 /native-go/libceleste_native.h
+
+# Cargo's per-crate artefacts when the sys crate is built standalone
+# (e.g. `cargo run --manifest-path native-go/Cargo.toml --example …`).
+# The authoritative Cargo.lock lives at the repo root alongside the
+# main Celeste crate.
+/native-go/target
+/native-go/Cargo.lock
