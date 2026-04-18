@@ -42,20 +42,8 @@ fn main() {
     let mut rclone_config = config_dir.clone();
     rclone_config.push("rclone.conf");
     librclone::initialize();
-    // Startup smoke for the native-Go ProtonDrive surface: print the
-    // identity string (proves the combined Go archive loaded), then
-    // issue a deliberate bad-credentials login so we know the FFI
-    // round-trip deserialises errors from Go cleanly without
-    // panicking. Both are cheap; neither hits a real remote.
+    // Prove the combined Go archive loaded — cheap (no network).
     eprintln!("celeste: native-go identity = {}", librclone::proton_drive_version());
-    match librclone::proton::login(&librclone::proton::LoginParams {
-        username: "__celeste_ffi_smoke__".to_owned(),
-        password: "__unused__".to_owned(),
-        ..Default::default()
-    }) {
-        Ok(_) => eprintln!("celeste: native-go login smoke — unexpectedly succeeded"),
-        Err(err) => eprintln!("celeste: native-go login smoke — error path OK: {err}"),
-    }
     librclone::rpc(
         "config/setpath",
         json!({ "path": rclone_config }).to_string(),
