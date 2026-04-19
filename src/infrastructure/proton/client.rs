@@ -5,24 +5,21 @@
 //! ProtonDrive link IDs by walking the tree from the session's root.
 //!
 //! Scope of this initial impl:
-//!   - One remote per Celeste instance. `remote` arg is accepted but
-//!     only logged — every call routes to the single native session
-//!     this client was constructed with.
-//!   - No cache. Each call walks root → target, listing each
-//!     intermediate folder. First-pass good-enough for a known
-//!     small sync tree; later optimise with a linkID cache keyed
-//!     by remote_path.
-//!   - `ListFilter` is honoured (`All` / `Dirs` / `Files`).
-//!     `recursive` is implemented by in-Rust recursion over the
-//!     native API's non-recursive listings — the FFI surface
-//!     doesn't yet carry a `recursive` flag.
+//!   - One remote per Celeste instance. `remote` arg is accepted but only
+//!     logged — every call routes to the single native session this client was
+//!     constructed with.
+//!   - No cache. Each call walks root → target, listing each intermediate
+//!     folder. First-pass good-enough for a known small sync tree; later
+//!     optimise with a linkID cache keyed by remote_path.
+//!   - `ListFilter` is honoured (`All` / `Dirs` / `Files`). `recursive` is
+//!     implemented by in-Rust recursion over the native API's non-recursive
+//!     listings — the FFI surface doesn't yet carry a `recursive` flag.
 //!   - `copy_to_remote` needs a parent link ID + basename; we split
-//!     `remote_path` on the trailing slash and resolve the parent
-//!     portion.
-//!   - `delete_config` is a no-op at this layer — the session blob
-//!     is owned by the higher-level auth flow that constructed us.
-//!   - `create_config` is unused; the native path takes a typed
-//!     credential blob rather than an rclone JSON body.
+//!     `remote_path` on the trailing slash and resolve the parent portion.
+//!   - `delete_config` is a no-op at this layer — the session blob is owned by
+//!     the higher-level auth flow that constructed us.
+//!   - `create_config` is unused; the native path takes a typed credential blob
+//!     rather than an rclone JSON body.
 //!   - `remote_type` returns the fixed string `"native-proton"`.
 
 use std::path::Path;
@@ -125,10 +122,11 @@ impl RcloneClient for NativeProtonClient {
         // Bridge leaves the root's name empty; callers pass the
         // requested path so we preserve that in the returned item.
         let name = if entry.name.is_empty() {
-            path.trim_matches('/').rsplit_once('/').map_or(
-                path.trim_matches('/').to_owned(),
-                |(_, base)| base.to_owned(),
-            )
+            path.trim_matches('/')
+                .rsplit_once('/')
+                .map_or(path.trim_matches('/').to_owned(), |(_, base)| {
+                    base.to_owned()
+                })
         } else {
             entry.name.clone()
         };
@@ -181,8 +179,14 @@ impl RcloneClient for NativeProtonClient {
 
     fn mkdir(&self, _remote: &str, path: &str) -> Result<(), String> {
         let (parent, name) = self.resolve_parent(path)?;
-        proton_ffi::create_folder(&self.uid, &parent, &name)?;
-        Ok(())
+        match proton_ffi::create_folder(&self.uid, &parent, &name) {
+            Ok(_) => Ok(()),
+            Err(e) if e.contains("Code=2500") || e.contains("already exists") => {
+                // Folder already exists — treat as success (idempotent mkdir).
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
     }
 
     fn delete_file(&self, _remote: &str, path: &str) -> Result<(), String> {

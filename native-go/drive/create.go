@@ -7,13 +7,10 @@ package drive
 //   - file_upload.go::createFileUploadDraft + uploadAndCollectBlockData
 //     + commitNewRevision → UploadFile
 //
-// Bridge's conflict-handling branch (draft-revision detection,
-// replace-existing-draft, checkAvailableHashes fallback) is
-// intentionally absent from this first pass. The sync engine only
-// calls CreateFolder / UploadFile when it already believes the name
-// is free; letting the server reject duplicates with a 422 and
-// surfacing that error is good enough for Phase 4. We can layer
-// conflict handling back in once the end-to-end write path is wired.
+// CreateFolder handles the "already exists" conflict (Proton error
+// code 2500, HTTP 422) by looking up the existing folder and returning
+// its link ID, making the operation idempotent. File upload conflicts
+// are not yet handled — the 422 is surfaced as-is to the caller.
 
 import (
 	"context"
@@ -41,6 +38,10 @@ const (
 	uploadBatchBlockSize = 8
 )
 
+// codeAlreadyExists is Proton's server-side error for "a file or
+// folder with that name already exists" (HTTP 422).
+const codeAlreadyExists = proton.Code(2500)
+
 // ErrParentNotFolder surfaces when a mkdir / upload target parent
 // turns out to be a file. The sync engine enforces this pre-flight
 // anyway; this is belt-and-braces.
@@ -48,11 +49,22 @@ var ErrParentNotFolder = errors.New("parent link is not a folder")
 
 // CreateFolder creates a new subfolder named `name` under
 // `parentLinkID`. Empty parent = session root. Returns the new
-// folder's link ID.
+// folder's link ID. Idempotent: if a folder with the same name
+// already exists, its link ID is returned without hitting the
+// create endpoint (avoids noisy 422 / Code=2500 from the server).
 func (s *Session) CreateFolder(ctx context.Context, parentLinkID, name string) (string, error) {
 	if parentLinkID == "" {
 		parentLinkID = s.RootLinkID()
 	}
+
+	// Fast path: if a folder with this name already exists under the
+	// parent, return its link ID immediately. This avoids the 422
+	// round-trip (and resty's WARN/ERROR log noise) plus the wasted
+	// crypto work of generating throwaway node keys.
+	if existing, err := s.findChildByName(ctx, parentLinkID, name, true); err == nil && existing != "" {
+		return existing, nil
+	}
+
 	parentLink, err := s.getLink(ctx, parentLinkID)
 	if err != nil {
 		return "", err
@@ -102,9 +114,35 @@ func (s *Session) CreateFolder(ctx context.Context, parentLinkID, name string) (
 
 	res, err := s.c.CreateFolder(ctx, s.mainShare.ShareID, req)
 	if err != nil {
+		// Handle "already exists" — look up the existing folder and
+		// return its link ID, making CreateFolder idempotent.
+		var apiErr *proton.APIError
+		if errors.As(err, &apiErr) && apiErr.Code == codeAlreadyExists {
+			existing, lookupErr := s.findChildByName(ctx, parentLink.LinkID, name, true)
+			if lookupErr == nil && existing != "" {
+				return existing, nil
+			}
+		}
 		return "", err
 	}
 	return res.ID, nil
+}
+
+// findChildByName lists the active children of parentLinkID and returns
+// the link ID of the first child matching `name` with the given type
+// (isDir=true for folders, false for files). Returns ("", nil) when no
+// match is found.
+func (s *Session) findChildByName(ctx context.Context, parentLinkID, name string, isDir bool) (string, error) {
+	entries, err := s.ListDirectory(ctx, parentLinkID)
+	if err != nil {
+		return "", err
+	}
+	for _, e := range entries {
+		if e.Name == name && e.IsDir == isDir {
+			return e.LinkID, nil
+		}
+	}
+	return "", nil
 }
 
 // UploadFile uploads `srcPath`'s contents as a new file named `name`

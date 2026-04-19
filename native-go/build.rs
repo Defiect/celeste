@@ -28,27 +28,26 @@ fn main() {
         "cargo:rerun-if-changed={}",
         manifest_dir.join("proton-api").display()
     );
+    // The native Drive layer lives under drive/; rebuild when any
+    // file there changes.
+    println!(
+        "cargo:rerun-if-changed={}",
+        manifest_dir.join("drive").display()
+    );
 
     let lib_path = out_dir.join("libceleste_native.a");
     let header_path = out_dir.join("libceleste_native.h");
 
     let status = Command::new("go")
         .current_dir(&manifest_dir)
-        .args([
-            "build",
-            "-buildmode=c-archive",
-            "-o",
-        ])
+        .args(["build", "-buildmode=c-archive", "-o"])
         .arg(&lib_path)
         .arg(".")
         .status()
         .expect("`go build` failed. Is `go` installed and latest version?");
     assert!(status.success(), "go build failed");
 
-    println!(
-        "cargo:rustc-link-search=native={}",
-        out_dir.display()
-    );
+    println!("cargo:rustc-link-search=native={}", out_dir.display());
     // Rust strips the `lib` prefix and `.a` suffix before passing to the
     // linker, so `celeste_native` resolves to `libceleste_native.a`.
     println!("cargo:rustc-link-lib=static=celeste_native");
