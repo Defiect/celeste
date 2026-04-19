@@ -28,7 +28,7 @@ import (
 // `macos-drive` platform slot with our own version + tag so the
 // upstream-side rate-limit telemetry still distinguishes Celeste
 // from rclone.
-const AppVersion = "macos-drive@0.1.0+celeste-native"
+const AppVersion = "macos-drive@1.0.0-alpha.1+celeste-native"
 
 // Errors that can surface through the FFI boundary. Message text is
 // the only thing the Rust side sees — keep them short and actionable.
