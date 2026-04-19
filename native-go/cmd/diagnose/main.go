@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"celeste/native-go/drive"
 
@@ -62,8 +63,12 @@ func main() {
 	case "upload-test":
 		fixGhost(ctx, sess, rootID, targetName)
 		uploadTest(ctx, sess, rootID, targetName)
+	case "bench-list":
+		benchList(ctx, sess, rootID)
+	case "bench-recursive":
+		benchRecursive(ctx, sess, rootID)
 	default:
-		fmt.Fprintf(os.Stderr, "unknown mode %q (use: diagnose, fix, upload-test)\n", mode)
+		fmt.Fprintf(os.Stderr, "unknown mode %q (use: diagnose, fix, upload-test, bench-list, bench-recursive)\n", mode)
 		os.Exit(1)
 	}
 
@@ -179,6 +184,92 @@ func uploadTest(ctx context.Context, sess *drive.Session, rootID, targetName str
 	// Verify it's visible now
 	fmt.Printf("\n  Verifying file is now visible in listing...\n")
 	searchFolder(ctx, sess, rootID, "/", targetName)
+}
+
+func benchList(ctx context.Context, sess *drive.Session, rootID string) {
+	fmt.Printf("--- Benchmark: full recursive listing ---\n\n")
+
+	type folderInfo struct {
+		linkID string
+		path   string
+	}
+
+	start := time.Now()
+	var totalFiles, totalDirs, totalAPIcalls int
+
+	stack := []folderInfo{{linkID: rootID, path: "/"}}
+	for len(stack) > 0 {
+		cur := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+
+		t0 := time.Now()
+		entries, err := sess.ListDirectory(ctx, cur.linkID)
+		elapsed := time.Since(t0)
+		totalAPIcalls++
+
+		if err != nil {
+			fmt.Printf("  ERROR listing %s: %v\n", cur.path, err)
+			continue
+		}
+
+		nFiles, nDirs := 0, 0
+		for _, e := range entries {
+			if e.IsDir {
+				nDirs++
+				childPath := cur.path
+				if childPath == "/" {
+					childPath = "/" + e.Name
+				} else {
+					childPath = cur.path + "/" + e.Name
+				}
+				stack = append(stack, folderInfo{linkID: e.LinkID, path: childPath})
+			} else {
+				nFiles++
+			}
+		}
+		totalFiles += nFiles
+		totalDirs += nDirs
+
+		if elapsed > 500*time.Millisecond {
+			fmt.Printf("  SLOW %6dms  %s (%d files, %d dirs)\n", elapsed.Milliseconds(), cur.path, nFiles, nDirs)
+		}
+	}
+
+	totalElapsed := time.Since(start)
+	fmt.Printf("\nResults:\n")
+	fmt.Printf("  Total time:      %v\n", totalElapsed.Round(time.Millisecond))
+	fmt.Printf("  Total files:     %d\n", totalFiles)
+	fmt.Printf("  Total dirs:      %d\n", totalDirs)
+	fmt.Printf("  API calls:       %d\n", totalAPIcalls)
+	fmt.Printf("  Avg per call:    %v\n", (totalElapsed / time.Duration(totalAPIcalls)).Round(time.Millisecond))
+}
+
+func benchRecursive(ctx context.Context, sess *drive.Session, rootID string) {
+	fmt.Printf("--- Benchmark: concurrent recursive listing (ListRecursive) ---\n\n")
+
+	start := time.Now()
+	entries, err := sess.ListRecursive(ctx, rootID)
+	elapsed := time.Since(start)
+
+	if err != nil {
+		fmt.Printf("  ERROR: %v\n", err)
+		return
+	}
+
+	nFiles, nDirs := 0, 0
+	for _, e := range entries {
+		if e.IsDir {
+			nDirs++
+		} else {
+			nFiles++
+		}
+	}
+
+	fmt.Printf("Results:\n")
+	fmt.Printf("  Total time:      %v\n", elapsed.Round(time.Millisecond))
+	fmt.Printf("  Total files:     %d\n", nFiles)
+	fmt.Printf("  Total dirs:      %d\n", nDirs)
+	fmt.Printf("  Total entries:   %d\n", len(entries))
 }
 
 func linkStateName(state int) string {
