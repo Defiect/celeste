@@ -9,8 +9,13 @@ package drive
 //
 // CreateFolder handles the "already exists" conflict (Proton error
 // code 2500, HTTP 422) by looking up the existing folder and returning
-// its link ID, making the operation idempotent. File upload conflicts
-// are not yet handled — the 422 is surfaced as-is to the caller.
+// its link ID, making the operation idempotent.
+//
+// UploadFile / createFileDraft now also handles the same 422 conflict
+// for files: when a file with the same name already exists, the code
+// locates the existing link, cleans up any stale draft revision,
+// creates a new revision on the existing file, and reuses the
+// existing file's node keyring + session key for block encryption.
 
 import (
 	"context"
@@ -20,6 +25,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"log"
 	"mime"
 	"os"
 	"path/filepath"
@@ -145,6 +151,33 @@ func (s *Session) findChildByName(ctx context.Context, parentLinkID, name string
 	return "", nil
 }
 
+// findChildLinkByName is like findChildByName but returns the full
+// proton.Link for the matched child, which callers need when they
+// must inspect FileProperties / State / keyrings.
+func (s *Session) findChildLinkByName(ctx context.Context, parentLinkID, name string, wantFile bool) (*proton.Link, error) {
+	entries, err := s.ListDirectory(ctx, parentLinkID)
+	if err != nil {
+		return nil, err
+	}
+	wantType := proton.LinkTypeFolder
+	if wantFile {
+		wantType = proton.LinkTypeFile
+	}
+	for _, e := range entries {
+		if e.Name == name {
+			// Fetch the full link metadata (ListDirectory caches it).
+			link, err := s.getLink(ctx, e.LinkID)
+			if err != nil {
+				continue
+			}
+			if link.Type == wantType {
+				return &link, nil
+			}
+		}
+	}
+	return nil, nil
+}
+
 // UploadFile uploads `srcPath`'s contents as a new file named `name`
 // under `parentLinkID`. Uses the file's mtime for the revision's
 // XAttr ModificationTime. Returns the new file's link ID.
@@ -152,7 +185,8 @@ func (s *Session) findChildByName(ctx context.Context, parentLinkID, name string
 // Flow (mirrors Bridge's uploadFile):
 //   1. Open source file, get size + mtime.
 //   2. Create draft on the server (CreateFile with encrypted name /
-//      hash / session-key packet).
+//      hash / session-key packet), OR find the existing file and
+//      create a new revision on it if a name conflict occurs.
 //   3. Read the file in 4 MB chunks: encrypt + detached-sign each
 //      chunk, batch 8 blocks, RequestBlockUpload + UploadBlock for
 //      the batch. Accumulate manifest-hash (SHA-256 of encrypted
@@ -196,8 +230,12 @@ func (s *Session) UploadFile(ctx context.Context, parentLinkID, name, srcPath st
 }
 
 // createFileDraft posts a `CreateFile` request for a new file under
-// `parentLinkID`. Returns (linkID, revisionID, fileSessionKey,
-// fileNodeKR).
+// `parentLinkID`. If the file already exists on the server (422 /
+// Code=2500), the existing file link is located, any stale draft
+// revision is cleaned up, a fresh revision is created on the
+// existing link, and the existing file's keyring + session key are
+// returned so the caller can encrypt blocks with the right key
+// material. Returns (linkID, revisionID, fileSessionKey, fileNodeKR).
 func (s *Session) createFileDraft(
 	ctx context.Context,
 	parentLinkID, name string,
@@ -255,10 +293,175 @@ func (s *Session) createFileDraft(
 	}
 
 	res, err := s.c.CreateFile(ctx, s.mainShare.ShareID, req)
+	if err == nil {
+		// Happy path: brand-new file draft created.
+		return res.ID, res.RevisionID, sessionKey, nodeKR, nil
+	}
+
+	// -----------------------------------------------------------
+	// Conflict handling: file with the same name already exists.
+	// Mirror Proton-API-Bridge's createFileUploadDraft logic.
+	// -----------------------------------------------------------
+	var apiErr *proton.APIError
+	if !errors.As(err, &apiErr) || apiErr.Code != codeAlreadyExists {
+		// Not a name-conflict — genuine error.
+		return "", "", nil, nil, err
+	}
+
+	log.Printf("[proton-native] CreateFile conflict for %q — searching ALL children (incl. trashed/draft)", name)
+
+	existingLink, findErr := s.findAnyChildFileByName(ctx, parentLink.LinkID, name)
+	if findErr != nil {
+		log.Printf("[proton-native] error searching for conflicting file: %v", findErr)
+		return "", "", nil, nil, err
+	}
+	if existingLink == nil {
+		log.Printf("[proton-native] could not locate conflicting file %q in any state — returning original error", name)
+		return "", "", nil, nil, err
+	}
+
+	log.Printf("[proton-native] found conflicting file: linkID=%s state=%d type=%d", existingLink.LinkID, existingLink.State, existingLink.Type)
+
+	// ---- Trashed / Deleted / Draft ghost: permanently delete, then retry CreateFile ----
+	// Draft links with no committed revision can't even have their
+	// revisions listed (server returns 2501), so we treat them the
+	// same as trashed ghosts: nuke and retry.
+	if existingLink.State == proton.LinkStateTrashed || existingLink.State == proton.LinkStateDeleted || existingLink.State == proton.LinkStateDraft {
+		log.Printf("[proton-native] permanently deleting ghost link %s (state=%d)", existingLink.LinkID, existingLink.State)
+		if delErr := s.c.DeleteChildren(ctx, s.mainShare.ShareID, existingLink.ParentLinkID, existingLink.LinkID); delErr != nil {
+			log.Printf("[proton-native] DeleteChildren failed: %v — falling back to original error", delErr)
+			return "", "", nil, nil, err
+		}
+		delete(s.linkCache, existingLink.LinkID)
+		delete(s.krCache, existingLink.LinkID)
+
+		// Retry CreateFile now that the ghost is gone.
+		res2, err2 := s.c.CreateFile(ctx, s.mainShare.ShareID, req)
+		if err2 != nil {
+			return "", "", nil, nil, err2
+		}
+		log.Printf("[proton-native] CreateFile succeeded after deleting ghost: linkID=%s revID=%s", res2.ID, res2.RevisionID)
+		return res2.ID, res2.RevisionID, sessionKey, nodeKR, nil
+	}
+
+	// ---- Draft / Active: handle revision conflicts ----
+	revisionID, needRetry, revErr := s.handleRevisionConflict(ctx, existingLink)
+	if revErr != nil {
+		return "", "", nil, nil, revErr
+	}
+
+	if needRetry {
+		// The link only had a draft (no active revision), so we
+		// deleted the link and need to re-issue CreateFile.
+		res2, err2 := s.c.CreateFile(ctx, s.mainShare.ShareID, req)
+		if err2 != nil {
+			return "", "", nil, nil, err2
+		}
+		return res2.ID, res2.RevisionID, sessionKey, nodeKR, nil
+	}
+
+	// Use the *existing* file's keyring and session key, not the
+	// freshly-generated ones. The server expects blocks encrypted
+	// with the original file's content key.
+	existNodeKR, err := existingLink.GetKeyRing(parentNodeKR, s.defaultAddrKR)
 	if err != nil {
 		return "", "", nil, nil, err
 	}
-	return res.ID, res.RevisionID, sessionKey, nodeKR, nil
+	existSessionKey, err := existingLink.GetSessionKey(existNodeKR)
+	if err != nil {
+		return "", "", nil, nil, err
+	}
+
+	log.Printf("[proton-native] reusing existing file link %s, new revision %s", existingLink.LinkID, revisionID)
+	return existingLink.LinkID, revisionID, existSessionKey, existNodeKR, nil
+}
+
+// findAnyChildFileByName searches ALL children of parentLinkID —
+// including trashed, deleted, and draft links — for a file matching
+// `name`. This is needed because Proton's name-hash index retains
+// entries for trashed/deleted files, so CreateFile can return 422
+// even when no *active* file with that name exists.
+func (s *Session) findAnyChildFileByName(ctx context.Context, parentLinkID, name string) (*proton.Link, error) {
+	// ListAllChildren fetches with showAll=true and does NOT filter
+	// by state, so trashed/draft/deleted links are included.
+	allEntries, err := s.ListAllChildren(ctx, parentLinkID)
+	if err != nil {
+		return nil, err
+	}
+	for _, e := range allEntries {
+		if e.Name == name && !e.IsDir {
+			link, err := s.getLink(ctx, e.LinkID)
+			if err != nil {
+				log.Printf("[proton-native] getLink(%s) failed: %v — skipping", e.LinkID, err)
+				continue
+			}
+			return &link, nil
+		}
+	}
+	return nil, nil
+}
+
+// handleRevisionConflict mirrors Proton-API-Bridge's
+// handleRevisionConflict. Given an existing file link that caused a
+// name conflict:
+//
+//   - If the file has a stale draft revision AND an active revision,
+//     the draft is deleted and a fresh revision is created.
+//   - If the file has a stale draft but NO active revision (the link
+//     itself is in draft state), the link is deleted entirely and
+//     (needRetry=true) signals the caller to re-issue CreateFile.
+//   - If there is no draft, a new revision is created directly.
+//
+// Returns (revisionID, needRetry, error).
+func (s *Session) handleRevisionConflict(ctx context.Context, link *proton.Link) (string, bool, error) {
+	linkID := link.LinkID
+
+	revisions, err := s.c.ListRevisions(ctx, s.mainShare.ShareID, linkID)
+	if err != nil {
+		return "", false, err
+	}
+
+	// Find any draft revision.
+	var draftRevID string
+	for i := range revisions {
+		if revisions[i].State == proton.RevisionStateDraft {
+			draftRevID = revisions[i].ID
+			break
+		}
+	}
+
+	if draftRevID != "" {
+		// There's an existing draft. Two sub-cases:
+		if link.State == proton.LinkStateDraft {
+			// The entire link is draft-only (no active revision).
+			// Delete the link and tell caller to re-create.
+			log.Printf("[proton-native] deleting draft-only link %s", linkID)
+			err := s.c.DeleteChildren(ctx, s.mainShare.ShareID, link.ParentLinkID, linkID)
+			if err != nil {
+				return "", false, err
+			}
+			// Invalidate cache for this link.
+			delete(s.linkCache, linkID)
+			delete(s.krCache, linkID)
+			return "", true, nil
+		}
+
+		// Link has an active revision plus a stale draft — delete
+		// the draft so we can create a fresh one.
+		log.Printf("[proton-native] deleting stale draft revision %s on link %s", draftRevID, linkID)
+		if err := s.c.DeleteRevision(ctx, s.mainShare.ShareID, linkID, draftRevID); err != nil {
+			return "", false, err
+		}
+	}
+
+	// Create a new revision on the existing file.
+	newRev, err := s.c.CreateRevision(ctx, s.mainShare.ShareID, linkID)
+	if err != nil {
+		return "", false, err
+	}
+
+	log.Printf("[proton-native] created new revision %s on existing file %s", newRev.ID, linkID)
+	return newRev.ID, false, nil
 }
 
 // uploadBlocks reads `file` in 4 MB chunks, encrypts + signs each,

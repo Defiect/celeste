@@ -22,6 +22,7 @@ package drive
 
 import (
 	"context"
+	"log"
 	"time"
 
 	"github.com/ProtonMail/go-proton-api"
@@ -39,6 +40,19 @@ type Entry struct {
 	Size         int64  `json:"size"`
 	ModTimeUnix  int64  `json:"mod_time_unix"`
 	MIMEType     string `json:"mime_type,omitempty"`
+}
+
+// DumpEntry is like Entry but includes the link State for diagnostic
+// purposes (debugging invisible drafts / trashed children).
+type DumpEntry struct {
+	LinkID       string `json:"link_id"`
+	ParentLinkID string `json:"parent_link_id"`
+	Name         string `json:"name"`
+	IsDir        bool   `json:"is_dir"`
+	Size         int64  `json:"size"`
+	ModTimeUnix  int64  `json:"mod_time_unix"`
+	MIMEType     string `json:"mime_type,omitempty"`
+	State        int    `json:"state"`
 }
 
 func entryFromLink(link *proton.Link, name string) *Entry {
@@ -138,4 +152,62 @@ func (s *Session) Stat(ctx context.Context, linkID string) (*Entry, error) {
 		}
 	}
 	return entryFromLink(&link, name), nil
+}
+
+// ListAllChildren is a diagnostic variant of ListDirectory that returns
+// ALL children of a folder — including drafts, trashed, deleted, and
+// restoring links — so callers can inspect ghost entries that cause
+// "file already exists" conflicts on the server side.
+func (s *Session) ListAllChildren(ctx context.Context, folderLinkID string) ([]*DumpEntry, error) {
+	if folderLinkID == "" {
+		folderLinkID = s.RootLinkID()
+	}
+	folderLink, err := s.getLink(ctx, folderLinkID)
+	if err != nil {
+		return nil, err
+	}
+
+	childrenLinks, err := s.c.ListChildren(ctx, s.mainShare.ShareID, folderLink.LinkID, true)
+	if err != nil {
+		return nil, err
+	}
+
+	folderKR, err := s.linkKR(ctx, &folderLink)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]*DumpEntry, 0, len(childrenLinks))
+	for i := range childrenLinks {
+		child := &childrenLinks[i]
+		s.linkCache[child.LinkID] = *child
+
+		name, err := child.GetName(folderKR, s.defaultAddrKR)
+		if err != nil {
+			// Decryption may fail for very old trashed/deleted links;
+			// log and use a placeholder so the dump is still useful.
+			log.Printf("[proton-native] child %s: name decrypt failed: %v", child.LinkID, err)
+			name = "<decrypt-error>"
+		}
+
+		modTime := child.ModifyTime
+		if modTime == 0 {
+			modTime = child.CreateTime
+		}
+		if modTime == 0 {
+			modTime = time.Now().Unix()
+		}
+
+		out = append(out, &DumpEntry{
+			LinkID:       child.LinkID,
+			ParentLinkID: child.ParentLinkID,
+			Name:         name,
+			IsDir:        child.Type == proton.LinkTypeFolder,
+			Size:         child.Size,
+			ModTimeUnix:  modTime,
+			MIMEType:     child.MIMEType,
+			State:        int(child.State),
+		})
+	}
+	return out, nil
 }
