@@ -189,6 +189,17 @@ pub mod proton {
         )
     }
 
+    /// Recursively list all active entries under `link_id` using
+    /// concurrent API calls on the Go side.  Each entry's `name`
+    /// field is the full relative path (e.g. "Foo/Bar/baz.txt").
+    /// Pass an empty string for `link_id` to start from the root.
+    pub fn list_recursive(uid: &str, link_id: &str) -> Result<Vec<Entry>, String> {
+        call_json::<_, Vec<Entry>>(
+            |payload| unsafe { ffi::ProtonDrive_ListRecursive(payload) },
+            &serde_json::json!({ "uid": uid, "link_id": link_id }),
+        )
+    }
+
     /// Metadata for a single link. Returns `Ok(None)` when the link
     /// exists but is not in the active state (matches the semantics
     /// the sync engine's `stat` port expects from its client trait).

@@ -76,6 +76,7 @@ fn main() {
         .allowlist_function("ProtonDrive_ResumeSession")
         .allowlist_function("ProtonDrive_RootLinkID")
         .allowlist_function("ProtonDrive_ListDirectory")
+        .allowlist_function("ProtonDrive_ListRecursive")
         .allowlist_function("ProtonDrive_Stat")
         .allowlist_function("ProtonDrive_DownloadFile")
         .allowlist_function("ProtonDrive_CreateFolder")

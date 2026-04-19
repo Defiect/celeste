@@ -23,6 +23,7 @@ package drive
 import (
 	"context"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/ProtonMail/go-proton-api"
@@ -209,5 +210,159 @@ func (s *Session) ListAllChildren(ctx context.Context, folderLinkID string) ([]*
 			State:        int(child.State),
 		})
 	}
+	return out, nil
+}
+
+// ListRecursive returns all active entries under rootLinkID by walking
+// the folder tree with concurrent API calls. Entries have their Name
+// field set to the full relative path (e.g. "Foo/Bar/baz.txt").
+//
+// Design: two-phase approach to avoid concurrent access to Session caches.
+//
+//	Phase 1: BFS with goroutine pool — only calls s.c.ListChildren()
+//	         (thread-safe). Collects raw proton.Link slices per folder.
+//	Phase 2: Sequential walk — caches links, resolves keyrings,
+//	         decrypts names, builds Entry list with full paths.
+func (s *Session) ListRecursive(ctx context.Context, rootLinkID string) ([]*Entry, error) {
+	if rootLinkID == "" {
+		rootLinkID = s.RootLinkID()
+	}
+
+	// ── Phase 1: concurrent ListChildren calls ──────────────────
+
+	const maxConcurrency = 10
+	sem := make(chan struct{}, maxConcurrency)
+
+	var (
+		mu       sync.Mutex
+		wg       sync.WaitGroup
+		firstErr error
+		results  = make(map[string][]proton.Link) // folderLinkID → children
+	)
+
+	// errSeen returns true if an error has already been recorded.
+	errSeen := func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return firstErr != nil
+	}
+
+	// recordErr stores the first error encountered.
+	recordErr := func(err error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
+
+	// storeResult saves the children slice and returns the sub-folders
+	// that need further traversal.
+	storeResult := func(folderID string, children []proton.Link) []string {
+		mu.Lock()
+		defer mu.Unlock()
+		results[folderID] = children
+		var subFolders []string
+		for i := range children {
+			c := &children[i]
+			if c.Type == proton.LinkTypeFolder && c.State == proton.LinkStateActive {
+				if _, already := results[c.LinkID]; !already {
+					subFolders = append(subFolders, c.LinkID)
+				}
+			}
+		}
+		return subFolders
+	}
+
+	// Recursive fetch function. Each call handles one folder.
+	var fetch func(linkID string)
+	fetch = func(linkID string) {
+		defer wg.Done()
+		if errSeen() {
+			return
+		}
+
+		sem <- struct{}{}
+		children, err := s.c.ListChildren(ctx, s.mainShare.ShareID, linkID, true)
+		<-sem
+
+		if err != nil {
+			recordErr(err)
+			return
+		}
+
+		subFolders := storeResult(linkID, children)
+		for _, sf := range subFolders {
+			if errSeen() {
+				break
+			}
+			wg.Add(1)
+			go fetch(sf)
+		}
+	}
+
+	wg.Add(1)
+	go fetch(rootLinkID)
+	wg.Wait()
+
+	if firstErr != nil {
+		return nil, firstErr
+	}
+
+	// ── Phase 2: sequential decrypt + path assembly ─────────────
+
+	// Cache all fetched links.
+	for _, children := range results {
+		for i := range children {
+			s.linkCache[children[i].LinkID] = children[i]
+		}
+	}
+
+	type bfsItem struct {
+		linkID string
+		prefix string // parent's full path (empty for root's children)
+	}
+
+	queue := []bfsItem{{linkID: rootLinkID, prefix: ""}}
+	var out []*Entry
+
+	for len(queue) > 0 {
+		item := queue[0]
+		queue = queue[1:]
+
+		children, ok := results[item.linkID]
+		if !ok {
+			continue
+		}
+
+		folderLink := s.linkCache[item.linkID]
+		folderKR, err := s.linkKR(ctx, &folderLink)
+		if err != nil {
+			return nil, err
+		}
+
+		for i := range children {
+			child := &children[i]
+			if child.State != proton.LinkStateActive {
+				continue
+			}
+			name, err := child.GetName(folderKR, s.defaultAddrKR)
+			if err != nil {
+				return nil, err
+			}
+
+			fullPath := name
+			if item.prefix != "" {
+				fullPath = item.prefix + "/" + name
+			}
+
+			out = append(out, entryFromLink(child, fullPath))
+
+			if child.Type == proton.LinkTypeFolder {
+				queue = append(queue, bfsItem{linkID: child.LinkID, prefix: fullPath})
+			}
+		}
+	}
+
 	return out, nil
 }

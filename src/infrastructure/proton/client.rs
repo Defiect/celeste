@@ -157,23 +157,44 @@ impl RcloneClient for NativeProtonClient {
         let Some(link_id) = self.resolve_path(&trimmed)? else {
             return Ok(Vec::new());
         };
-        let mut out = Vec::new();
-        let mut stack: Vec<(String, String)> = vec![(link_id, trimmed)];
-        while let Some((cur_link, cur_path)) = stack.pop() {
-            let entries = proton_ffi::list_directory(&self.uid, &cur_link)?;
-            for entry in entries {
-                let is_dir = entry.is_dir;
-                let next_link = entry.link_id.clone();
-                let item = entry_to_remote_item(entry, &cur_path);
-                let next_path = item.path.clone();
-                if keep(filter, is_dir) {
-                    out.push(item);
-                }
-                if recursive && is_dir {
-                    stack.push((next_link, next_path));
-                }
-            }
+
+        if recursive {
+            // Fast path: single FFI call, Go side parallelises the API calls.
+            let entries = proton_ffi::list_recursive(&self.uid, &link_id)?;
+            let out = entries
+                .into_iter()
+                .filter(|e| keep(filter, e.is_dir))
+                .map(|e| {
+                    // e.name is the full relative path from the listed root.
+                    // Build the absolute remote path and extract the basename.
+                    let full_path = if trimmed.is_empty() {
+                        e.name.clone()
+                    } else {
+                        format!("{trimmed}/{}", e.name)
+                    };
+                    let basename = e
+                        .name
+                        .rsplit_once('/')
+                        .map_or(e.name.clone(), |(_, b)| b.to_owned());
+                    RemoteItem {
+                        is_dir: e.is_dir,
+                        path: full_path,
+                        name: basename,
+                        mod_time: OffsetDateTime::from_unix_timestamp(e.mod_time_unix)
+                            .unwrap_or_else(|_| OffsetDateTime::UNIX_EPOCH),
+                    }
+                })
+                .collect();
+            return Ok(out);
         }
+
+        // Non-recursive: list just one level.
+        let entries = proton_ffi::list_directory(&self.uid, &link_id)?;
+        let out = entries
+            .into_iter()
+            .filter(|e| keep(filter, e.is_dir))
+            .map(|e| entry_to_remote_item(e, &trimmed))
+            .collect();
         Ok(out)
     }
 

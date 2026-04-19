@@ -492,5 +492,30 @@ func ProtonDrive_PermanentDeleteLink(paramsJSON *C.char) *C.char {
 	return okResult(nil)
 }
 
+// ProtonDrive_ListRecursive walks the tree rooted at `link_id` with
+// concurrent API calls and returns a flat array of drive.Entry objects
+// whose Name field is the full relative path. Pass an empty `link_id`
+// to start from the session root.
+//
+//export ProtonDrive_ListRecursive
+func ProtonDrive_ListRecursive(paramsJSON *C.char) *C.char {
+	var p struct {
+		UID    string `json:"uid"`
+		LinkID string `json:"link_id"`
+	}
+	if err := json.Unmarshal([]byte(C.GoString(paramsJSON)), &p); err != nil {
+		return errResult(err)
+	}
+	sess, err := drive.Lookup(p.UID)
+	if err != nil {
+		return errResult(err)
+	}
+	entries, err := sess.ListRecursive(context.Background(), p.LinkID)
+	if err != nil {
+		return errResult(err)
+	}
+	return okResult(entries)
+}
+
 // main is required by cgo for c-archive builds; body intentionally empty.
 func main() {}
