@@ -70,6 +70,14 @@ type Session struct {
 	defaultAddrKR    *crypto.KeyRing
 	rootLink         *proton.Link
 	signatureAddress string
+
+	// Caches — link metadata and decrypted keyrings. Populated
+	// lazily by getLink / linkKR / ListDirectory. Avoids redundant
+	// API round-trips during recursive listings where each folder
+	// requires walking the parent keyring chain. Single-threaded per
+	// session so no locking needed.
+	linkCache map[string]proton.Link
+	krCache   map[string]*crypto.KeyRing
 }
 
 // RootLinkID returns the main share's root folder ID. Callers use this
@@ -145,6 +153,8 @@ func Login(ctx context.Context, p LoginParams) (*Session, error) {
 		userKR:        userKR,
 		addrKRs:       addrKRs,
 		addrs:         addrs,
+		linkCache:     make(map[string]proton.Link),
+		krCache:       make(map[string]*crypto.KeyRing),
 	}
 	if err := sess.bootstrapDrive(ctx); err != nil {
 		sess.Close()
@@ -179,6 +189,8 @@ func Resume(ctx context.Context, cred ReusableCredential) (*Session, error) {
 		userKR:        userKR,
 		addrKRs:       addrKRs,
 		addrs:         addrs,
+		linkCache:     make(map[string]proton.Link),
+		krCache:       make(map[string]*crypto.KeyRing),
 	}
 	if err := sess.bootstrapDrive(ctx); err != nil {
 		sess.Close()
@@ -297,6 +309,8 @@ func (s *Session) Close() {
 	s.defaultAddrKR = nil
 	s.mainShare = nil
 	s.rootLink = nil
+	s.linkCache = nil
+	s.krCache = nil
 	if s.c != nil {
 		s.c.Close()
 		s.c = nil

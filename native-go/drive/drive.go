@@ -6,10 +6,9 @@ package drive
 // state it needs without re-querying Proton.
 //
 // Ported and trimmed from Proton-API-Bridge/drive.go + shares.go +
-// volumes.go. Dropped Bridge's cache layer (we recompute; deferring
-// caching until Phase 3+ performance pass) and the Config struct
-// (everything Bridge threaded through options we now pin at
-// package-scope constants).
+// volumes.go. Link metadata and keyring resolution results are cached
+// on the Session (linkCache / krCache) to avoid redundant API
+// round-trips during recursive listings.
 
 import (
 	"context"
@@ -90,14 +89,19 @@ func (s *Session) bootstrapDrive(ctx context.Context) error {
 	s.defaultAddrKR = addrKR
 	s.rootLink = &rootLink
 	s.signatureAddress = mainShare.Creator
+	// Seed the caches with the root link so the first listing
+	// doesn't need to re-fetch it.
+	s.linkCache[rootLink.LinkID] = rootLink
 	return nil
 }
 
-// linkKR returns `link`'s own unlocked node keyring — the one that
-// decrypts `link`'s children's names, node keys, etc. For the root
-// link the parent KR is the main share KR; otherwise we walk the
-// parent chain. Matches Bridge's `_getLinkKR`.
+// linkKR returns `link`'s own unlocked node keyring, caching the
+// result. For the root link the parent KR is the main share KR;
+// otherwise we walk the parent chain (also cached).
 func (s *Session) linkKR(ctx context.Context, link *proton.Link) (*crypto.KeyRing, error) {
+	if cached, ok := s.krCache[link.LinkID]; ok {
+		return cached, nil
+	}
 	var parentKR *crypto.KeyRing
 	if link.ParentLinkID == "" {
 		parentKR = s.mainShareKR
@@ -108,29 +112,42 @@ func (s *Session) linkKR(ctx context.Context, link *proton.Link) (*crypto.KeyRin
 		}
 		parentKR = pkr
 	}
-	return link.GetKeyRing(parentKR, s.defaultAddrKR)
+	kr, err := link.GetKeyRing(parentKR, s.defaultAddrKR)
+	if err != nil {
+		return nil, err
+	}
+	s.krCache[link.LinkID] = kr
+	return kr, nil
 }
 
-// linkKRByID is `linkKR`'s "I only have the ID" variant — fetches
-// the link and recurses. The special case for `linkID == ""` is
-// Bridge's convention: a root link's stored ParentLinkID is "", and
-// that resolves to the main share keyring. No caching yet; we'll
-// add it back in a later pass once the read path is solid against
-// live traffic.
+// linkKRByID is linkKR's "I only have the ID" variant. Checks the
+// keyring cache first; on miss fetches the link (also cached) and
+// delegates to linkKR.
 func (s *Session) linkKRByID(ctx context.Context, linkID string) (*crypto.KeyRing, error) {
 	if linkID == "" {
 		return s.mainShareKR, nil
 	}
-	link, err := s.c.GetLink(ctx, s.mainShare.ShareID, linkID)
+	if cached, ok := s.krCache[linkID]; ok {
+		return cached, nil
+	}
+	link, err := s.getLink(ctx, linkID)
 	if err != nil {
 		return nil, err
 	}
 	return s.linkKR(ctx, &link)
 }
 
-// getLink is the single shared point for "fetch link metadata by ID".
-// Later phases (upload conflict handling, cached trees) layer caching
-// here.
+// getLink returns link metadata by ID, using the session cache when
+// available. Every link fetched from the API is cached so subsequent
+// keyring-chain walks don't re-fetch the same link.
 func (s *Session) getLink(ctx context.Context, linkID string) (proton.Link, error) {
-	return s.c.GetLink(ctx, s.mainShare.ShareID, linkID)
+	if cached, ok := s.linkCache[linkID]; ok {
+		return cached, nil
+	}
+	link, err := s.c.GetLink(ctx, s.mainShare.ShareID, linkID)
+	if err != nil {
+		return link, err
+	}
+	s.linkCache[linkID] = link
+	return link, nil
 }

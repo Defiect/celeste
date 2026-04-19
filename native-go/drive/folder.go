@@ -12,9 +12,10 @@ package drive
 //      RevisionMetadata. For single-account usage (our case) the
 //      owner's default address keyring is always the correct
 //      verifier, which is what we pass.
-//   2. No cache — every linkKR resolution re-walks the parent chain
-//      and re-fetches links. Fine at small scale; a cache layer is
-//      an easy add-on once the sync loop is exercising this code.
+//   2. Child links fetched during listings are cached on the Session's
+//      linkCache so that recursive listings and subsequent getLink /
+//      linkKR calls hit the cache instead of re-fetching each link
+//      individually.
 //
 // Bridge's original `folder.go::ListDirectory` filters out
 // non-active children (drafts, trashed, deleted). We do the same.
@@ -91,6 +92,9 @@ func (s *Session) ListDirectory(ctx context.Context, folderLinkID string) ([]*En
 	out := make([]*Entry, 0, len(childrenLinks))
 	for i := range childrenLinks {
 		child := &childrenLinks[i]
+		// Cache every child's link metadata so recursive listings
+		// hit the cache instead of re-fetching each link individually.
+		s.linkCache[child.LinkID] = *child
 		if child.State != proton.LinkStateActive {
 			continue
 		}
