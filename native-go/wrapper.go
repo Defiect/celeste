@@ -24,6 +24,7 @@ import "C"
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"unsafe"
 
 	"celeste/native-go/drive"
@@ -173,14 +174,46 @@ type result struct {
 }
 
 // okResult returns a JSON success envelope; `data` can be nil.
+//
+// Typed-nil collections (a Go gotcha: a non-nil interface{} wrapping a
+// nil slice/map) are normalised to "[]" / "{}" before marshalling. The
+// Rust side parses Envelope.data as Option<serde_json::Value>, where a
+// JSON `null` deserialises to None — same as a missing field — and
+// any caller using `call_json::<_, Vec<T>>` then bails with "shim
+// returned OK but no data to deserialise". Emitting an empty
+// collection instead keeps that path honest.
 func okResult(data interface{}) *C.char {
 	envelope := result{OK: true}
 	if data != nil {
-		b, err := json.Marshal(data)
-		if err != nil {
-			return errResult(err)
+		v := reflect.ValueOf(data)
+		switch v.Kind() {
+		case reflect.Slice:
+			if v.IsNil() {
+				envelope.Data = []byte("[]")
+			} else {
+				b, err := json.Marshal(data)
+				if err != nil {
+					return errResult(err)
+				}
+				envelope.Data = b
+			}
+		case reflect.Map:
+			if v.IsNil() {
+				envelope.Data = []byte("{}")
+			} else {
+				b, err := json.Marshal(data)
+				if err != nil {
+					return errResult(err)
+				}
+				envelope.Data = b
+			}
+		default:
+			b, err := json.Marshal(data)
+			if err != nil {
+				return errResult(err)
+			}
+			envelope.Data = b
 		}
-		envelope.Data = b
 	}
 	b, _ := json.Marshal(envelope)
 	return C.CString(string(b))
