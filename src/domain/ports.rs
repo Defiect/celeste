@@ -11,7 +11,10 @@ use std::{future::Future, pin::Pin};
 
 use super::{
     remote::{Remote, RemoteId, SyncPolicy},
-    sync::{ListFilter, RemoteItem, SyncDir, SyncDirId, SyncItem, SyncItemId},
+    sync::{
+        ListFilter, RemoteItem, SyncDir, SyncDirExclusion, SyncDirExclusionId, SyncDirId,
+        SyncItem, SyncItemId,
+    },
 };
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -137,6 +140,20 @@ pub trait Repository: Send + Sync {
         &self,
         sync_dir: SyncDirId,
         local_prefix: &str,
+    ) -> BoxFuture<'_, Result<(), RepositoryError>>;
+
+    fn list_exclusions(
+        &self,
+        sync_dir: SyncDirId,
+    ) -> BoxFuture<'_, Result<Vec<SyncDirExclusion>, RepositoryError>>;
+    fn insert_exclusion(
+        &self,
+        sync_dir: SyncDirId,
+        remote_path: String,
+    ) -> BoxFuture<'_, Result<(), RepositoryError>>;
+    fn delete_exclusion(
+        &self,
+        id: SyncDirExclusionId,
     ) -> BoxFuture<'_, Result<(), RepositoryError>>;
 }
 

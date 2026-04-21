@@ -109,7 +109,7 @@ impl Snapshot {
         // Compute local paths of descendant sync_dirs — these are excluded
         // from this sync_dir's walk and remote listing so that nested syncs
         // never interfere with each other.
-        let excluded_local_prefixes: Vec<String> = all_sync_dirs
+        let mut excluded_local_prefixes: Vec<String> = all_sync_dirs
             .iter()
             .filter(|d| d.id != sync_dir.id)
             .filter(|d| is_local_descendant(&sync_dir.local_path, &d.local_path))
@@ -118,11 +118,26 @@ impl Snapshot {
 
         // Corresponding remote-path prefixes (within this sync_dir's
         // remote space) that map to the excluded local subtrees.
-        let excluded_remote_prefixes: Vec<String> = all_sync_dirs
+        let mut excluded_remote_prefixes: Vec<String> = all_sync_dirs
             .iter()
             .filter(|d| d.id != sync_dir.id)
             .filter_map(|d| descendant_remote_prefix(sync_dir, &d.local_path))
             .collect();
+
+        // User-defined exclusions (stored as remote sub-paths relative to
+        // this sync_dir's remote root). Translate each into both the full
+        // remote-listing path and the corresponding absolute local path.
+        let user_excls = util::await_future(repo.list_exclusions(sync_dir.id))
+            .unwrap_or_default();
+        for excl in &user_excls {
+            let full_remote = if sync_dir.remote_path.is_empty() {
+                excl.remote_path.clone()
+            } else {
+                format!("{}/{}", sync_dir.remote_path, excl.remote_path)
+            };
+            excluded_remote_prefixes.push(full_remote);
+            excluded_local_prefixes.push(format!("{}/{}", sync_dir.local_path, excl.remote_path));
+        }
 
         // 1. DB (cheap, authoritative for "what we last saw"). Drop any
         //    tracked rows that now fall inside an excluded subtree — they

@@ -1,22 +1,24 @@
-//! Per-remote detail page: header with Refresh now, (future) sync-dirs list,
-//! and the Sync Settings panel.
+//! Per-remote detail page: sync-dir cards with log view and exclusion panel.
 
 use std::{collections::HashMap, time::Duration};
 
 use iced::{
-    widget::{button, column, container, row, scrollable, text_input, tooltip, Rule, Space},
-    Element, Length,
+    widget::{button, column, container, row, scrollable, text_input, Rule, Space},
+    Alignment, Element, Length,
 };
 
 use crate::{
     domain::{
         remote::{Remote, RemoteId},
-        sync::{SyncDir, SyncDirId, SyncError},
+        sync::{SyncDir, SyncDirExclusion, SyncDirExclusionId, SyncDirId},
     },
     screens::settings,
     theme::{PAGE_PADDING, ROW_SPACING, SECTION_SPACING},
     widgets::text,
 };
+
+/// Height of the per-card log scrollable in logical pixels (~5-6 lines).
+const LOG_HEIGHT: f32 = 96.0;
 
 #[derive(Debug, Clone)]
 pub enum Msg {
@@ -28,14 +30,21 @@ pub enum Msg {
     AddSyncDir,
     DeleteSyncDir(String, String),
     DeleteRemote(RemoteId, String),
+    ToggleExclusions(SyncDirId),
+    DraftExclusionChanged(SyncDirId, String),
+    AddExclusion(SyncDirId),
+    RemoveExclusion(SyncDirExclusionId, SyncDirId),
+    DeleteLocalFiles(String),
 }
 
 pub fn view<'a>(
     remote: &'a Remote,
     sync_dirs: &'a [SyncDir],
-    status: &'a HashMap<SyncDirId, String>,
-    pending: &'a HashMap<SyncDirId, String>,
-    errors: &'a HashMap<SyncDirId, Vec<SyncError>>,
+    log: &'a HashMap<SyncDirId, Vec<String>>,
+    all_known_sync_dirs: &'a [SyncDir],
+    exclusion_panel: Option<SyncDirId>,
+    exclusions: &'a HashMap<SyncDirId, Vec<SyncDirExclusion>>,
+    draft_exclusion: &'a HashMap<SyncDirId, String>,
     draft: (&'a str, &'a str),
     next_sync_eta: Option<(Duration, bool)>,
 ) -> Element<'a, Msg> {
@@ -44,13 +53,14 @@ pub fn view<'a>(
             let label = format!("next sync in {}", format_duration(remaining));
             let countdown_text = text(label).size(12);
             if in_backoff {
+                use iced::widget::tooltip;
                 tooltip(
                     row![
                         countdown_text,
                         Space::with_width(Length::Fixed(4.0)),
                         text("⚠").size(14),
                     ]
-                    .align_items(iced::Alignment::Center),
+                    .align_items(Alignment::Center),
                     text(
                         "Backoff active — the provider returned rate-limit \
                          warnings on the last pass, so Celeste will skip \
@@ -82,68 +92,88 @@ pub fn view<'a>(
             .on_press(Msg::DeleteRemote(remote.id, remote.name.clone())),
     ]
     .spacing(ROW_SPACING)
-    .align_items(iced::Alignment::Center);
+    .align_items(Alignment::Center);
 
-    let sync_dirs_section: Element<'a, Msg> = {
-        let mut col = column![text("Sync directories").size(16)].spacing(ROW_SPACING);
-        if sync_dirs.is_empty() {
-            col = col.push(text("No sync directories yet.").size(13));
-        }
-        for sd in sync_dirs {
-            let mut header = iced::widget::Row::new().spacing(8);
-            header = header.push(text(&sd.local_path).size(13));
-            header = header.push(text("→").size(13));
-            header = header.push(text(&sd.remote_path).size(13));
-            header = header.push(Space::with_width(Length::Fill));
-            if let Some(status_text) = status.get(&sd.id) {
-                header = header.push(text(status_text).size(12));
-            }
-            header = header.push(
-                button(text("Delete").size(12)).on_press(Msg::DeleteSyncDir(
-                    sd.local_path.clone(),
-                    sd.remote_path.clone(),
-                )),
-            );
-            col = col.push(header);
-            // Pending-event line: transient state that's not the
-            // primary status (e.g. "Checking for changes…",
-            // "Refresh queued…"). Rendered dim, indented.
-            if let Some(pending_text) = pending.get(&sd.id) {
-                col = col.push(text(format!("  · {pending_text}")).size(12));
-            }
-            if let Some(errs) = errors.get(&sd.id) {
-                for err in errs {
-                    let line = match err {
-                        SyncError::General(path, msg) => {
-                            format!("  ⚠ {path}: {msg}")
-                        }
-                        SyncError::BothMoreCurrent(local, remote) => {
-                            format!("  ⚠ Conflict: '{local}' vs '{remote}'")
-                        }
-                    };
-                    col = col.push(text(line).size(12));
-                }
-            }
-        }
+    // ── Sync directory cards ────────────────────────────────────────────────
+    let mut cards_col = column![text("Sync directories").size(16)].spacing(ROW_SPACING);
 
-        // Inline "Add sync dir" form.
-        let (draft_local, draft_remote) = draft;
-        let form = row![
-            text_input("Local path…", draft_local)
-                .on_input(Msg::DraftLocalPathChanged)
-                .padding(6)
-                .size(13),
-            text_input("Remote path…", draft_remote)
-                .on_input(Msg::DraftRemotePathChanged)
-                .padding(6)
-                .size(13),
-            button(text("Add")).on_press(Msg::AddSyncDir),
+    if sync_dirs.is_empty() {
+        cards_col = cards_col.push(text("No sync directories yet.").size(13));
+    }
+
+    for sd in sync_dirs {
+        let remote_display = if sd.remote_path.is_empty() {
+            "/"
+        } else {
+            &sd.remote_path
+        };
+        let path_label = format!("{} → {}", sd.local_path, remote_display);
+
+        // Count auto-excluded descendants + user exclusions for the badge.
+        let auto_excl = auto_excluded_for(sd, all_known_sync_dirs);
+        let custom_excl_count = exclusions.get(&sd.id).map(|v| v.len()).unwrap_or(0);
+        let total_excl = auto_excl.len() + custom_excl_count;
+        let excl_label = format!("Excluded ({})", total_excl);
+
+        // Top row: paths | [Excluded (n)] [Delete]
+        let top_row = row![
+            text(&path_label).size(13),
+            Space::with_width(Length::Fill),
+            button(text(&excl_label).size(12)).on_press(Msg::ToggleExclusions(sd.id)),
+            button(text("Delete").size(12)).on_press(Msg::DeleteSyncDir(
+                sd.local_path.clone(),
+                sd.remote_path.clone(),
+            )),
         ]
-        .spacing(8);
-        col = col.push(form);
+        .spacing(ROW_SPACING)
+        .align_items(Alignment::Center);
 
-        scrollable(col).height(Length::FillPortion(2)).into()
-    };
+        // Log area: newest entry first so the most recent is always visible.
+        let log_entries = log.get(&sd.id).cloned().unwrap_or_default();
+        let mut log_col = column![].spacing(2);
+        for entry in log_entries.iter().rev() {
+            log_col = log_col.push(text(entry).size(12));
+        }
+        let log_area = scrollable(log_col).height(Length::Fixed(LOG_HEIGHT));
+
+        let mut card_col = column![top_row, log_area].spacing(ROW_SPACING / 2);
+
+        // ── Exclusion panel (shown when toggled) ────────────────────────────
+        if exclusion_panel == Some(sd.id) {
+            card_col = card_col.push(Rule::horizontal(1));
+            card_col = card_col.push(exclusion_panel_view(
+                sd,
+                &auto_excl,
+                exclusions.get(&sd.id).map(|v| v.as_slice()).unwrap_or(&[]),
+                draft_exclusion.get(&sd.id).map(|s| s.as_str()).unwrap_or(""),
+            ));
+        }
+
+        cards_col = cards_col.push(
+            container(card_col)
+                .padding(8)
+                .width(Length::Fill)
+                .style(iced::theme::Container::Box),
+        );
+    }
+
+    // Inline "Add sync dir" form.
+    let (draft_local, draft_remote) = draft;
+    let add_form = row![
+        text_input("Local path…", draft_local)
+            .on_input(Msg::DraftLocalPathChanged)
+            .padding(6)
+            .size(13),
+        text_input("Remote path…", draft_remote)
+            .on_input(Msg::DraftRemotePathChanged)
+            .padding(6)
+            .size(13),
+        button(text("Add")).on_press(Msg::AddSyncDir),
+    ]
+    .spacing(ROW_SPACING);
+    cards_col = cards_col.push(add_form);
+
+    let sync_dirs_section = scrollable(cards_col).height(Length::FillPortion(2));
 
     let settings_panel = settings::view(remote).map(Msg::Settings);
 
@@ -161,8 +191,87 @@ pub fn view<'a>(
     .into()
 }
 
-/// Humanise a `Duration` for the sync countdown: "0s" when we're due
-/// right now, compact "Xs" / "XmYs" / "XhYm" otherwise.
+/// Build the exclusion panel for one sync_dir card.
+fn exclusion_panel_view<'a>(
+    sd: &'a SyncDir,
+    auto_excl: &[&'a SyncDir],
+    custom_excl: &'a [SyncDirExclusion],
+    draft: &'a str,
+) -> Element<'a, Msg> {
+    let mut col = column![].spacing(ROW_SPACING / 2);
+
+    // Auto-excluded (descendant sync_dirs) — read-only, no delete button.
+    if !auto_excl.is_empty() {
+        col = col.push(text("Auto-excluded:").size(12));
+        for desc in auto_excl {
+            let relative = desc
+                .local_path
+                .strip_prefix(&format!("{}/", sd.local_path))
+                .unwrap_or(&desc.local_path);
+            let local_path = desc.local_path.clone();
+            col = col.push(
+                row![
+                    text(format!("  {relative}")).size(12),
+                    Space::with_width(Length::Fill),
+                    button(text("Delete local files").size(11))
+                        .on_press(Msg::DeleteLocalFiles(local_path)),
+                ]
+                .align_items(iced::Alignment::Center)
+                .spacing(ROW_SPACING),
+            );
+        }
+    }
+
+    // User-defined exclusions — deletable.
+    if !custom_excl.is_empty() {
+        col = col.push(text("Custom excluded:").size(12));
+        for excl in custom_excl {
+            let local_path = format!("{}/{}", sd.local_path, excl.remote_path);
+            let excl_id = excl.id;
+            let sd_id = sd.id;
+            col = col.push(
+                row![
+                    text(format!("  {}", excl.remote_path)).size(12),
+                    Space::with_width(Length::Fill),
+                    button(text("Delete local files").size(11))
+                        .on_press(Msg::DeleteLocalFiles(local_path)),
+                    button(text("×").size(11))
+                        .on_press(Msg::RemoveExclusion(excl_id, sd_id)),
+                ]
+                .align_items(iced::Alignment::Center)
+                .spacing(ROW_SPACING),
+            );
+        }
+    }
+
+    if auto_excl.is_empty() && custom_excl.is_empty() {
+        col = col.push(text("No exclusions.").size(12));
+    }
+
+    // Add-exclusion form (remote sub-path input).
+    let sd_id = sd.id;
+    col = col.push(
+        row![
+            text_input("Remote sub-path…", draft)
+                .on_input(move |s| Msg::DraftExclusionChanged(sd_id, s))
+                .padding(4)
+                .size(12),
+            button(text("Exclude").size(12)).on_press(Msg::AddExclusion(sd_id)),
+        ]
+        .spacing(ROW_SPACING),
+    );
+
+    col.into()
+}
+
+/// Sync_dirs from `all` whose local_path is a direct descendant of `sd`.
+fn auto_excluded_for<'a>(sd: &SyncDir, all: &'a [SyncDir]) -> Vec<&'a SyncDir> {
+    let prefix = format!("{}/", sd.local_path);
+    all.iter()
+        .filter(|d| d.id != sd.id && d.local_path.starts_with(&prefix))
+        .collect()
+}
+
 fn format_duration(d: Duration) -> String {
     let secs = d.as_secs();
     if secs == 0 {

@@ -1,6 +1,7 @@
 pub use sea_orm_migration::prelude::*;
 
 mod m20260419_000001_initial;
+mod m20260421_000001_exclusions;
 
 /// Legacy migration IDs we refuse to cohabit with. If any of these show
 /// up in `seaql_migrations` at startup, the old-config popup fires and
@@ -24,6 +25,9 @@ pub struct Migrator;
 #[async_trait::async_trait]
 impl MigratorTrait for Migrator {
     fn migrations() -> Vec<Box<dyn MigrationTrait>> {
-        vec![Box::new(m20260419_000001_initial::Migration)]
+        vec![
+            Box::new(m20260419_000001_initial::Migration),
+            Box::new(m20260421_000001_exclusions::Migration),
+        ]
     }
 }

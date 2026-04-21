@@ -23,7 +23,10 @@ use time::OffsetDateTime;
 use crate::domain::{
     ports::{BoxFuture, RcloneClient, Repository, RepositoryError},
     remote::{Backend, Remote, RemoteId, SyncPolicy},
-    sync::{ListFilter, RemoteItem, SyncDir, SyncDirId, SyncItem, SyncItemId},
+    sync::{
+        ListFilter, RemoteItem, SyncDir, SyncDirExclusion, SyncDirExclusionId, SyncDirId,
+        SyncItem, SyncItemId,
+    },
 };
 
 /// Scratch directory rooted under `$TMPDIR/celeste_test_*`. Dropped
@@ -297,6 +300,25 @@ impl Repository for FakeRepo {
             .lock()
             .unwrap()
             .retain(|it| !(it.sync_dir_id == sd && it.local_path == local && it.remote_path == remote));
+        Box::pin(async { Ok(()) })
+    }
+    fn list_exclusions(
+        &self,
+        _sd: SyncDirId,
+    ) -> BoxFuture<'_, Result<Vec<SyncDirExclusion>, RepositoryError>> {
+        Box::pin(async { Ok(vec![]) })
+    }
+    fn insert_exclusion(
+        &self,
+        _sd: SyncDirId,
+        _remote_path: String,
+    ) -> BoxFuture<'_, Result<(), RepositoryError>> {
+        Box::pin(async { Ok(()) })
+    }
+    fn delete_exclusion(
+        &self,
+        _id: SyncDirExclusionId,
+    ) -> BoxFuture<'_, Result<(), RepositoryError>> {
         Box::pin(async { Ok(()) })
     }
     fn delete_sync_items_with_local_prefix(

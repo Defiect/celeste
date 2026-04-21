@@ -7,13 +7,14 @@ use sea_orm::{
 use crate::domain::{
     ports::{BoxFuture, Repository, RepositoryError},
     remote::{Backend, Interval, Remote, RemoteId, SyncPolicy},
-    sync::{SyncDir, SyncDirId, SyncItem, SyncItemId},
+    sync::{SyncDir, SyncDirExclusion, SyncDirExclusionId, SyncDirId, SyncItem, SyncItemId},
 };
 
 use super::models::{
-    RemotesActiveModel, RemotesColumn, RemotesEntity, RemotesModel, SyncDirsActiveModel,
-    SyncDirsColumn, SyncDirsEntity, SyncDirsModel, SyncItemsActiveModel, SyncItemsColumn,
-    SyncItemsEntity, SyncItemsModel,
+    RemotesActiveModel, RemotesColumn, RemotesEntity, RemotesModel, SyncDirExclusionsActiveModel,
+    SyncDirExclusionsColumn, SyncDirExclusionsEntity, SyncDirsActiveModel, SyncDirsColumn,
+    SyncDirsEntity, SyncDirsModel, SyncItemsActiveModel, SyncItemsColumn, SyncItemsEntity,
+    SyncItemsModel,
 };
 
 #[derive(Clone)]
@@ -441,6 +442,59 @@ impl Repository for SeaOrmRepository {
             {
                 row.delete(&self.db).await.map_err(map_err)?;
             }
+            Ok(())
+        })
+    }
+
+    fn list_exclusions(
+        &self,
+        sync_dir: SyncDirId,
+    ) -> BoxFuture<'_, Result<Vec<SyncDirExclusion>, RepositoryError>> {
+        Box::pin(async move {
+            let rows = SyncDirExclusionsEntity::find()
+                .filter(SyncDirExclusionsColumn::SyncDirId.eq(sync_dir.0))
+                .all(&self.db)
+                .await
+                .map_err(map_err)?;
+            Ok(rows
+                .into_iter()
+                .map(|m| SyncDirExclusion {
+                    id: SyncDirExclusionId(m.id),
+                    sync_dir_id: SyncDirId(m.sync_dir_id),
+                    remote_path: m.remote_path,
+                })
+                .collect())
+        })
+    }
+
+    fn insert_exclusion(
+        &self,
+        sync_dir: SyncDirId,
+        remote_path: String,
+    ) -> BoxFuture<'_, Result<(), RepositoryError>> {
+        Box::pin(async move {
+            let active = SyncDirExclusionsActiveModel {
+                sync_dir_id: ActiveValue::Set(sync_dir.0),
+                remote_path: ActiveValue::Set(remote_path),
+                ..Default::default()
+            };
+            SyncDirExclusionsEntity::insert(active)
+                .exec(&self.db)
+                .await
+                .map_err(map_err)?;
+            Ok(())
+        })
+    }
+
+    fn delete_exclusion(
+        &self,
+        id: SyncDirExclusionId,
+    ) -> BoxFuture<'_, Result<(), RepositoryError>> {
+        Box::pin(async move {
+            SyncDirExclusionsEntity::delete_by_id(id.0)
+                .exec(&self.db)
+                .await
+                .map_err(map_err)?;
             Ok(())
         })
     }

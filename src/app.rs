@@ -21,7 +21,7 @@ use crate::{
         events::SyncEvent,
         ports::{RcloneClient, Repository},
         remote::{ProviderKind, Remote, RemoteId},
-        sync::{SyncDir, SyncDirId, SyncError},
+        sync::{SyncDir, SyncDirExclusion, SyncDirExclusionId, SyncDirId, SyncError},
     },
     infrastructure::{
         client_router::ClientRouter,
@@ -43,6 +43,9 @@ pub enum Message {
     AddRemoteResult(Result<RemoteId, String>),
     RemotesLoaded(Vec<Remote>),
     SyncDirsLoaded(RemoteId, Vec<SyncDir>),
+    AllSyncDirsRefreshed(Vec<SyncDir>),
+    ExclusionsLoaded(SyncDirId, Vec<SyncDirExclusion>),
+    LocalFilesDeleted,
     PolicySaved,
     SyncStarted(RemoteId),
     SyncFinished(RemoteId, PassVerdict),
@@ -81,14 +84,18 @@ pub struct CelesteApp {
     selected: Option<RemoteId>,
     /// Remotes whose sync pass is currently running.
     syncing: std::collections::HashSet<RemoteId>,
-    /// Latest status text per sync_dir — populated from SyncDirStatus events.
-    sync_dir_status: HashMap<SyncDirId, String>,
-    /// Latest "pending event" text per sync_dir — e.g. "Checking for
-    /// changes…" during should_sync or "Refresh queued…" while another
-    /// pass is in flight. Rendered under the main status on a second line.
-    sync_dir_pending: HashMap<SyncDirId, String>,
-    /// Errors accumulated for each sync_dir since its last refresh.
-    sync_dir_errors: HashMap<SyncDirId, Vec<SyncError>>,
+    /// Accumulated log lines per sync_dir for the current session.
+    /// Each status/pending/error event appends one line; never cleared.
+    sync_dir_log: HashMap<SyncDirId, Vec<String>>,
+    /// All sync_dirs across every remote, refreshed on navigation changes.
+    /// Used to compute auto-exclusions in the UI.
+    all_known_sync_dirs: Vec<SyncDir>,
+    /// The sync_dir whose exclusion panel is currently open (at most one).
+    exclusion_panel: Option<SyncDirId>,
+    /// Loaded user-defined exclusions per sync_dir.
+    sync_dir_exclusions: HashMap<SyncDirId, Vec<SyncDirExclusion>>,
+    /// Draft remote sub-path for the "add exclusion" form per sync_dir.
+    draft_exclusion: HashMap<SyncDirId, String>,
     /// Wall-clock timestamp of the last sync completion per remote. Drives
     /// the interval scheduler.
     last_sync_at: HashMap<RemoteId, Instant>,
@@ -142,9 +149,11 @@ impl Application for CelesteApp {
             sync_dirs: HashMap::new(),
             selected: None,
             syncing: std::collections::HashSet::new(),
-            sync_dir_status: HashMap::new(),
-            sync_dir_pending: HashMap::new(),
-            sync_dir_errors: HashMap::new(),
+            sync_dir_log: HashMap::new(),
+            all_known_sync_dirs: Vec::new(),
+            exclusion_panel: None,
+            sync_dir_exclusions: HashMap::new(),
+            draft_exclusion: HashMap::new(),
             last_sync_at: HashMap::new(),
             refresh_requested_after: std::collections::HashSet::new(),
             sync_dir_drafts: HashMap::new(),
@@ -211,13 +220,24 @@ impl Application for CelesteApp {
             Message::Main(main_page::Msg::Selected(id)) => {
                 self.selected = Some(id);
                 let repo = self.repo.clone();
-                Command::perform(
-                    async move { repo.list_sync_dirs(id).await.unwrap_or_default() },
-                    move |sd| Message::SyncDirsLoaded(id, sd),
-                )
+                let repo2 = self.repo.clone();
+                Command::batch([
+                    Command::perform(
+                        async move { repo.list_sync_dirs(id).await.unwrap_or_default() },
+                        move |sd| Message::SyncDirsLoaded(id, sd),
+                    ),
+                    Command::perform(
+                        async move { repo2.list_all_sync_dirs().await.unwrap_or_default() },
+                        Message::AllSyncDirsRefreshed,
+                    ),
+                ])
             }
             Message::SyncDirsLoaded(id, sd) => {
                 self.sync_dirs.insert(id, sd);
+                Command::none()
+            }
+            Message::AllSyncDirsRefreshed(all) => {
+                self.all_known_sync_dirs = all;
                 Command::none()
             }
             Message::Main(main_page::Msg::RefreshAll) => {
@@ -383,11 +403,10 @@ impl Application for CelesteApp {
                     self.refresh_requested_after.insert(id);
                     if let Some(dirs) = self.sync_dirs.get(&id) {
                         for sd in dirs {
-                            self.sync_dir_pending.insert(
-                                sd.id,
-                                "Refresh queued — starts after the current pass finishes."
-                                    .to_owned(),
-                            );
+                            self.sync_dir_log
+                                .entry(sd.id)
+                                .or_default()
+                                .push("⟳ Refresh queued — starts after the current pass finishes.".to_owned());
                         }
                     }
                     Command::none()
@@ -522,14 +541,6 @@ impl Application for CelesteApp {
                         // signal the backend is overloaded.
                     }
                 }
-                // Clear lingering "Synchronizing '/foo'…" strings left on
-                // each sync_dir row — the pass is done, those are stale.
-                if let Some(dirs) = self.sync_dirs.get(&id) {
-                    for sd in dirs {
-                        self.sync_dir_status.remove(&sd.id);
-                        self.sync_dir_pending.remove(&sd.id);
-                    }
-                }
                 // If the user clicked Refresh now while we were already
                 // syncing, honour that click now.
                 if self.refresh_requested_after.remove(&id) {
@@ -591,23 +602,32 @@ impl Application for CelesteApp {
                     SyncEvent::SyncDirStatus {
                         sync_dir_id, text, ..
                     } => {
-                        // A primary status supersedes any pending-event
-                        // note.
-                        self.sync_dir_pending.remove(&sync_dir_id);
-                        self.sync_dir_status.insert(sync_dir_id, text);
+                        self.sync_dir_log
+                            .entry(sync_dir_id)
+                            .or_default()
+                            .push(text);
                     }
                     SyncEvent::SyncDirPending {
                         sync_dir_id, text, ..
                     } => {
-                        self.sync_dir_pending.insert(sync_dir_id, text);
+                        self.sync_dir_log
+                            .entry(sync_dir_id)
+                            .or_default()
+                            .push(format!("⟳ {text}"));
                     }
                     SyncEvent::SyncDirError {
                         sync_dir_id, error, ..
                     } => {
-                        self.sync_dir_errors
+                        let line = match &error {
+                            SyncError::General(path, msg) => format!("⚠ {path}: {msg}"),
+                            SyncError::BothMoreCurrent(local, remote) => {
+                                format!("⚠ Conflict: '{local}' vs '{remote}'")
+                            }
+                        };
+                        self.sync_dir_log
                             .entry(sync_dir_id)
                             .or_default()
-                            .push(error);
+                            .push(line);
                     }
                     SyncEvent::RemoteStarted { .. }
                     | SyncEvent::RemoteCompleted { .. }
@@ -646,6 +666,75 @@ impl Application for CelesteApp {
                 )
             }
             Message::PolicySaved => Command::none(),
+
+            Message::ExclusionsLoaded(sd_id, excls) => {
+                self.sync_dir_exclusions.insert(sd_id, excls);
+                Command::none()
+            }
+
+            Message::Remote(remote_page::Msg::ToggleExclusions(sd_id)) => {
+                if self.exclusion_panel == Some(sd_id) {
+                    self.exclusion_panel = None;
+                    Command::none()
+                } else {
+                    self.exclusion_panel = Some(sd_id);
+                    let repo = self.repo.clone();
+                    Command::perform(
+                        async move { repo.list_exclusions(sd_id).await.unwrap_or_default() },
+                        move |excls| Message::ExclusionsLoaded(sd_id, excls),
+                    )
+                }
+            }
+
+            Message::Remote(remote_page::Msg::DraftExclusionChanged(sd_id, s)) => {
+                self.draft_exclusion.insert(sd_id, s);
+                Command::none()
+            }
+
+            Message::Remote(remote_page::Msg::AddExclusion(sd_id)) => {
+                let raw = self
+                    .draft_exclusion
+                    .get(&sd_id)
+                    .cloned()
+                    .unwrap_or_default();
+                let path = crate::util::strip_slashes(raw.trim());
+                if path.is_empty() {
+                    return Command::none();
+                }
+                self.draft_exclusion.insert(sd_id, String::new());
+                let repo = self.repo.clone();
+                Command::perform(
+                    async move {
+                        let _ = repo.insert_exclusion(sd_id, path).await;
+                        repo.list_exclusions(sd_id).await.unwrap_or_default()
+                    },
+                    move |excls| Message::ExclusionsLoaded(sd_id, excls),
+                )
+            }
+
+            Message::Remote(remote_page::Msg::RemoveExclusion(excl_id, sd_id)) => {
+                let repo = self.repo.clone();
+                Command::perform(
+                    async move {
+                        let _ = repo.delete_exclusion(excl_id).await;
+                        repo.list_exclusions(sd_id).await.unwrap_or_default()
+                    },
+                    move |excls| Message::ExclusionsLoaded(sd_id, excls),
+                )
+            }
+
+            Message::Remote(remote_page::Msg::DeleteLocalFiles(path)) => Command::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        let _ = std::fs::remove_dir_all(&path);
+                    })
+                    .await
+                    .ok();
+                },
+                |_| Message::LocalFilesDeleted,
+            ),
+
+            Message::LocalFilesDeleted => Command::none(),
         }
     }
 
@@ -673,9 +762,11 @@ impl Application for CelesteApp {
                 remote_page::view(
                     remote,
                     dirs,
-                    &self.sync_dir_status,
-                    &self.sync_dir_pending,
-                    &self.sync_dir_errors,
+                    &self.sync_dir_log,
+                    &self.all_known_sync_dirs,
+                    self.exclusion_panel,
+                    &self.sync_dir_exclusions,
+                    &self.draft_exclusion,
                     (draft_local, draft_remote),
                     eta,
                 )
@@ -699,13 +790,6 @@ impl CelesteApp {
     fn start_sync(&mut self, id: RemoteId) -> Command<Message> {
         if self.syncing.contains(&id) {
             return Command::none();
-        }
-        // Clear previous errors for all sync_dirs of this remote before the
-        // new pass starts populating them.
-        if let Some(dirs) = self.sync_dirs.get(&id) {
-            for sd in dirs {
-                self.sync_dir_errors.remove(&sd.id);
-            }
         }
         // Fresh cancel flag for this pass. Reusing the existing Arc
         // lets any stored reference remain wired up (we flip-flop the

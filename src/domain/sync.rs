@@ -8,6 +8,20 @@ pub struct SyncDirId(pub i32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct SyncItemId(pub i32);
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct SyncDirExclusionId(pub i32);
+
+/// A user-defined exclusion on a sync_dir. `remote_path` is relative to the
+/// sync_dir's own `remote_path` (e.g. `"Videos"` on a sync_dir whose
+/// `remote_path` is `"My files"`). The corresponding local subtree is derived
+/// at runtime as `sync_dir.local_path + "/" + remote_path`.
+#[derive(Clone, Debug)]
+pub struct SyncDirExclusion {
+    pub id: SyncDirExclusionId,
+    pub sync_dir_id: SyncDirId,
+    pub remote_path: String,
+}
+
 #[derive(Clone, Debug)]
 pub struct SyncDir {
     pub id: SyncDirId,
