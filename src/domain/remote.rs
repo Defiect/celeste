@@ -15,15 +15,19 @@ pub enum ProviderKind {
 }
 
 impl ProviderKind {
-    /// Map rclone's backend `type` field to our domain enum. Everything
-    /// that isn't recognised is `None` — treated as "no provider-specific
-    /// quirks".
+    /// Map a backend type string to our domain enum. Accepts both
+    /// rclone backend names ("drive", "dropbox", …) and the native
+    /// backend sentinel ("native-proton"). Unrecognised strings return
+    /// `None` — treated as "no provider-specific quirks".
     pub fn from_rclone_type(t: &str) -> Option<Self> {
         match t {
             "dropbox" => Some(Self::Dropbox),
             "drive" => Some(Self::GDrive),
             "pcloud" => Some(Self::PCloud),
-            "protondrive" => Some(Self::ProtonDrive),
+            // Only the native client reports Proton now; rclone's
+            // `protondrive` backend is no longer compiled into our
+            // librclone build (see native-go/wrapper.go).
+            "native-proton" => Some(Self::ProtonDrive),
             // WebDAV-family all use rclone's "webdav" backend; the
             // vendor sub-selector picks Nextcloud / Owncloud / plain
             // WebDAV. Can't tell them apart from `type` alone, so
@@ -71,17 +75,12 @@ impl ProviderKind {
     ///
     /// Return an empty slice for backends we don't have a marker set
     /// for yet; those passes can never be flagged degraded and will
-    /// run as before.
+    /// run as before. ProtonDrive used to have a marker set back when
+    /// it went through rclone's `protondrive` backend — the native
+    /// client reports rate limits directly via its own error paths, so
+    /// the stderr tap no longer carries that signal.
     pub fn rate_limit_markers(self) -> &'static [&'static [&'static str]] {
         match self {
-            // go-proton-api prints `status=429` alongside its package
-            // tag on every retry; Proton's own API also surfaces
-            // "Too many recent API requests".
-            ProviderKind::ProtonDrive => &[
-                &["go-proton-api", "status=429"],
-                &["go-proton-api", "Too many requests"],
-                &["Too many recent API requests"],
-            ],
             // Google Drive quota / per-minute limits — the error
             // message pattern rclone surfaces alongside any internal
             // retry warnings.
@@ -90,10 +89,10 @@ impl ProviderKind {
                 &["userRateLimitExceeded"],
                 &["Quota exceeded"],
             ],
-            // Dropbox / pCloud / WebDAV etc. don't have a characterised
-            // marker set yet. Leaving empty means "never flag as
-            // degraded"; we keep the current (pre-backoff) behaviour
-            // on them.
+            // Other backends (Dropbox, pCloud, WebDAV, ProtonDrive)
+            // don't have a characterised marker set. Leaving empty
+            // means "never flag as degraded"; we keep the current
+            // (pre-backoff) behaviour on them.
             _ => &[],
         }
     }
@@ -273,7 +272,7 @@ mod tests {
     #[test]
     fn rclone_type_mapping_covers_known_backends() {
         assert_eq!(
-            ProviderKind::from_rclone_type("protondrive"),
+            ProviderKind::from_rclone_type("native-proton"),
             Some(ProviderKind::ProtonDrive)
         );
         assert_eq!(
@@ -289,5 +288,16 @@ mod tests {
             Some(ProviderKind::WebDav)
         );
         assert_eq!(ProviderKind::from_rclone_type("bogus"), None);
+    }
+
+    #[test]
+    fn proton_drive_has_no_stderr_markers() {
+        // The native client surfaces rate-limits via its own error paths,
+        // so the rclone-stderr tap must never flag a ProtonDrive pass as
+        // degraded. The field stayed for the enum's other variants (GDrive
+        // still has markers) but ProtonDrive's empty slice is now the
+        // guard against a false-positive backoff.
+        assert!(ProviderKind::ProtonDrive.rate_limit_markers().is_empty());
+        assert!(!ProviderKind::GDrive.rate_limit_markers().is_empty());
     }
 }

@@ -214,10 +214,11 @@ pub fn view(draft: &Draft) -> Element<'_, Msg> {
         Some(p) if p.is_proton_drive() => {
             body = body.push(
                 text(
-                    "Note: if you have 2FA enabled, Proton's tokens expire \
-                     periodically. When that happens rclone can't re-auth \
-                     (the 2FA code is one-time-use) and you'll need to \
-                     delete and re-add the remote with a fresh code."
+                    "Note: if you have 2FA enabled, Proton's refresh token \
+                     eventually expires. When that happens the session can't \
+                     re-auth automatically (the 2FA code is one-time-use) \
+                     and you'll need to delete and re-add the remote with a \
+                     fresh code."
                 )
                 .size(12),
             );
