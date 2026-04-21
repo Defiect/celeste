@@ -18,6 +18,8 @@ import (
 	"os"
 	"sync"
 
+	"celeste/native-go/proton-ext"
+
 	"github.com/ProtonMail/go-proton-api"
 	"github.com/ProtonMail/gopenpgp/v2/crypto"
 )
@@ -260,6 +262,17 @@ func (s *Session) AsCredential() ReusableCredential {
 		AccessToken:   s.AccessToken,
 		RefreshToken:  s.RefreshToken,
 		SaltedKeyPass: s.SaltedKeyPass,
+	}
+}
+
+// protonextAuth bundles the credential headers protonext needs to make
+// HTTP calls against the Proton API. Refreshed on every call so an
+// AuthHandler-driven token rotation is picked up by the next request.
+func (s *Session) protonextAuth() protonext.Auth {
+	return protonext.Auth{
+		UID:         s.UID,
+		AccessToken: s.AccessToken,
+		AppVersion:  AppVersion,
 	}
 }
 

@@ -31,6 +31,8 @@ import (
 	"path/filepath"
 	"time"
 
+	"celeste/native-go/proton-ext"
+
 	"github.com/ProtonMail/go-proton-api"
 	"github.com/ProtonMail/gopenpgp/v2/crypto"
 	"github.com/go-resty/resty/v2"
@@ -101,10 +103,10 @@ func (s *Session) CreateFolder(ctx context.Context, parentLinkID, name string) (
 
 		SignatureAddress: s.signatureAddress,
 	}
-	if err := req.SetName(name, s.defaultAddrKR, parentNodeKR); err != nil {
+	if err := protonext.SetCreateFolderName(&req, name, s.defaultAddrKR, parentNodeKR); err != nil {
 		return "", err
 	}
-	if err := req.SetHash(name, parentHashKey); err != nil {
+	if err := protonext.SetCreateFolderHash(&req, name, parentHashKey); err != nil {
 		return "", err
 	}
 	// The new folder's own hash key is independent of its parent's;
@@ -114,7 +116,7 @@ func (s *Session) CreateFolder(ctx context.Context, parentLinkID, name string) (
 		return "", err
 	}
 	_ = newFolderKR // only needed once we want the hash key back locally
-	if err := req.SetNodeHashKey(newFolderKR); err != nil {
+	if err := protonext.SetCreateFolderNodeHashKey(&req, newFolderKR); err != nil {
 		return "", err
 	}
 
@@ -231,12 +233,12 @@ func (s *Session) UploadFile(ctx context.Context, parentLinkID, name, srcPath st
 		// Best-effort draft cleanup. If this fails we swallow — the
 		// CreateRevision path will retry the user's next upload and
 		// the stale draft will be collected server-side eventually.
-		_ = s.c.DeleteRevision(ctx, s.mainShare.ShareID, linkID, revisionID)
+		_ = protonext.DeleteRevision(ctx, s.protonextAuth(), s.mainShare.ShareID, linkID, revisionID)
 		return "", err
 	}
 
 	if err := s.commitRevision(ctx, nodeKR, linkID, revisionID, manifest, fileSize, blockSizes, sha1Hex, modTime); err != nil {
-		_ = s.c.DeleteRevision(ctx, s.mainShare.ShareID, linkID, revisionID)
+		_ = protonext.DeleteRevision(ctx, s.protonextAuth(), s.mainShare.ShareID, linkID, revisionID)
 		return "", err
 	}
 	return linkID, nil
@@ -294,10 +296,10 @@ func (s *Session) createFileDraft(
 		NodePassphraseSignature: nodePassphraseSig,
 		SignatureAddress:        s.signatureAddress,
 	}
-	if err := req.SetName(name, s.defaultAddrKR, parentNodeKR); err != nil {
+	if err := protonext.SetCreateFileName(&req, name, s.defaultAddrKR, parentNodeKR); err != nil {
 		return "", "", nil, nil, err
 	}
-	if err := req.SetHash(name, parentHashKey); err != nil {
+	if err := protonext.SetCreateFileHash(&req, name, parentHashKey); err != nil {
 		return "", "", nil, nil, err
 	}
 
@@ -307,7 +309,7 @@ func (s *Session) createFileDraft(
 	if err != nil {
 		return "", "", nil, nil, err
 	}
-	sessionKey, err := req.SetContentKeyPacketAndSignature(nodeKR)
+	sessionKey, err := protonext.SetCreateFileContentKey(&req, nodeKR)
 	if err != nil {
 		return "", "", nil, nil, err
 	}
@@ -485,13 +487,13 @@ func (s *Session) handleRevisionConflict(ctx context.Context, link *proton.Link)
 		// Link has an active revision plus a stale draft — delete
 		// the draft so we can create a fresh one.
 		log.Printf("[proton-native] deleting stale draft revision %s on link %s", draftRevID, linkID)
-		if err := s.c.DeleteRevision(ctx, s.mainShare.ShareID, linkID, draftRevID); err != nil {
+		if err := protonext.DeleteRevision(ctx, s.protonextAuth(), s.mainShare.ShareID, linkID, draftRevID); err != nil {
 			return "", false, err
 		}
 	}
 
 	// Create a new revision on the existing file.
-	newRev, err := s.c.CreateRevision(ctx, s.mainShare.ShareID, linkID)
+	newRev, err := protonext.CreateRevision(ctx, s.protonextAuth(), s.mainShare.ShareID, linkID)
 	if err != nil {
 		return "", false, err
 	}
@@ -645,20 +647,20 @@ func (s *Session) commitRevision(
 	if err != nil {
 		return err
 	}
-	req := proton.CommitRevisionReq{
+	req := protonext.CommitRevisionReq{
 		ManifestSignature: manifestSigArm,
 		SignatureAddress:  s.signatureAddress,
 	}
-	xAttr := &proton.RevisionXAttrCommon{
+	xAttr := &protonext.RevisionXAttrCommon{
 		ModificationTime: modTime.UTC().Format("2006-01-02T15:04:05-0700"),
 		Size:             fileSize,
 		BlockSizes:       blockSizes,
 		Digests:          map[string]string{"SHA1": sha1Hex},
 	}
-	if err := req.SetEncXAttrString(s.defaultAddrKR, nodeKR, xAttr); err != nil {
+	if err := protonext.SetCommitRevisionXAttr(&req, s.defaultAddrKR, nodeKR, xAttr); err != nil {
 		return err
 	}
-	return s.c.CommitRevision(ctx, s.mainShare.ShareID, linkID, revisionID, req)
+	return protonext.CommitRevision(ctx, s.protonextAuth(), s.mainShare.ShareID, linkID, revisionID, req)
 }
 
 // contentAlreadyMatches returns true when the active revision of
@@ -683,13 +685,14 @@ func (s *Session) contentAlreadyMatches(
 	if err != nil {
 		return false
 	}
-	// PageSize=1 — we're only after the decrypted XAttr metadata,
-	// not the block list. Proton returns XAttr on every GetRevision.
-	rev, err := s.c.GetRevision(ctx, s.mainShare.ShareID, link.LinkID, revID, 1, 1)
+	// PageSize=1 — we're only after the decrypted XAttr metadata, not
+	// the block list. Upstream's GetRevision drops the XAttr field on
+	// the floor, so we go through protonext to capture it.
+	rev, err := protonext.GetRevisionXAttr(ctx, s.protonextAuth(), s.mainShare.ShareID, link.LinkID, revID)
 	if err != nil || rev.XAttr == "" {
 		return false
 	}
-	xa, err := proton.DecryptRevisionXAttr(rev.XAttr, s.defaultAddrKR, nodeKR)
+	xa, err := protonext.DecryptRevisionXAttr(rev.XAttr, s.defaultAddrKR, nodeKR)
 	if err != nil || xa == nil {
 		return false
 	}
