@@ -511,7 +511,7 @@ impl Repository for SeaOrmRepository {
                 .filter(
                     Condition::any()
                         .add(SyncItemsColumn::LocalPath.eq(prefix.clone()))
-                        .add(SyncItemsColumn::LocalPath.starts_with(format!("{prefix}/"))),
+                        .add(SyncItemsColumn::LocalPath.starts_with(format!("{prefix}/").as_str())),
                 )
                 .exec(&self.db)
                 .await

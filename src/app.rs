@@ -21,7 +21,7 @@ use crate::{
         events::SyncEvent,
         ports::{RcloneClient, Repository},
         remote::{ProviderKind, Remote, RemoteId},
-        sync::{SyncDir, SyncDirExclusion, SyncDirExclusionId, SyncDirId, SyncError},
+        sync::{SyncDir, SyncDirExclusion, SyncDirId, SyncError},
     },
     infrastructure::{
         client_router::ClientRouter,

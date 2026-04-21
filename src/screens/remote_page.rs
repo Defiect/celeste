@@ -117,9 +117,9 @@ pub fn view<'a>(
 
         // Top row: paths | [Excluded (n)] [Delete]
         let top_row = row![
-            text(&path_label).size(13),
+            text(path_label).size(13),
             Space::with_width(Length::Fill),
-            button(text(&excl_label).size(12)).on_press(Msg::ToggleExclusions(sd.id)),
+            button(text(excl_label).size(12)).on_press(Msg::ToggleExclusions(sd.id)),
             button(text("Delete").size(12)).on_press(Msg::DeleteSyncDir(
                 sd.local_path.clone(),
                 sd.remote_path.clone(),
@@ -129,10 +129,11 @@ pub fn view<'a>(
         .align_items(Alignment::Center);
 
         // Log area: newest entry first so the most recent is always visible.
-        let log_entries = log.get(&sd.id).cloned().unwrap_or_default();
         let mut log_col = column![].spacing(2);
-        for entry in log_entries.iter().rev() {
-            log_col = log_col.push(text(entry).size(12));
+        if let Some(entries) = log.get(&sd.id) {
+            for entry in entries.iter().rev() {
+                log_col = log_col.push(text(entry.as_str()).size(12));
+            }
         }
         let log_area = scrollable(log_col).height(Length::Fixed(LOG_HEIGHT));
 
