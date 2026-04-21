@@ -277,12 +277,32 @@ fn exclusion_panel_view<'a>(
     col.into()
 }
 
-/// Sync_dirs from `all` whose local_path is a direct descendant of `sd`.
+/// Sync_dirs from `all` that are auto-excluded under `sd` — either because
+/// their local path is nested under `sd.local_path` or because their
+/// remote path is nested under `sd.remote_path`. The sync engine excludes
+/// in both directions; the badge has to mirror that to be honest.
 fn auto_excluded_for<'a>(sd: &SyncDir, all: &'a [SyncDir]) -> Vec<&'a SyncDir> {
-    let prefix = format!("{}/", sd.local_path);
+    let local_prefix = format!("{}/", sd.local_path);
     all.iter()
-        .filter(|d| d.id != sd.id && d.local_path.starts_with(&prefix))
+        .filter(|d| d.id != sd.id)
+        .filter(|d| {
+            d.local_path.starts_with(&local_prefix) || is_remote_descendant(sd, d)
+        })
         .collect()
+}
+
+fn is_remote_descendant(ancestor: &SyncDir, candidate: &SyncDir) -> bool {
+    // Remote paths are only comparable within the same provider.
+    if ancestor.remote_id != candidate.remote_id {
+        return false;
+    }
+    if ancestor.remote_path.is_empty() {
+        !candidate.remote_path.is_empty()
+    } else {
+        candidate
+            .remote_path
+            .starts_with(&format!("{}/", ancestor.remote_path))
+    }
 }
 
 fn format_duration(d: Duration) -> String {
