@@ -193,6 +193,14 @@ func (s *Session) findChildLinkByName(ctx context.Context, parentLinkID, name st
 //      blocks), XAttr block sizes, and SHA-1 of plaintext.
 //   4. Commit the revision: sign the manifest, encrypt the XAttr
 //      payload, send the CommitRevisionReq.
+//
+// Hash-first short-circuit: when step 2 finds the parent already has
+// an active file with the same name, the existing active revision's
+// XAttr SHA-1 is compared to the local file's SHA-1. On match, the
+// upload + commit are skipped entirely and the existing link ID is
+// returned — no blocks are re-encrypted, no bytes re-uploaded. Keeps
+// first-sync against a non-empty remote tree from re-pushing the
+// content of every byte-identical file.
 func (s *Session) UploadFile(ctx context.Context, parentLinkID, name, srcPath string) (string, error) {
 	if parentLinkID == "" {
 		parentLinkID = s.RootLinkID()
@@ -208,9 +216,14 @@ func (s *Session) UploadFile(ctx context.Context, parentLinkID, name, srcPath st
 	}
 	modTime := stat.ModTime()
 
-	linkID, revisionID, sessionKey, nodeKR, err := s.createFileDraft(ctx, parentLinkID, name)
+	linkID, revisionID, sessionKey, nodeKR, err := s.createFileDraft(ctx, parentLinkID, name, srcPath)
 	if err != nil {
 		return "", err
+	}
+	if revisionID == "" {
+		// Hash-first short-circuit: the existing active revision
+		// already holds content byte-identical to srcPath.
+		return linkID, nil
 	}
 
 	manifest, fileSize, blockSizes, sha1Hex, err := s.uploadBlocks(ctx, sessionKey, nodeKR, file, linkID, revisionID)
@@ -236,9 +249,16 @@ func (s *Session) UploadFile(ctx context.Context, parentLinkID, name, srcPath st
 // existing link, and the existing file's keyring + session key are
 // returned so the caller can encrypt blocks with the right key
 // material. Returns (linkID, revisionID, fileSessionKey, fileNodeKR).
+//
+// `srcPath` is consulted only for the active-conflict hash-first
+// short-circuit: when the existing active revision's XAttr SHA-1
+// matches the local file's SHA-1, createFileDraft returns
+// `(existingLinkID, "", nil, nil, nil)` to signal "no upload needed".
+// Any failure to read XAttr / hash falls through to the normal
+// new-revision path, so the short-circuit is always opportunistic.
 func (s *Session) createFileDraft(
 	ctx context.Context,
-	parentLinkID, name string,
+	parentLinkID, name, srcPath string,
 ) (string, string, *crypto.SessionKey, *crypto.KeyRing, error) {
 	parentLink, err := s.getLink(ctx, parentLinkID)
 	if err != nil {
@@ -345,6 +365,22 @@ func (s *Session) createFileDraft(
 	}
 
 	// ---- Draft / Active: handle revision conflicts ----
+	//
+	// Hash-first short-circuit: for active-state links, see whether
+	// the active revision's XAttr SHA-1 matches the local file. If
+	// it does, there's nothing to upload — return the existing link
+	// ID with an empty revision ID so UploadFile can bail out. We
+	// only pay this cost on the conflict path; the happy CreateFile
+	// path never touches it. Any error (XAttr missing, decrypt
+	// failure, hash I/O error) falls through to the normal
+	// new-revision handling.
+	if existingLink.State == proton.LinkStateActive {
+		if skip := s.contentAlreadyMatches(ctx, existingLink, parentNodeKR, srcPath); skip {
+			log.Printf("[proton-native] content-hash match for %q — skipping upload, reusing linkID=%s", name, existingLink.LinkID)
+			return existingLink.LinkID, "", nil, nil, nil
+		}
+	}
+
 	revisionID, needRetry, revErr := s.handleRevisionConflict(ctx, existingLink)
 	if revErr != nil {
 		return "", "", nil, nil, revErr
@@ -623,4 +659,64 @@ func (s *Session) commitRevision(
 		return err
 	}
 	return s.c.CommitRevision(ctx, s.mainShare.ShareID, linkID, revisionID, req)
+}
+
+// contentAlreadyMatches returns true when the active revision of
+// `link` carries a decrypted XAttr SHA-1 equal to the SHA-1 of
+// `srcPath`'s contents. Returns false on any error — the caller
+// treats that as "no signal", so a failed hash check never blocks
+// the normal upload path.
+func (s *Session) contentAlreadyMatches(
+	ctx context.Context,
+	link *proton.Link,
+	parentNodeKR *crypto.KeyRing,
+	srcPath string,
+) bool {
+	if link == nil || link.FileProperties == nil {
+		return false
+	}
+	revID := link.FileProperties.ActiveRevision.ID
+	if revID == "" {
+		return false
+	}
+	nodeKR, err := link.GetKeyRing(parentNodeKR, s.defaultAddrKR)
+	if err != nil {
+		return false
+	}
+	// PageSize=1 — we're only after the decrypted XAttr metadata,
+	// not the block list. Proton returns XAttr on every GetRevision.
+	rev, err := s.c.GetRevision(ctx, s.mainShare.ShareID, link.LinkID, revID, 1, 1)
+	if err != nil || rev.XAttr == "" {
+		return false
+	}
+	xa, err := proton.DecryptRevisionXAttr(rev.XAttr, s.defaultAddrKR, nodeKR)
+	if err != nil || xa == nil {
+		return false
+	}
+	remoteSHA1 := xa.Digests["SHA1"]
+	if remoteSHA1 == "" {
+		return false
+	}
+	localSHA1, err := sha1OfFile(srcPath)
+	if err != nil {
+		return false
+	}
+	return localSHA1 == remoteSHA1
+}
+
+// sha1OfFile streams `path`'s contents through SHA-1 and returns the
+// hex-encoded digest. Matches the digest commitRevision writes into
+// the revision's XAttr on upload, so equality implies byte-identical
+// content.
+func sha1OfFile(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha1.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
