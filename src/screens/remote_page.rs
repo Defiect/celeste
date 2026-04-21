@@ -3,7 +3,7 @@
 use std::{collections::HashMap, time::Duration};
 
 use iced::{
-    widget::{button, column, container, row, scrollable, text_input, Rule, Space},
+    widget::{button, column, container, responsive, row, scrollable, text_input, Rule, Space},
     Alignment, Element, Length,
 };
 
@@ -17,8 +17,12 @@ use crate::{
     widgets::text,
 };
 
-/// Height of the per-card log scrollable in logical pixels (~5-6 lines).
-const LOG_HEIGHT: f32 = 96.0;
+/// Log scrollable sizing — height grows with the card width so wider
+/// windows get a taller log pane. Clamped to keep cards usable on both
+/// narrow and very wide layouts.
+const LOG_HEIGHT_RATIO: f32 = 0.35;
+const LOG_HEIGHT_MIN: f32 = 120.0;
+const LOG_HEIGHT_MAX: f32 = 360.0;
 
 #[derive(Debug, Clone)]
 pub enum Msg {
@@ -129,13 +133,21 @@ pub fn view<'a>(
         .align_items(Alignment::Center);
 
         // Log area: newest entry first so the most recent is always visible.
-        let mut log_col = column![].spacing(2);
-        if let Some(entries) = log.get(&sd.id) {
-            for entry in entries.iter().rev() {
-                log_col = log_col.push(text(entry.as_str()).size(12));
+        // `responsive` lets us scale the pane height with the actual rendered
+        // width, so wider cards get a taller log instead of a fixed strip.
+        let entries_opt = log.get(&sd.id);
+        let log_area = container(responsive(move |size| {
+            let height = (size.width * LOG_HEIGHT_RATIO)
+                .clamp(LOG_HEIGHT_MIN, LOG_HEIGHT_MAX);
+            let mut log_col = column![].spacing(2);
+            if let Some(entries) = entries_opt {
+                for entry in entries.iter().rev() {
+                    log_col = log_col.push(text(entry.as_str()).size(12));
+                }
             }
-        }
-        let log_area = scrollable(log_col).height(Length::Fixed(LOG_HEIGHT));
+            scrollable(log_col).height(Length::Fixed(height)).into()
+        }))
+        .height(Length::Fixed(LOG_HEIGHT_MAX));
 
         let mut card_col = column![top_row, log_area].spacing(ROW_SPACING / 2);
 

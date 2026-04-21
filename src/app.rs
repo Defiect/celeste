@@ -436,6 +436,11 @@ impl Application for CelesteApp {
                 if local.trim().is_empty() || remote.trim().is_empty() {
                     return Command::none();
                 }
+                let Some(remote_name) =
+                    self.remotes.iter().find(|r| r.id == id).map(|r| r.name.clone())
+                else {
+                    return Command::none();
+                };
                 // Normalise to match the on-disk contract: the local path is
                 // absolute (leading `/`) and has no trailing `/`; the remote
                 // path has no leading or trailing `/`. The sync loop assumes
@@ -445,8 +450,20 @@ impl Application for CelesteApp {
                 let remote_norm = crate::util::strip_slashes(remote.trim());
                 self.sync_dir_drafts.insert(id, (String::new(), String::new()));
                 let repo = self.repo.clone();
+                let rclone = self.rclone.clone();
                 Command::perform(
                     async move {
+                        // Auto-create local + remote directory if missing so a
+                        // brand-new descendant sync_dir doesn't immediately
+                        // trip "directory not found" on the next list call.
+                        let local_for_mk = local_norm.clone();
+                        let remote_for_mk = remote_norm.clone();
+                        let _ = tokio::task::spawn_blocking(move || {
+                            let _ = std::fs::create_dir_all(&local_for_mk);
+                            let _ = rclone.mkdir(&remote_name, &remote_for_mk);
+                        })
+                        .await;
+
                         let _ = repo.insert_sync_dir(id, local_norm.clone(), remote_norm).await;
                         // Purge stale tracking from any ancestor sync_dirs so
                         // the descendant subtree is handed over cleanly. The
