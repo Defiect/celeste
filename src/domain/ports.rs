@@ -77,6 +77,7 @@ pub trait Repository: Send + Sync {
         &self,
         remote: RemoteId,
     ) -> BoxFuture<'_, Result<Vec<SyncDir>, RepositoryError>>;
+    fn list_all_sync_dirs(&self) -> BoxFuture<'_, Result<Vec<SyncDir>, RepositoryError>>;
     fn sync_dir_exists(
         &self,
         local_path: &str,
@@ -129,6 +130,13 @@ pub trait Repository: Send + Sync {
         sync_dir: SyncDirId,
         local_path: &str,
         remote_path: &str,
+    ) -> BoxFuture<'_, Result<(), RepositoryError>>;
+    /// Delete all sync_items in `sync_dir` whose `local_path` equals
+    /// `local_prefix` or starts with `local_prefix/`.
+    fn delete_sync_items_with_local_prefix(
+        &self,
+        sync_dir: SyncDirId,
+        local_prefix: &str,
     ) -> BoxFuture<'_, Result<(), RepositoryError>>;
 }
 

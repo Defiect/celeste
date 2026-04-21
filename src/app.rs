@@ -428,7 +428,20 @@ impl Application for CelesteApp {
                 let repo = self.repo.clone();
                 Command::perform(
                     async move {
-                        let _ = repo.insert_sync_dir(id, local_norm, remote_norm).await;
+                        let _ = repo.insert_sync_dir(id, local_norm.clone(), remote_norm).await;
+                        // Purge stale tracking from any ancestor sync_dirs so
+                        // the descendant subtree is handed over cleanly. The
+                        // next pass of each ancestor will skip the subtree.
+                        if let Ok(all_dirs) = repo.list_all_sync_dirs().await {
+                            for ancestor in all_dirs
+                                .iter()
+                                .filter(|d| is_local_ancestor(&d.local_path, &local_norm))
+                            {
+                                let _ = repo
+                                    .delete_sync_items_with_local_prefix(ancestor.id, &local_norm)
+                                    .await;
+                            }
+                        }
                         id
                     },
                     |id| Message::Main(main_page::Msg::Selected(id)),
@@ -674,6 +687,10 @@ impl Application for CelesteApp {
     }
 }
 
+fn is_local_ancestor(ancestor: &str, descendant: &str) -> bool {
+    descendant.starts_with(&format!("{ancestor}/"))
+}
+
 impl CelesteApp {
     /// Spawn a sync pass for one remote. No-op if already syncing. Marks the
     /// remote as in-flight so the sidebar shows "(syncing…)" and returns
@@ -711,6 +728,7 @@ impl CelesteApp {
                     _ => return (id, PassVerdict::Aborted),
                 };
                 let sync_dirs = repo.list_sync_dirs(id).await.unwrap_or_default();
+                let all_sync_dirs = repo.list_all_sync_dirs().await.unwrap_or_default();
                 let verdict = tokio::task::spawn_blocking(move || {
                     let emit = move |event: SyncEvent| {
                         if let Some(tx) = &events_tx {
@@ -752,6 +770,7 @@ impl CelesteApp {
                             &sd,
                             &*repo,
                             &*rclone,
+                            &all_sync_dirs,
                             emit.clone(),
                             is_cancelled.clone(),
                             rate_limit_seen_since.clone(),

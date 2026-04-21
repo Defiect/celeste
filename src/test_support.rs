@@ -180,6 +180,9 @@ impl Repository for FakeRepo {
     ) -> BoxFuture<'_, Result<Vec<SyncDir>, RepositoryError>> {
         Box::pin(async { Ok(vec![]) })
     }
+    fn list_all_sync_dirs(&self) -> BoxFuture<'_, Result<Vec<SyncDir>, RepositoryError>> {
+        Box::pin(async { Ok(vec![]) })
+    }
     fn sync_dir_exists(
         &self,
         _l: &str,
@@ -294,6 +297,19 @@ impl Repository for FakeRepo {
             .lock()
             .unwrap()
             .retain(|it| !(it.sync_dir_id == sd && it.local_path == local && it.remote_path == remote));
+        Box::pin(async { Ok(()) })
+    }
+    fn delete_sync_items_with_local_prefix(
+        &self,
+        sd: SyncDirId,
+        prefix: &str,
+    ) -> BoxFuture<'_, Result<(), RepositoryError>> {
+        let prefix = prefix.to_owned();
+        let child_prefix = format!("{prefix}/");
+        self.items.lock().unwrap().retain(|it| {
+            !(it.sync_dir_id == sd
+                && (it.local_path == prefix || it.local_path.starts_with(&child_prefix)))
+        });
         Box::pin(async { Ok(()) })
     }
 }

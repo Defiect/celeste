@@ -1,7 +1,7 @@
 //! SeaORM-backed implementation of [`crate::domain::ports::Repository`].
 
 use sea_orm::{
-    ActiveValue, ColumnTrait, DatabaseConnection, EntityTrait, ModelTrait, QueryFilter,
+    ActiveValue, ColumnTrait, Condition, DatabaseConnection, EntityTrait, ModelTrait, QueryFilter,
 };
 
 use crate::domain::{
@@ -238,6 +238,16 @@ impl Repository for SeaOrmRepository {
         })
     }
 
+    fn list_all_sync_dirs(&self) -> BoxFuture<'_, Result<Vec<SyncDir>, RepositoryError>> {
+        Box::pin(async move {
+            let rows = SyncDirsEntity::find()
+                .all(&self.db)
+                .await
+                .map_err(map_err)?;
+            Ok(rows.into_iter().map(map_sync_dir).collect())
+        })
+    }
+
     fn insert_sync_dir(
         &self,
         remote: RemoteId,
@@ -431,6 +441,27 @@ impl Repository for SeaOrmRepository {
             {
                 row.delete(&self.db).await.map_err(map_err)?;
             }
+            Ok(())
+        })
+    }
+
+    fn delete_sync_items_with_local_prefix(
+        &self,
+        sync_dir: SyncDirId,
+        local_prefix: &str,
+    ) -> BoxFuture<'_, Result<(), RepositoryError>> {
+        let prefix = local_prefix.to_owned();
+        Box::pin(async move {
+            SyncItemsEntity::delete_many()
+                .filter(SyncItemsColumn::SyncDirId.eq(sync_dir.0))
+                .filter(
+                    Condition::any()
+                        .add(SyncItemsColumn::LocalPath.eq(prefix.clone()))
+                        .add(SyncItemsColumn::LocalPath.starts_with(format!("{prefix}/"))),
+                )
+                .exec(&self.db)
+                .await
+                .map_err(map_err)?;
             Ok(())
         })
     }

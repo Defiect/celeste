@@ -31,6 +31,7 @@ fn run_full(
         &sd,
         repo,
         client,
+        &[],
         |e| captured.lock().unwrap().push(e),
         || false,
         |_| false,

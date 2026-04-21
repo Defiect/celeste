@@ -104,12 +104,34 @@ impl Snapshot {
         sync_dir: &SyncDir,
         repo: &dyn Repository,
         client: &dyn RcloneClient,
+        all_sync_dirs: &[SyncDir],
     ) -> Result<Self, BuildError> {
-        // 1. DB (cheap, authoritative for "what we last saw").
+        // Compute local paths of descendant sync_dirs — these are excluded
+        // from this sync_dir's walk and remote listing so that nested syncs
+        // never interfere with each other.
+        let excluded_local_prefixes: Vec<String> = all_sync_dirs
+            .iter()
+            .filter(|d| d.id != sync_dir.id)
+            .filter(|d| is_local_descendant(&sync_dir.local_path, &d.local_path))
+            .map(|d| d.local_path.clone())
+            .collect();
+
+        // Corresponding remote-path prefixes (within this sync_dir's
+        // remote space) that map to the excluded local subtrees.
+        let excluded_remote_prefixes: Vec<String> = all_sync_dirs
+            .iter()
+            .filter(|d| d.id != sync_dir.id)
+            .filter_map(|d| descendant_remote_prefix(sync_dir, &d.local_path))
+            .collect();
+
+        // 1. DB (cheap, authoritative for "what we last saw"). Drop any
+        //    tracked rows that now fall inside an excluded subtree — they
+        //    may linger from before the descendant sync_dir was created.
         let db_rows = util::await_future(repo.list_sync_items(sync_dir.id))
             .unwrap_or_default();
         let db: HashMap<String, SyncItem> = db_rows
             .into_iter()
+            .filter(|r| !path_is_excluded(&r.local_path, &excluded_local_prefixes))
             .map(|r| (r.remote_path.clone(), r))
             .collect();
 
@@ -132,11 +154,12 @@ impl Snapshot {
 
         let remote: HashMap<String, RemoteItem> = remote_items
             .into_iter()
+            .filter(|i| !path_is_excluded(&i.path, &excluded_remote_prefixes))
             .map(|i| (i.path.clone(), i))
             .collect();
 
-        // 4. Local walk.
-        let (local, walk_unreliable) = walk_local(sync_dir);
+        // 4. Local walk — skip subtrees managed by descendant sync_dirs.
+        let (local, walk_unreliable) = walk_local(sync_dir, &excluded_local_prefixes);
 
         Ok(Snapshot {
             remote,
@@ -147,7 +170,38 @@ impl Snapshot {
     }
 }
 
-fn walk_local(sync_dir: &SyncDir) -> (HashMap<String, LocalEntry>, HashSet<String>) {
+/// True when `candidate` is a proper descendant of `ancestor_local`
+/// (i.e. its local path starts with `ancestor_local/`).
+fn is_local_descendant(ancestor_local: &str, candidate: &str) -> bool {
+    candidate.starts_with(&format!("{ancestor_local}/"))
+}
+
+/// Given an ancestor sync_dir and the local_path of a descendant sync_dir,
+/// returns the remote-path prefix (within the ancestor's remote space) that
+/// corresponds to the descendant's local subtree. Returns `None` when
+/// `descendant_local` is not a descendant of `ancestor`.
+fn descendant_remote_prefix(ancestor: &SyncDir, descendant_local: &str) -> Option<String> {
+    let sep = format!("{}/", ancestor.local_path);
+    let relative = descendant_local.strip_prefix(&sep)?;
+    Some(if ancestor.remote_path.is_empty() {
+        relative.to_owned()
+    } else {
+        format!("{}/{}", ancestor.remote_path, relative)
+    })
+}
+
+/// Returns true when `path` equals one of `excluded_prefixes` or starts
+/// with one of them followed by `/`.
+fn path_is_excluded(path: &str, excluded_prefixes: &[String]) -> bool {
+    excluded_prefixes
+        .iter()
+        .any(|ex| path == ex || path.starts_with(&format!("{ex}/")))
+}
+
+fn walk_local(
+    sync_dir: &SyncDir,
+    excluded_local_prefixes: &[String],
+) -> (HashMap<String, LocalEntry>, HashSet<String>) {
     let root = Path::new(&sync_dir.local_path);
     let mut out: HashMap<String, LocalEntry> = HashMap::new();
     let mut unreliable: HashSet<String> = HashSet::new();
@@ -157,6 +211,7 @@ fn walk_local(sync_dir: &SyncDir) -> (HashMap<String, LocalEntry>, HashSet<Strin
         &mut out,
         &mut unreliable,
         &sync_dir.remote_path,
+        excluded_local_prefixes,
     );
     (out, unreliable)
 }
@@ -172,6 +227,7 @@ fn walk_dir(
     out: &mut HashMap<String, LocalEntry>,
     unreliable: &mut HashSet<String>,
     current_dir_key: &str,
+    excluded_local_prefixes: &[String],
 ) {
     let read = match fs::read_dir(dir) {
         Ok(r) => r,
@@ -236,6 +292,9 @@ fn walk_dir(
             unreliable.insert(remote_key);
             continue;
         };
+        if path_is_excluded(local_path_str, excluded_local_prefixes) {
+            continue;
+        }
         let mtime_secs = entry
             .metadata()
             .ok()
@@ -252,7 +311,7 @@ fn walk_dir(
             },
         );
         if file_type.is_dir() {
-            walk_dir(&path, sync_dir, out, unreliable, &remote_key);
+            walk_dir(&path, sync_dir, out, unreliable, &remote_key, excluded_local_prefixes);
         }
     }
 }
@@ -625,6 +684,7 @@ pub fn run<FE, FC, FD>(
     sync_dir: &SyncDir,
     repo: &dyn Repository,
     client: &dyn RcloneClient,
+    all_sync_dirs: &[SyncDir],
     emit: FE,
     is_cancelled: FC,
     rate_limit_seen_since: FD,
@@ -658,7 +718,7 @@ where
     };
 
     emit_pending(tr::tr!("Listing remote (may take a while)…"));
-    let snapshot_result = Snapshot::build(remote, sync_dir, repo, client);
+    let snapshot_result = Snapshot::build(remote, sync_dir, repo, client, all_sync_dirs);
 
     // Classify rate-limit *before* we commit to a success/failure path:
     // list failures caused by quota exhaustion still need to route
