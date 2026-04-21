@@ -3,13 +3,18 @@ module celeste/native-go
 go 1.26.1
 
 // Path B: import go-proton-api directly (latest upstream, via submodule).
-// Proton-API-Bridge stays in-tree as reference material — see native-go/proton-bridge/
-// — but isn't a build dependency. Rclone comes in as a normal go.mod
-// dep — same version librclone-sys@0.9.0 pins — so Celeste's existing
-// rclone RPC surface keeps working after we swap the Rust sys crate.
+// Proton-API-Bridge was a reference-only submodule during Phases 1–6 and
+// was removed in Phase 7 once the port was validated. Rclone comes in as
+// a normal go.mod dep — same version librclone-sys@0.9.0 pins — so
+// Celeste's existing rclone RPC surface keeps working.
 require (
 	github.com/ProtonMail/go-proton-api v0.0.0
 	github.com/rclone/rclone v1.69.0
+)
+
+require (
+	github.com/ProtonMail/gopenpgp/v2 v2.10.0-proton
+	github.com/go-resty/resty/v2 v2.17.2
 )
 
 require (
@@ -32,7 +37,6 @@ require (
 	github.com/ProtonMail/go-crypto v1.4.1-proton // indirect
 	github.com/ProtonMail/go-mime v0.0.0-20230322103455-7d82a3887f2f // indirect
 	github.com/ProtonMail/go-srp v0.0.7 // indirect
-	github.com/ProtonMail/gopenpgp/v2 v2.10.0-proton // indirect
 	github.com/PuerkitoBio/goquery v1.12.0 // indirect
 	github.com/aalpar/deheap v0.0.0-20210914013432-0cc84d79dec3 // indirect
 	github.com/abbot/go-http-auth v0.4.0 // indirect
@@ -88,7 +92,6 @@ require (
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-ole/go-ole v1.3.0 // indirect
-	github.com/go-resty/resty/v2 v2.17.2 // indirect
 	github.com/gofrs/flock v0.8.1 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang-jwt/jwt/v4 v4.5.1 // indirect

@@ -110,10 +110,10 @@ import (
 	_ "github.com/rclone/rclone/fs/sync"
 	_ "github.com/rclone/rclone/lib/plugin"
 
-	// Proton-API-Bridge stays in the tree at native-go/proton-bridge as
-	// read-only reference material — NOT imported here. Our own Drive
-	// layer (native-go/drive/, arriving in Phase 2+) imports go-proton-api
-	// directly.
+	// Our own Drive layer (native-go/drive/) imports go-proton-api
+	// directly. Proton-API-Bridge was removed in Phase 7 after the
+	// port was validated — the only remaining ties to it are attribution
+	// comments in files that started as ports of its code.
 	"github.com/ProtonMail/go-proton-api"
 )
 
