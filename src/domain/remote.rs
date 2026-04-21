@@ -38,34 +38,21 @@ impl ProviderKind {
     }
 
     /// Interval a fresh remote of this kind should be created with.
-    /// Proton Drive rate-limits hard enough that 5 s / 15 s trap the
-    /// sync in back-to-back 429 storms; 30 s tested clean.
     pub fn default_interval(self) -> Interval {
-        match self {
-            ProviderKind::ProtonDrive => Interval::ThirtySeconds,
-            _ => Interval::FifteenSeconds,
-        }
+        Interval::FifteenSeconds
     }
 
     /// Intervals shorter than this are flagged in the UI with a ⚠.
     /// Above it, the backend should cope without the warning. `None`
     /// means no warnings for this provider.
     pub fn short_interval_threshold(self) -> Option<Interval> {
-        match self {
-            ProviderKind::ProtonDrive => Some(Interval::ThirtySeconds),
-            _ => None,
-        }
+        None
     }
 
     /// Text shown on the tooltip next to the picker when the provider
     /// has short-interval warnings.
     pub fn short_interval_warning(self) -> Option<&'static str> {
-        match self {
-            ProviderKind::ProtonDrive => Some(
-                "Proton Drive rate-limits every per-file revision fetch — intervals shorter than 30 s trip the backoff and starve the sync. 30 s is the tested-clean minimum.",
-            ),
-            _ => None,
-        }
+        None
     }
 
     /// Substrings that, when spotted in rclone's stderr during a pass,
