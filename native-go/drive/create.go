@@ -241,7 +241,39 @@ func (s *Session) UploadFile(ctx context.Context, parentLinkID, name, srcPath st
 		_ = protonext.DeleteRevision(ctx, s.protonextAuth(), s.mainShare.ShareID, linkID, revisionID)
 		return "", err
 	}
+	// Best-effort: drop any non-active revisions left behind by prior
+	// uploads of this file. Proton retains the previous active revision
+	// as "Obsolete" on every commit, so without this every re-upload
+	// permanently grows the user's quota — which is exactly the bloat
+	// we discovered (~520 MiB across 227 files in one account).
+	s.cleanupNonActiveRevisions(ctx, linkID, revisionID)
 	return linkID, nil
+}
+
+// cleanupNonActiveRevisions deletes every revision on `fileLinkID`
+// except `keepRevisionID`. Best-effort: errors are logged and swallowed
+// so a slow/failed cleanup never breaks the upload's caller.
+func (s *Session) cleanupNonActiveRevisions(ctx context.Context, fileLinkID, keepRevisionID string) {
+	revs, err := protonext.ListRevisions(ctx, s.protonextAuth(), s.mainShare.ShareID, fileLinkID)
+	if err != nil {
+		log.Printf("[proton-native] revision-cleanup: ListRevisions(%s) failed: %v", fileLinkID, err)
+		return
+	}
+	for _, r := range revs {
+		if r.ID == keepRevisionID {
+			continue
+		}
+		if proton.RevisionState(r.State) == proton.RevisionStateActive {
+			// Defensive: never delete the active revision. If we
+			// somehow saw two Active revisions, that's a server-side
+			// invariant violation; let the user investigate.
+			log.Printf("[proton-native] revision-cleanup: refusing to delete Active revision %s on %s", r.ID, fileLinkID)
+			continue
+		}
+		if err := protonext.DeleteRevision(ctx, s.protonextAuth(), s.mainShare.ShareID, fileLinkID, r.ID); err != nil {
+			log.Printf("[proton-native] revision-cleanup: DeleteRevision(%s/%s) failed: %v", fileLinkID, r.ID, err)
+		}
+	}
 }
 
 // createFileDraft posts a `CreateFile` request for a new file under
