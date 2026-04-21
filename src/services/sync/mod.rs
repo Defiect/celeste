@@ -118,24 +118,37 @@ impl Snapshot {
 
         // Corresponding remote-path prefixes (within this sync_dir's
         // remote space) that map to the excluded local subtrees.
-        let mut excluded_remote_prefixes: Vec<String> = all_sync_dirs
+        //
+        // The two providers we ship disagree on the shape of the paths
+        // returned from `list()`: librclone's `operations/list` yields
+        // paths *relative* to the listed root ("bar/baz.txt"), while the
+        // native Proton client builds *absolute* remote paths
+        // ("Foo/bar/baz.txt"). Push both forms so the exclusion filter
+        // matches regardless of provider — a stray extra entry only
+        // costs a `starts_with` per item.
+        let mut excluded_remote_prefixes: Vec<String> = Vec::new();
+        for d in all_sync_dirs
             .iter()
             .filter(|d| d.id != sync_dir.id)
-            .filter_map(|d| descendant_remote_prefix(sync_dir, &d.local_path))
-            .collect();
+            .filter(|d| is_local_descendant(&sync_dir.local_path, &d.local_path))
+        {
+            if let Some(rel) = descendant_remote_relative(sync_dir, &d.local_path) {
+                excluded_remote_prefixes
+                    .push(absolute_remote_path(sync_dir, &rel));
+                excluded_remote_prefixes.push(rel);
+            }
+        }
 
         // User-defined exclusions (stored as remote sub-paths relative to
-        // this sync_dir's remote root). Translate each into both the full
-        // remote-listing path and the corresponding absolute local path.
+        // this sync_dir's remote root). Push both the relative and the
+        // absolute form for the same provider-shape reason as above; the
+        // local form is always absolute and only needs one entry.
         let user_excls = util::await_future(repo.list_exclusions(sync_dir.id))
             .unwrap_or_default();
         for excl in &user_excls {
-            let full_remote = if sync_dir.remote_path.is_empty() {
-                excl.remote_path.clone()
-            } else {
-                format!("{}/{}", sync_dir.remote_path, excl.remote_path)
-            };
-            excluded_remote_prefixes.push(full_remote);
+            excluded_remote_prefixes
+                .push(absolute_remote_path(sync_dir, &excl.remote_path));
+            excluded_remote_prefixes.push(excl.remote_path.clone());
             excluded_local_prefixes.push(format!("{}/{}", sync_dir.local_path, excl.remote_path));
         }
 
@@ -192,17 +205,22 @@ fn is_local_descendant(ancestor_local: &str, candidate: &str) -> bool {
 }
 
 /// Given an ancestor sync_dir and the local_path of a descendant sync_dir,
-/// returns the remote-path prefix (within the ancestor's remote space) that
-/// corresponds to the descendant's local subtree. Returns `None` when
+/// returns the remote-path prefix *relative to the ancestor's remote root*
+/// that corresponds to the descendant's local subtree. Returns `None` when
 /// `descendant_local` is not a descendant of `ancestor`.
-fn descendant_remote_prefix(ancestor: &SyncDir, descendant_local: &str) -> Option<String> {
+fn descendant_remote_relative(ancestor: &SyncDir, descendant_local: &str) -> Option<String> {
     let sep = format!("{}/", ancestor.local_path);
-    let relative = descendant_local.strip_prefix(&sep)?;
-    Some(if ancestor.remote_path.is_empty() {
+    descendant_local.strip_prefix(&sep).map(str::to_owned)
+}
+
+/// Glue an ancestor's remote root onto a relative remote sub-path, producing
+/// the absolute form that providers like the native Proton client return.
+fn absolute_remote_path(sync_dir: &SyncDir, relative: &str) -> String {
+    if sync_dir.remote_path.is_empty() {
         relative.to_owned()
     } else {
-        format!("{}/{}", ancestor.remote_path, relative)
-    })
+        format!("{}/{}", sync_dir.remote_path, relative)
+    }
 }
 
 /// Returns true when `path` equals one of `excluded_prefixes` or starts
