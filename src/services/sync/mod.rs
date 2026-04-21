@@ -106,47 +106,30 @@ impl Snapshot {
         client: &dyn RcloneClient,
         all_sync_dirs: &[SyncDir],
     ) -> Result<Self, BuildError> {
-        // Compute exclusion prefixes from any descendant sync_dirs — by
-        // either local-tree OR remote-tree relationship. Two sync_dirs
-        // overlap whenever one's scope is contained in the other, and
-        // the overlap can show up either as nested local paths or as
-        // nested remote paths (e.g. a root sync_dir of the whole drive
-        // plus a separate sync_dir for "SavedGames/Mewgenics").
+        // Auto-exclusion is keyed off remote-tree descendancy only: when
+        // another sync_dir on the same provider sits inside this one's
+        // remote subtree, skip it here so the two passes don't fight.
+        // (Local-tree overlaps are blocked at AddSyncDir time, so they
+        // can't exist by the time we get here.)
         //
         // Provider listings disagree on shape: librclone's
         // `operations/list` yields paths *relative* to the listed root
         // ("bar/baz.txt"), while the native Proton client builds
         // *absolute* remote paths ("Foo/bar/baz.txt"). Push both forms
         // so the filter matches either way — the extra string only
-        // costs one `starts_with` per listed item.
+        // costs one `starts_with` per listed item. The matching local
+        // sub-tree is also excluded to keep the walk from picking up a
+        // coincidentally-named folder under this sync_dir's root.
         let mut excluded_local_prefixes: Vec<String> = Vec::new();
         let mut excluded_remote_prefixes: Vec<String> = Vec::new();
-        for d in all_sync_dirs.iter().filter(|d| d.id != sync_dir.id) {
-            // Local-tree descendant: B's local root sits under A's.
-            if is_local_descendant(&sync_dir.local_path, &d.local_path) {
-                excluded_local_prefixes.push(d.local_path.clone());
-                if let Some(rel) = descendant_remote_relative(sync_dir, &d.local_path) {
-                    excluded_remote_prefixes
-                        .push(absolute_remote_path(sync_dir, &rel));
-                    excluded_remote_prefixes.push(rel);
-                }
-            }
-            // Remote-tree descendant: B's remote root sits under A's,
-            // even when their local paths are unrelated. Without this
-            // branch, A would still mirror B's remote subtree into A's
-            // own local tree (downloading what B just uploaded). Only
-            // meaningful within the same provider — remote paths from
-            // different remotes don't share storage.
-            if d.remote_id != sync_dir.remote_id {
-                continue;
-            }
+        for d in all_sync_dirs
+            .iter()
+            .filter(|d| d.id != sync_dir.id && d.remote_id == sync_dir.remote_id)
+        {
             if let Some(rel) = remote_descendant_relative(sync_dir, &d.remote_path) {
                 excluded_remote_prefixes
                     .push(absolute_remote_path(sync_dir, &rel));
                 excluded_remote_prefixes.push(rel.clone());
-                // Also block the corresponding local sub-tree of A so
-                // we don't accidentally upload from a coincidentally
-                // matching folder under A's local root.
                 excluded_local_prefixes
                     .push(format!("{}/{}", sync_dir.local_path, rel));
             }
@@ -209,21 +192,6 @@ impl Snapshot {
             walk_unreliable,
         })
     }
-}
-
-/// True when `candidate` is a proper descendant of `ancestor_local`
-/// (i.e. its local path starts with `ancestor_local/`).
-fn is_local_descendant(ancestor_local: &str, candidate: &str) -> bool {
-    candidate.starts_with(&format!("{ancestor_local}/"))
-}
-
-/// Given an ancestor sync_dir and the local_path of a descendant sync_dir,
-/// returns the remote-path prefix *relative to the ancestor's remote root*
-/// that corresponds to the descendant's local subtree. Returns `None` when
-/// `descendant_local` is not a descendant of `ancestor`.
-fn descendant_remote_relative(ancestor: &SyncDir, descendant_local: &str) -> Option<String> {
-    let sep = format!("{}/", ancestor.local_path);
-    descendant_local.strip_prefix(&sep).map(str::to_owned)
 }
 
 /// Returns the candidate's path *relative to* `ancestor.remote_path` when

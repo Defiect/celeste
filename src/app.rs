@@ -448,14 +448,29 @@ impl Application for CelesteApp {
                 let local_norm =
                     format!("/{}", crate::util::strip_slashes(local.trim()));
                 let remote_norm = crate::util::strip_slashes(remote.trim());
+                // Reject any local path that overlaps an existing sync_dir
+                // (descendant or ancestor). Sync_dirs must be local
+                // siblings — overlapping local trees would have the engine
+                // walking the same files twice with conflicting tracking.
+                if let Some(conflict) = self
+                    .all_known_sync_dirs
+                    .iter()
+                    .find(|d| local_paths_overlap(&d.local_path, &local_norm))
+                {
+                    eprintln!(
+                        "AddSyncDir rejected: local path '{}' overlaps existing sync_dir '{}'",
+                        local_norm, conflict.local_path,
+                    );
+                    return Command::none();
+                }
                 self.sync_dir_drafts.insert(id, (String::new(), String::new()));
                 let repo = self.repo.clone();
                 let rclone = self.rclone.clone();
                 Command::perform(
                     async move {
-                        // Auto-create local + remote directory if missing so a
-                        // brand-new descendant sync_dir doesn't immediately
-                        // trip "directory not found" on the next list call.
+                        // Auto-create local + remote directory if missing so
+                        // the next sync pass doesn't immediately trip
+                        // "directory not found" on the listing call.
                         let local_for_mk = local_norm.clone();
                         let remote_for_mk = remote_norm.clone();
                         let _ = tokio::task::spawn_blocking(move || {
@@ -464,20 +479,7 @@ impl Application for CelesteApp {
                         })
                         .await;
 
-                        let _ = repo.insert_sync_dir(id, local_norm.clone(), remote_norm).await;
-                        // Purge stale tracking from any ancestor sync_dirs so
-                        // the descendant subtree is handed over cleanly. The
-                        // next pass of each ancestor will skip the subtree.
-                        if let Ok(all_dirs) = repo.list_all_sync_dirs().await {
-                            for ancestor in all_dirs
-                                .iter()
-                                .filter(|d| is_local_ancestor(&d.local_path, &local_norm))
-                            {
-                                let _ = repo
-                                    .delete_sync_items_with_local_prefix(ancestor.id, &local_norm)
-                                    .await;
-                            }
-                        }
+                        let _ = repo.insert_sync_dir(id, local_norm, remote_norm).await;
                         id
                     },
                     |id| Message::Main(main_page::Msg::Selected(id)),
@@ -795,8 +797,11 @@ impl Application for CelesteApp {
     }
 }
 
-fn is_local_ancestor(ancestor: &str, descendant: &str) -> bool {
-    descendant.starts_with(&format!("{ancestor}/"))
+/// True when two local paths overlap — equal, or one is a strict
+/// descendant of the other. Used to reject AddSyncDir requests so all
+/// sync_dirs stay on disjoint subtrees.
+fn local_paths_overlap(a: &str, b: &str) -> bool {
+    a == b || b.starts_with(&format!("{a}/")) || a.starts_with(&format!("{b}/"))
 }
 
 impl CelesteApp {

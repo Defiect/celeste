@@ -277,25 +277,18 @@ fn exclusion_panel_view<'a>(
     col.into()
 }
 
-/// Sync_dirs from `all` that are auto-excluded under `sd` — either because
-/// their local path is nested under `sd.local_path` or because their
-/// remote path is nested under `sd.remote_path`. The sync engine excludes
-/// in both directions; the badge has to mirror that to be honest.
+/// Sync_dirs from `all` that are auto-excluded under `sd` — i.e. another
+/// sync_dir on the same provider whose remote path is nested under
+/// `sd.remote_path`. Local-tree overlaps are blocked at AddSyncDir time,
+/// so the badge only needs to surface the remote-tree case here.
 fn auto_excluded_for<'a>(sd: &SyncDir, all: &'a [SyncDir]) -> Vec<&'a SyncDir> {
-    let local_prefix = format!("{}/", sd.local_path);
     all.iter()
-        .filter(|d| d.id != sd.id)
-        .filter(|d| {
-            d.local_path.starts_with(&local_prefix) || is_remote_descendant(sd, d)
-        })
+        .filter(|d| d.id != sd.id && d.remote_id == sd.remote_id)
+        .filter(|d| is_remote_descendant(sd, d))
         .collect()
 }
 
 fn is_remote_descendant(ancestor: &SyncDir, candidate: &SyncDir) -> bool {
-    // Remote paths are only comparable within the same provider.
-    if ancestor.remote_id != candidate.remote_id {
-        return false;
-    }
     if ancestor.remote_path.is_empty() {
         !candidate.remote_path.is_empty()
     } else {
