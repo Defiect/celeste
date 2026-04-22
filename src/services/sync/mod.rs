@@ -874,17 +874,6 @@ fn apply<FE, FC>(
                             );
                             continue;
                         }
-                        // The upload failed (e.g. hash mismatch → rclone
-                        // deleted the corrupted remote copy). Drop any stale
-                        // DB record so the next pass sees this as a new local
-                        // file and re-attempts the upload rather than treating
-                        // the missing remote as an intentional deletion and
-                        // mirroring it locally.
-                        let _ = util::await_future(repo.delete_sync_item_by_paths(
-                            sync_dir.id,
-                            &local_path,
-                            &remote_path,
-                        ));
                         emit_error(SyncError::General(local_path.clone(), err));
                         continue;
                     }
