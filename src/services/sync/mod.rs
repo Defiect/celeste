@@ -560,7 +560,7 @@ fn plan_one(
         // limit / cache flush) and we refuse to destroy the local copy.
         // Equivalent of the GoogleDrive-era sibling verification in
         // 6117026, adapted to the snapshot algorithm.
-        (Some(l), None, Some(_)) => {
+        (Some(l), None, Some(db)) => {
             if !parent_has_tracked_sibling(
                 remote_path,
                 &snapshot.remote,
@@ -571,6 +571,22 @@ fn plan_one(
                     parent_of(remote_path),
                 );
                 return None;
+            }
+            // If the local file has been modified since the last successful
+            // sync, the missing-remote is more consistent with a failed
+            // upload that rclone cleaned up (e.g. hash mismatch on transfer)
+            // than with an intentional remote deletion. Re-upload rather
+            // than destroy the newer local copy.
+            if !l.is_dir && l.mtime_secs > db.last_local_timestamp {
+                eprintln!(
+                    "sync: SWAP DeleteLocal → Upload for '{remote_path}' — local mtime {} newer than last synced {} (likely failed upload cleanup); retrying upload.",
+                    l.mtime_secs, db.last_local_timestamp,
+                );
+                return Some(Action::Upload {
+                    local_path: l.absolute_path.clone(),
+                    remote_path: remote_path.to_owned(),
+                    is_dir: l.is_dir,
+                });
             }
             Some(Action::DeleteLocal {
                 local_path: l.absolute_path.clone(),
