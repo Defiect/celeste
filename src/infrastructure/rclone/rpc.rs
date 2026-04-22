@@ -321,9 +321,16 @@ pub mod sync {
         common("operations/mkdir", remote_name, path)
     }
 
-    /// Delete a file.
+    /// Delete a single file.
+    ///
+    /// Must use `operations/deletefile`, NOT `operations/delete`:
+    /// the latter is registered in rclone with `noRemote: true`
+    /// (see fs/operations/rc.go), which means the `remote`
+    /// parameter is silently ignored and `Delete(ctx, f)` lists
+    /// and deletes every object in the entire `fs` root. Passing
+    /// a per-file path to it wipes the whole remote.
     pub fn delete(remote_name: &str, path: &str) -> Result<(), RcloneError> {
-        common("operations/delete", remote_name, path)
+        common("operations/deletefile", remote_name, path)
     }
     /// Remove a directory and all of its contents.
     pub fn purge(remote_name: &str, path: &str) -> Result<(), RcloneError> {
