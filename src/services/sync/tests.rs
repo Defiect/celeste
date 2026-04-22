@@ -1,7 +1,5 @@
 //! Unit tests for the new `services::sync` algorithm. Covers:
 //!
-//! - Snapshot safety brake: abort when the listing is far smaller than
-//!   the DB expects (rate-limit / cache-flush guard).
 //! - plan() decisions on every (local, remote, db) tuple.
 //! - apply() mirror-deletes, race-swallow on upload, conflict emission.
 
@@ -48,47 +46,6 @@ fn errors(events: &[SyncEvent]) -> Vec<SyncError> {
             _ => None,
         })
         .collect()
-}
-
-/// Snapshot aborts when the listing can't come close to the DB row
-/// count. Regression for the 2026-04-17 Google Drive rate-limit cascade.
-#[test]
-fn snapshot_aborts_when_listing_is_far_smaller_than_db() {
-    let tmp = TempDir::new("sync_listing_suspect");
-    // Create 10 local files + 10 DB rows. Listing returns 1 item.
-    let mut locals: Vec<PathBuf> = Vec::new();
-    for i in 0..10 {
-        let name = format!("file_{i}.txt");
-        let p = tmp.write_file(&name, b"x");
-        touch_mtime(&p, 1_700_000_000);
-        locals.push(p);
-    }
-    let repo = FakeRepo::new();
-    for (i, p) in locals.iter().enumerate() {
-        repo.insert_item(
-            SyncDirId(1),
-            p.to_str().unwrap(),
-            &format!("file_{i}.txt"),
-            1_700_000_000,
-            1_700_000_000,
-        );
-    }
-
-    let client = FakeRclone::default();
-    client.set_list("", Ok(vec![remote_item("file_0.txt", false, 1_700_000_000)]));
-
-    let (outcome, events) = run_full(&tmp, &repo, &client);
-
-    assert_eq!(outcome, Outcome::Aborted, "must abort when listing is suspect");
-    // None of the files should be deleted locally.
-    for p in &locals {
-        assert!(p.exists(), "file must survive a suspect-listing abort");
-    }
-    assert_eq!(repo.item_count(), 10, "no DB row may be removed");
-    assert!(
-        !errors(&events).is_empty(),
-        "abort must surface a SyncDirError",
-    );
 }
 
 /// Snapshot abort path when `client.list` itself errors out (e.g.

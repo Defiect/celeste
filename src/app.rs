@@ -63,8 +63,8 @@ pub enum PassVerdict {
     /// At least one sync_dir detected rate-limiting (stderr tap fired).
     /// Scheduler bumps `consecutive_degraded` and skips more cycles.
     Degraded,
-    /// Pass aborted for a non-rate-limit reason (cancel, list error,
-    /// suspect listing). Backoff counter is left alone.
+    /// Pass aborted for a non-rate-limit reason (cancel, list error).
+    /// Backoff counter is left alone.
     Aborted,
 }
 
@@ -556,8 +556,8 @@ impl Application for CelesteApp {
                     }
                     PassVerdict::Aborted => {
                         // Intentionally leave counters as-is: an abort
-                        // caused by cancel / suspect listing isn't a
-                        // signal the backend is overloaded.
+                        // caused by cancel / list error isn't a signal
+                        // the backend is overloaded.
                     }
                 }
                 // If the user clicked Refresh now while we were already

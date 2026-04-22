@@ -1,15 +1,13 @@
 //! Replacement for the old `should_sync` / `sync_dir_ops` / `sync_dir_pass` /
-//! `sync_path` pile. One snapshot-based algorithm with a safety brake baked
-//! into snapshot construction — no per-item stats, no fs_watcher fast path,
-//! no cache-race branches left to recur.
+//! `sync_path` pile. One snapshot-based algorithm — no per-item stats, no
+//! fs_watcher fast path, no cache-race branches left to recur.
 //!
 //! Flow:
 //!
 //! 1. [`Snapshot::build`] fetches the authoritative remote listing
 //!    ([`RcloneClient::list`] recursive), walks the local tree, and loads
-//!    the DB rows. If the listing looks corrupt (far fewer items than the
-//!    DB expects) the whole pass is aborted — that's the main rate-limit
-//!    / cache-flush guard.
+//!    the DB rows. Bails out on list errors; rate-limit handling lives in
+//!    [`run`]'s stderr-tap check around the build call.
 //!
 //! 2. [`plan`] turns the snapshot into a `Vec<Action>` in a pure function.
 //!    Every destructive decision is reducible to a `(local, remote, db)`
@@ -42,8 +40,7 @@ mod tests;
 /// Outcome of a single [`run`] call.
 ///
 /// - `Synced`: the plan was applied in full.
-/// - `Aborted`: the pass refused to act (cancelled, list error, or the
-///   listing-sanity check refused — the snapshot couldn't be trusted).
+/// - `Aborted`: the pass refused to act (cancelled, or list error).
 /// - `Degraded`: the pass detected provider rate-limiting (e.g. Proton
 ///   Drive's `status=429` retry warnings in stderr) and skipped the
 ///   apply step. Drives the scheduler's linear backoff so we stop
@@ -61,29 +58,6 @@ pub struct LocalEntry {
     pub is_dir: bool,
     pub mtime_secs: i64,
 }
-
-#[derive(Debug)]
-pub enum BuildError {
-    /// `client.list` returned `Err(...)`.
-    ListFailed(String),
-    /// The listing itself looks wrong — far fewer items than the DB says
-    /// should be present. Rate-limit / cache-flush territory; refuse to
-    /// destroy anything on it.
-    ListingSuspect { db_count: usize, list_count: usize },
-}
-
-/// Minimum DB row count before the listing-sanity check kicks in. Below
-/// this we don't have enough signal to call the listing broken.
-const LISTING_SANITY_THRESHOLD: usize = 5;
-
-/// The listing must contain at least this fraction of the DB row count,
-/// otherwise it's deemed suspect. 2/3 catches the ProtonDrive case where
-/// rate-limiting lets `operations/list` return a partial-but-not-empty
-/// listing (e.g. ~40-70% of items). Legitimate deletions over 1/3 of the
-/// tree in a single pass are rare and simply defer to the next tick —
-/// safer than nuking local or remote on a half-listing.
-const LISTING_SANITY_NUMERATOR: usize = 2;
-const LISTING_SANITY_DENOMINATOR: usize = 3;
 
 pub struct Snapshot {
     pub remote: HashMap<String, RemoteItem>,
@@ -105,7 +79,7 @@ impl Snapshot {
         repo: &dyn Repository,
         client: &dyn RcloneClient,
         all_sync_dirs: &[SyncDir],
-    ) -> Result<Self, BuildError> {
+    ) -> Result<Self, String> {
         // Auto-exclusion is keyed off remote-tree descendancy only: when
         // another sync_dir on the same provider sits inside this one's
         // remote subtree, skip it here so the two passes don't fight.
@@ -160,21 +134,8 @@ impl Snapshot {
             .collect();
 
         // 2. Remote listing — single authoritative call.
-        let remote_items = client
-            .list(&remote.name, &sync_dir.remote_path, true, ListFilter::All)
-            .map_err(BuildError::ListFailed)?;
-
-        // 3. Sanity check. If the listing looks corrupt, abort the whole
-        //    pass rather than deleting local files based on junk data.
-        if db.len() >= LISTING_SANITY_THRESHOLD
-            && remote_items.len() * LISTING_SANITY_DENOMINATOR
-                < db.len() * LISTING_SANITY_NUMERATOR
-        {
-            return Err(BuildError::ListingSuspect {
-                db_count: db.len(),
-                list_count: remote_items.len(),
-            });
-        }
+        let remote_items =
+            client.list(&remote.name, &sync_dir.remote_path, true, ListFilter::All)?;
 
         let remote: HashMap<String, RemoteItem> = remote_items
             .into_iter()
@@ -182,7 +143,7 @@ impl Snapshot {
             .map(|i| (i.path.clone(), i))
             .collect();
 
-        // 4. Local walk — skip subtrees managed by descendant sync_dirs.
+        // 3. Local walk — skip subtrees managed by descendant sync_dirs.
         let (local, walk_unreliable) = walk_local(sync_dir, &excluded_local_prefixes);
 
         Ok(Snapshot {
@@ -771,28 +732,10 @@ where
 
     let snapshot = match snapshot_result {
         Ok(s) => s,
-        Err(BuildError::ListFailed(err)) => {
+        Err(err) => {
             eprintln!("sync: list failed for {}: {err}", remote.name);
             emit_error(SyncError::General(sync_dir.remote_path.clone(), err));
             emit_status(tr::tr!("Sync failed — will retry next tick."));
-            return Outcome::Aborted;
-        }
-        Err(BuildError::ListingSuspect {
-            db_count,
-            list_count,
-        }) => {
-            eprintln!(
-                "sync: ABORT full pass — listing returned {list_count} of {db_count} expected items, parent listing is untrustworthy (likely rate limit or cache flush).",
-            );
-            emit_error(SyncError::General(
-                sync_dir.remote_path.clone(),
-                tr::tr!(
-                    "Remote listing looked corrupt ({} of {} expected items); refusing to act.",
-                    list_count,
-                    db_count
-                ),
-            ));
-            emit_status(tr::tr!("Sync skipped — remote listing looked corrupt."));
             return Outcome::Aborted;
         }
     };
