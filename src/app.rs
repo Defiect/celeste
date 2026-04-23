@@ -831,10 +831,30 @@ impl Application for CelesteApp {
                 Command::none()
             }
             Message::TrayClick(TrayAction::Open) => {
-                iced::window::change_mode(iced::window::Id::MAIN, iced::window::Mode::Windowed)
+                // Belt-and-braces: Wayland keeps a minimised xdg-toplevel
+                // mapped; X11 honours set_visible. Issue both so either
+                // transport restores the window.
+                Command::batch([
+                    iced::window::change_mode(
+                        iced::window::Id::MAIN,
+                        iced::window::Mode::Windowed,
+                    ),
+                    iced::window::minimize(iced::window::Id::MAIN, false),
+                    iced::window::gain_focus(iced::window::Id::MAIN),
+                ])
             }
             Message::TrayClick(TrayAction::Hide) => {
-                iced::window::change_mode(iced::window::Id::MAIN, iced::window::Mode::Hidden)
+                // `Mode::Hidden` no-ops on Wayland once the surface has
+                // been mapped (xdg-toplevel has no unmap request), so
+                // `minimize(true)` is the cross-backend fallback. On X11
+                // both take effect; on Wayland the minimise wins.
+                Command::batch([
+                    iced::window::change_mode(
+                        iced::window::Id::MAIN,
+                        iced::window::Mode::Hidden,
+                    ),
+                    iced::window::minimize(iced::window::Id::MAIN, true),
+                ])
             }
             Message::TrayClick(TrayAction::Quit) => {
                 // Closing the main window ends the Iced runtime, which
@@ -1072,6 +1092,11 @@ pub fn run(
         rclone,
         config_dir,
     });
+    // Start hidden — the tray icon brings the window up on demand, so a
+    // login-time launch doesn't steal focus. `Mode::Hidden` works
+    // reliably only before the surface is first mapped; subsequent hide
+    // requests go through `minimize(true)` below.
+    settings.window.visible = false;
     settings.fonts = fallback_fonts();
     // Bias iced's default glyph lookup to the sans-serif family so
     // cosmic-text's fallback layer resolves against the fonts we just

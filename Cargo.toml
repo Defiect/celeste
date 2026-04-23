@@ -17,6 +17,10 @@ glob = "0.3.3"
 iced = { version = "0.12", features = ["tokio", "lazy"] }
 ksni = "0.3.4"
 libc = "0.2"
+# Rasterise tray SVGs to ARGB32 at startup so KDE's symbolic-icon
+# recolour pipeline never touches them — it collapses the
+# Inkscape-era masked paths to a solid black square.
+resvg = { version = "0.47", default-features = false }
 # Celeste's combined Go archive — provides the librclone RPC surface
 # (drop-in replacement for the upstream `librclone` crate) plus the
 # native ProtonDrive entry points. See `native-go/` for the Go side.

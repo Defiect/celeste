@@ -15,14 +15,18 @@
 //! so the app's `TrayReady`-gated push path is a no-op instead of a
 //! back-pressure source.
 
+mod icons;
+
 use std::time::Duration;
 
 use iced::{subscription, Subscription};
 use ksni::{
     menu::{StandardItem, TextDirection},
-    MenuItem, ToolTip, TrayMethods,
+    Icon, MenuItem, ToolTip, TrayMethods,
 };
 use tokio::sync::mpsc;
+
+use self::icons::IconSet;
 
 /// One user-visible action surfaced from the tray. The app maps each
 /// of these to a window-lifecycle command.
@@ -85,6 +89,7 @@ pub fn subscription() -> Subscription<TraySignal> {
             let tray = CelesteTray {
                 status: TrayStatus::Loading,
                 click_tx,
+                icons: IconSet::load(),
             };
 
             match tray.spawn().await {
@@ -124,10 +129,26 @@ pub fn subscription() -> Subscription<TraySignal> {
 }
 
 /// The tray state held inside the ksni service task. Menu callbacks
-/// receive `&mut Self`, so the click sender lives here.
+/// receive `&mut Self`, so the click sender lives here. `icons` is
+/// rasterised once at startup — clone-on-read keeps `ksni::Tray`
+/// methods `&self`.
 struct CelesteTray {
     status: TrayStatus,
     click_tx: mpsc::Sender<TrayAction>,
+    icons: IconSet,
+}
+
+impl CelesteTray {
+    fn pixmap_for_current_status(&self) -> Vec<Icon> {
+        match &self.status {
+            TrayStatus::Loading => self.icons.loading.clone(),
+            TrayStatus::Disconnected => self.icons.disconnected.clone(),
+            TrayStatus::Paused => self.icons.paused.clone(),
+            TrayStatus::Syncing { .. } => self.icons.syncing.clone(),
+            TrayStatus::Warning => self.icons.warning.clone(),
+            TrayStatus::Done { .. } => self.icons.done.clone(),
+        }
+    }
 }
 
 impl ksni::Tray for CelesteTray {
@@ -140,13 +161,22 @@ impl ksni::Tray for CelesteTray {
     }
 
     fn icon_name(&self) -> String {
-        icon_for(&self.status).to_owned()
+        // Deliberately empty. KDE prefers icon_name when it's set and
+        // then runs the hicolor symbolic icon through its recolour
+        // pipeline, which flattens these Inkscape masked paths to a
+        // solid black square. An empty name forces the host onto
+        // `icon_pixmap`, which we render ourselves below.
+        String::new()
+    }
+
+    fn icon_pixmap(&self) -> Vec<Icon> {
+        self.pixmap_for_current_status()
     }
 
     fn tool_tip(&self) -> ToolTip {
         ToolTip {
-            icon_name: icon_for(&self.status).to_owned(),
-            icon_pixmap: Vec::new(),
+            icon_name: String::new(),
+            icon_pixmap: self.pixmap_for_current_status(),
             title: "Celeste".to_owned(),
             description: description_for(&self.status),
         }
@@ -191,25 +221,6 @@ impl ksni::Tray for CelesteTray {
 
     fn text_direction(&self) -> TextDirection {
         TextDirection::LeftToRight
-    }
-}
-
-fn icon_for(status: &TrayStatus) -> &'static str {
-    match status {
-        TrayStatus::Loading => {
-            "com.hunterwittenborn.Celeste.CelesteTrayLoading-symbolic"
-        }
-        TrayStatus::Disconnected => {
-            "com.hunterwittenborn.Celeste.CelesteTrayDisconnected-symbolic"
-        }
-        TrayStatus::Paused => "com.hunterwittenborn.Celeste.CelesteTrayPaused-symbolic",
-        TrayStatus::Syncing { .. } => {
-            "com.hunterwittenborn.Celeste.CelesteTraySyncing-symbolic"
-        }
-        TrayStatus::Warning => {
-            "com.hunterwittenborn.Celeste.CelesteTrayWarning-symbolic"
-        }
-        TrayStatus::Done { .. } => "com.hunterwittenborn.Celeste.CelesteTrayDone-symbolic",
     }
 }
 
