@@ -15,14 +15,41 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"net"
+	"net/http"
 	"os"
 	"sync"
+	"time"
 
 	"celeste/native-go/proton-ext"
 
 	"github.com/ProtonMail/go-proton-api"
 	"github.com/ProtonMail/gopenpgp/v2/crypto"
 )
+
+// newProtonHTTPTransport returns the http.Transport we hand to the
+// upstream proton.Manager via WithTransport. Defaults from
+// http.DefaultTransport leave ResponseHeaderTimeout at 0 and rely on
+// the kernel's TCP keepalive (~5–12 min) to notice a dead peer, which
+// surfaces as a multi-minute Celeste "Listing remote…" hang after
+// suspend/resume — TCP is still alive from our side until the OS
+// finally returns ENETUNREACH. The HTTP/2 ping pair forces the
+// transport to actively probe an idle conn so a dead one is recycled
+// before the next listing batch fans out across it.
+func newProtonHTTPTransport() *http.Transport {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.DialContext = (&net.Dialer{
+		Timeout:   30 * time.Second,
+		KeepAlive: 15 * time.Second,
+	}).DialContext
+	t.IdleConnTimeout = 30 * time.Second
+	t.ResponseHeaderTimeout = 30 * time.Second
+	t.HTTP2 = &http.HTTP2Config{
+		SendPingTimeout: 15 * time.Second,
+		PingTimeout:     15 * time.Second,
+	}
+	return t
+}
 
 // AppVersion sent in the `AppVersion` header for every Proton API
 // call. Proton's server validates the platform prefix against a
@@ -114,7 +141,10 @@ func Login(ctx context.Context, p LoginParams) (*Session, error) {
 	if p.Username == "" || p.Password == "" {
 		return nil, ErrUsernamePasswordRequired
 	}
-	m := proton.New(proton.WithAppVersion(AppVersion))
+	m := proton.New(
+		proton.WithAppVersion(AppVersion),
+		proton.WithTransport(newProtonHTTPTransport()),
+	)
 	c, auth, err := m.NewClientWithLogin(ctx, p.Username, []byte(p.Password))
 	if err != nil {
 		m.Close()
@@ -181,7 +211,10 @@ func Resume(ctx context.Context, cred ReusableCredential) (*Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	m := proton.New(proton.WithAppVersion(AppVersion))
+	m := proton.New(
+		proton.WithAppVersion(AppVersion),
+		proton.WithTransport(newProtonHTTPTransport()),
+	)
 	c := m.NewClient(cred.UID, cred.AccessToken, cred.RefreshToken)
 	userKR, addrKRs, addrs, _, err := unlockAccount(ctx, c, nil, saltedKeyPass)
 	if err != nil {
