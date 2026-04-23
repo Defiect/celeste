@@ -1,13 +1,13 @@
 [package]
 name = "celeste"
-version = "0.8.3"
+version = "0.9.0"
 edition = "2024"
 license = "GPL-3.0-or-later"
 authors = [
     "Hunter Wittenborn <hunter@hunterwittenborn.com>",
     "Alexander Menzel <menzel.alexander@proton.me>",
 ]
-repository = "https://github.com/hwittenborn/celeste"
+repository = "https://github.com/Santuzius/celeste"
 
 [dependencies]
 clap = { version = "4.6.1", features = ["derive", "env"] }
