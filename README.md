@@ -35,7 +35,7 @@ nix-shell --run 'cargo run --release'
 
 No global `rustup`, `go`, or system headers are required — everything is pulled in by the shell.
 
-## Installing on NixOS
+## Installing on Nix
 The Nix derivation lives in a sibling repository — [`celeste-nix`](https://github.com/Santuzius/celeste-nix) — so that the source tree and packaging can evolve independently. The package reads the Celeste checkout as its build source, so both repos must be cloned locally:
 
 ```sh
@@ -43,7 +43,7 @@ git clone https://github.com/Santuzius/celeste        ~/Git/celeste
 git clone https://github.com/Santuzius/celeste-nix    ~/Git/celeste-nix
 ```
 
-Then reference the package from your NixOS config, e.g.:
+Then reference the package from your Nix config, e.g.:
 
 ```nix
 # configuration.nix (or any module)
