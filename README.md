@@ -1,6 +1,3 @@
-> [!WARNING]
-> makedeb is currently unmaintained: https://hunterwittenborn.com/blog/stepping-back-from-open-source/
-
 > [!NOTE]
 > This is a personal fork of the original project at
 > [hwittenborn/celeste](https://github.com/hwittenborn/celeste), maintained by
@@ -9,66 +6,60 @@
 > [GPL-3.0-or-later](./LICENSE) terms as the original.
 
 # Celeste
-<a href="https://flathub.org/apps/details/com.hunterwittenborn.Celeste"><img width="150" src="https://flathub.org/assets/badges/flathub-badge-i-en.svg" /></a>
-<a href="https://snapcraft.io/celeste"><img width="150" src="https://snapcraft.io/static/images/badges/en/snap-store-black.svg" /></a>
+Celeste is a GUI file synchronization client
 
-Celeste is a GUI file synchronization client that can connect to virtually any cloud provider.
-
-- Backed by [rclone](https://rclone.org/), giving you a reliable and battle-tested way to sync your files anywhere
-- Written with GTK4 and Libadwaita, giving Celeste a native look and feel on your desktop
-- Written in Rust, making Celeste ***blazingly fast*** to use
-
-![](/assets/main-window.png)
+Used components:
+- [rclone](https://rclone.org/) for Google Drive
+- [go-proton-api](https://github.com/ProtonMail/go-proton-api) for Proton Drive
+- [iced](https://iced.rs/) for GUI
 
 ## Features
 - Two-way sync
-- Asking what to do when a local and remote file have both been updated since last sync
-- Ability to exclude files/folders from sync
 - Connecting to multiple cloud providers at the same time
+- Ability to add multiple local directories to the sync
 
 ## Supported cloud providers
-Celeste can currently connect to the following cloud providers:
-- Dropbox
 - Google Drive
-- Nextcloud
-- Owncloud
-- pCloud
 - Proton Drive
-- WebDAV
 
-## Installation
-Celeste can be installed via the methods listed below:
-
-### Flatpak
-Celeste is available on [Flathub](https://flathub.org/apps/details/com.hunterwittenborn.Celeste). First make sure you have [set up Flatpak](https://flatpak.org/setup/) on your system, and then run the following:
+## Building
+The project ships a `shell.nix` that provides a stable Rust toolchain, Go, and all runtime libraries (Wayland/Vulkan/X11, OpenSSL, rclone). From the repo root:
 
 ```sh
-flatpak install flathub com.hunterwittenborn.Celeste
+# Release build
+nix-shell --run 'cargo build --release'
+
+# Run directly
+nix-shell --run 'cargo run --release'
 ```
 
-### Snap
-Celeste is available on the [Snap Store](https://snapcraft.io/celeste), which can be installed on any system that has Snap installed.
+No global `rustup`, `go`, or system headers are required — everything is pulled in by the shell.
+
+## Installing on NixOS
+The Nix derivation lives in a sibling repository — [`celeste-nix`](https://github.com/Santuzius/celeste-nix) — so that the source tree and packaging can evolve independently. The package reads the Celeste checkout as its build source, so both repos must be cloned locally:
 
 ```sh
-snap install celeste
+git clone https://github.com/Santuzius/celeste        ~/git/celeste
+git clone https://github.com/Santuzius/celeste-nix    ~/git/celeste-nix
 ```
 
-### Prebuilt-MPR (Debian/Ubuntu)
-If you're on Ubuntu 22.10 or later, you can install Celeste from the Prebuilt-MPR. First make sure [the Prebuilt-MPR is set up](https://docs.makedeb.org/prebuilt-mpr/getting-started/) on your system, and then run the following:
+Then reference the package from your NixOS config, e.g.:
+
+```nix
+# configuration.nix (or any module)
+{ pkgs, ... }: {
+  environment.systemPackages = [
+    (pkgs.callPackage /home/<you>/git/celeste-nix { })
+  ];
+}
+```
+
+Because the package points at an absolute path outside the Nix store, rebuild with `--impure`:
 
 ```sh
-sudo apt install celeste
+sudo nixos-rebuild switch --impure
+# or, for flakes:
+sudo nixos-rebuild switch --flake .#<host> --impure
 ```
 
-## Support
-Celeste has multiple communication rooms available if you need assistance, want to talk about the project, or to just hang around with some fellow users:
-- Discord: https://discord.gg/FtNhPepvj7
-- Matrix: https://matrix.to/#/#celeste:gnome.org
-
-**Bugs and features can be discussed in the rooms if you feel like there's information that should be talked about, but such should ultimately fall into the [issue tracker](https://github.com/hwittenborn/celeste/issues).**
-
-## Contributing
-Instructions still largely need to be written up - if you'd like to help with that, feel free to submit a PR!
-
-### Translating
-Celeste uses [Weblate](https://weblate.org) to manage translations. See <https://hosted.weblate.org/projects/celeste/celeste> if you'd like to assist in translating.
+The package uses the pre-built `libceleste_native.a` shipped in `native-go/` (the Nix sandbox has no network access, so `go build` is skipped). To refresh that archive, enter the dev shell and rebuild — cargo's `native-go/build.rs` will regenerate it on the next non-Nix build.
