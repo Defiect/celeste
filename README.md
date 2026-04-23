@@ -39,8 +39,8 @@ No global `rustup`, `go`, or system headers are required — everything is pulle
 The Nix derivation lives in a sibling repository — [`celeste-nix`](https://github.com/Santuzius/celeste-nix) — so that the source tree and packaging can evolve independently. The package reads the Celeste checkout as its build source, so both repos must be cloned locally:
 
 ```sh
-git clone https://github.com/Santuzius/celeste        ~/git/celeste
-git clone https://github.com/Santuzius/celeste-nix    ~/git/celeste-nix
+git clone https://github.com/Santuzius/celeste        ~/Git/celeste
+git clone https://github.com/Santuzius/celeste-nix    ~/Git/celeste-nix
 ```
 
 Then reference the package from your NixOS config, e.g.:
@@ -49,7 +49,7 @@ Then reference the package from your NixOS config, e.g.:
 # configuration.nix (or any module)
 { pkgs, ... }: {
   environment.systemPackages = [
-    (pkgs.callPackage /home/<you>/git/celeste-nix { })
+    (pkgs.callPackage /home/<you>/Git/celeste-nix { })
   ];
 }
 ```
