@@ -260,3 +260,73 @@ impl RcloneClient for NativeProtonClient {
         Ok(Some("native-proton".to_owned()))
     }
 }
+
+/// Placeholder adapter for native-proton remotes whose session couldn't
+/// be resumed at startup (blob missing, refresh token expired, etc.).
+/// Registered on the [`ClientRouter`] so the sync engine's calls fail
+/// with a clear re-auth instruction instead of falling through to the
+/// default rclone client (which then errors with a cryptic
+/// "didn't find section in config file" because native-proton remotes
+/// never get written to rclone's config).
+///
+/// Every [`RcloneClient`] method returns the same owned reason so the
+/// UI can surface it verbatim in the sync_dir log.
+#[derive(Clone, Debug)]
+pub struct DisabledProtonClient {
+    reason: String,
+}
+
+impl DisabledProtonClient {
+    pub fn new(reason: String) -> Self {
+        Self { reason }
+    }
+}
+
+impl RcloneClient for DisabledProtonClient {
+    fn stat(&self, _remote: &str, _path: &str) -> Result<Option<RemoteItem>, String> {
+        Err(self.reason.clone())
+    }
+    fn list(
+        &self,
+        _remote: &str,
+        _path: &str,
+        _recursive: bool,
+        _filter: ListFilter,
+    ) -> Result<Vec<RemoteItem>, String> {
+        Err(self.reason.clone())
+    }
+    fn mkdir(&self, _remote: &str, _path: &str) -> Result<(), String> {
+        Err(self.reason.clone())
+    }
+    fn delete_file(&self, _remote: &str, _path: &str) -> Result<(), String> {
+        Err(self.reason.clone())
+    }
+    fn purge(&self, _remote: &str, _path: &str) -> Result<(), String> {
+        Err(self.reason.clone())
+    }
+    fn copy_to_remote(
+        &self,
+        _local_path: &str,
+        _remote: &str,
+        _remote_path: &str,
+    ) -> Result<(), String> {
+        Err(self.reason.clone())
+    }
+    fn copy_to_local(
+        &self,
+        _local_path: &str,
+        _remote: &str,
+        _remote_path: &str,
+    ) -> Result<(), String> {
+        Err(self.reason.clone())
+    }
+    fn delete_config(&self, _remote: &str) -> Result<(), String> {
+        Ok(())
+    }
+    fn create_config(&self, _payload_json: String) -> Result<(), String> {
+        Err(self.reason.clone())
+    }
+    fn remote_type(&self, _remote: &str) -> Result<Option<String>, String> {
+        Ok(Some("native-proton".to_owned()))
+    }
+}

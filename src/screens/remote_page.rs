@@ -39,6 +39,7 @@ pub enum Msg {
     AddExclusion(SyncDirId),
     RemoveExclusion(SyncDirExclusionId, SyncDirId),
     DeleteLocalFiles(String),
+    Reauthenticate(RemoteId, String),
 }
 
 pub fn view<'a>(
@@ -51,6 +52,7 @@ pub fn view<'a>(
     draft_exclusion: &'a HashMap<SyncDirId, String>,
     draft: (&'a str, &'a str),
     next_sync_eta: Option<(Duration, bool)>,
+    needs_reauth: bool,
 ) -> Element<'a, Msg> {
     let countdown: Element<'a, Msg> = match next_sync_eta {
         Some((remaining, in_backoff)) => {
@@ -97,6 +99,31 @@ pub fn view<'a>(
     ]
     .spacing(ROW_SPACING)
     .align_items(Alignment::Center);
+
+    // ── Re-auth banner (native-proton session missing / expired) ───────────
+    let reauth_banner: Option<Element<'a, Msg>> = if needs_reauth {
+        let msg = "This remote's session isn't loaded. Sync is paused \
+                   until you re-authenticate. Your sync directories, \
+                   exclusions, and schedule will be preserved.";
+        Some(
+            container(
+                row![
+                    text(format!("⚠ {msg}")).size(13),
+                    Space::with_width(Length::Fill),
+                    button(text("Reauthenticate"))
+                        .on_press(Msg::Reauthenticate(remote.id, remote.name.clone())),
+                ]
+                .align_items(Alignment::Center)
+                .spacing(ROW_SPACING),
+            )
+            .padding(8)
+            .width(Length::Fill)
+            .style(iced::theme::Container::Box)
+            .into(),
+        )
+    } else {
+        None
+    };
 
     // ── Sync directory cards ────────────────────────────────────────────────
     let mut cards_col = column![text("Sync directories").size(16)].spacing(ROW_SPACING);
@@ -190,18 +217,16 @@ pub fn view<'a>(
 
     let settings_panel = settings::view(remote).map(Msg::Settings);
 
-    container(
-        column![
-            header,
-            Rule::horizontal(1),
-            sync_dirs_section,
-            Rule::horizontal(1),
-            settings_panel,
-        ]
-        .spacing(SECTION_SPACING),
-    )
-    .padding(PAGE_PADDING)
-    .into()
+    let mut page = column![header, Rule::horizontal(1)].spacing(SECTION_SPACING);
+    if let Some(banner) = reauth_banner {
+        page = page.push(banner);
+    }
+    page = page
+        .push(sync_dirs_section)
+        .push(Rule::horizontal(1))
+        .push(settings_panel);
+
+    container(page).padding(PAGE_PADDING).into()
 }
 
 /// Build the exclusion panel for one sync_dir card.

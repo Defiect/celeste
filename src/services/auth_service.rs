@@ -132,6 +132,41 @@ pub fn add_proton_drive_remote(
     Ok(id)
 }
 
+/// Re-authenticate an existing Proton Drive remote whose session blob
+/// has expired (2FA refresh exhausted) or gone missing. Logs in with
+/// fresh credentials, overwrites the session file, and swaps the
+/// router's disabled stub for a live [`NativeProtonClient`]. Leaves
+/// the DB row untouched — same name, same sync_dirs, same exclusions —
+/// so the user's configuration survives the re-auth unchanged.
+pub fn reauth_proton_drive_remote(
+    name: &str,
+    username: &str,
+    password: &str,
+    totp: &str,
+    config_dir: &Path,
+    router: &ClientRouter,
+) -> Result<(), String> {
+    let params = librclone::proton::LoginParams {
+        username: username.to_owned(),
+        password: password.to_owned(),
+        two_fa: totp.to_owned(),
+        mailbox_password: String::new(),
+    };
+    let cred = librclone::proton::login(&params)?;
+
+    let session_path = proton_session_path(config_dir, name);
+    if let Some(parent) = session_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    librclone::proton::save_session(&cred.uid, &session_path)?;
+
+    router.register(
+        name.to_owned(),
+        Arc::new(NativeProtonClient::new(cred.uid)),
+    );
+    Ok(())
+}
+
 /// Where the native-backed Proton session blob lives for a remote
 /// named `name`. Kept in one place so the add / resume / delete flows
 /// agree on the location. Sanitises the name so unusual characters
@@ -244,7 +279,10 @@ mod tests {
     use crate::domain::{
         ports::{BoxFuture, Repository, RepositoryError},
         remote::{Remote, RemoteId, SyncPolicy},
-        sync::{ListFilter, RemoteItem, SyncDir, SyncDirId, SyncItem, SyncItemId},
+        sync::{
+            ListFilter, RemoteItem, SyncDir, SyncDirExclusion, SyncDirExclusionId, SyncDirId,
+            SyncItem, SyncItemId,
+        },
     };
 
     #[derive(Default)]
@@ -393,6 +431,37 @@ mod tests {
             _sd: SyncDirId,
             _l: &str,
             _r: &str,
+        ) -> BoxFuture<'_, Result<(), RepositoryError>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn list_all_sync_dirs(
+            &self,
+        ) -> BoxFuture<'_, Result<Vec<SyncDir>, RepositoryError>> {
+            Box::pin(async { Ok(vec![]) })
+        }
+        fn delete_sync_items_with_local_prefix(
+            &self,
+            _sd: SyncDirId,
+            _prefix: &str,
+        ) -> BoxFuture<'_, Result<(), RepositoryError>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn list_exclusions(
+            &self,
+            _sd: SyncDirId,
+        ) -> BoxFuture<'_, Result<Vec<SyncDirExclusion>, RepositoryError>> {
+            Box::pin(async { Ok(vec![]) })
+        }
+        fn insert_exclusion(
+            &self,
+            _sd: SyncDirId,
+            _remote_path: String,
+        ) -> BoxFuture<'_, Result<(), RepositoryError>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn delete_exclusion(
+            &self,
+            _id: SyncDirExclusionId,
         ) -> BoxFuture<'_, Result<(), RepositoryError>> {
             Box::pin(async { Ok(()) })
         }

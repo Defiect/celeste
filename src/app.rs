@@ -323,7 +323,45 @@ impl Application for CelesteApp {
                             let totp = draft.totp.clone();
                             let router = self.rclone.clone();
                             let config_dir = self.config_dir.clone();
+                            let is_reauth = draft.reauth;
                             draft.busy = true;
+                            if is_reauth {
+                                // Re-auth: keep the existing DB row, just
+                                // swap the router's disabled stub for a
+                                // live session. Look up the existing id
+                                // so AddRemoteResult can reuse the normal
+                                // refresh path.
+                                let existing_id = self
+                                    .remotes
+                                    .iter()
+                                    .find(|r| r.name == name)
+                                    .map(|r| r.id);
+                                return Command::perform(
+                                    async move {
+                                        let router_inner = router.clone();
+                                        let res = tokio::task::spawn_blocking(move || {
+                                            crate::services::auth_service::reauth_proton_drive_remote(
+                                                &name,
+                                                &user,
+                                                &pass,
+                                                &totp,
+                                                &config_dir,
+                                                &*router_inner,
+                                            )
+                                        })
+                                        .await
+                                        .unwrap_or_else(|e| Err(e.to_string()));
+                                        match (res, existing_id) {
+                                            (Ok(()), Some(id)) => Ok(id),
+                                            (Ok(()), None) => {
+                                                Err("Remote not found after re-auth.".to_owned())
+                                            }
+                                            (Err(e), _) => Err(e),
+                                        }
+                                    },
+                                    Message::AddRemoteResult,
+                                );
+                            }
                             return Command::perform(
                                 async move {
                                     tokio::task::spawn_blocking(move || {
@@ -742,6 +780,19 @@ impl Application for CelesteApp {
                 )
             }
 
+            Message::Remote(remote_page::Msg::Reauthenticate(_id, name)) => {
+                // Open the Add Remote dialog pre-filled for re-auth: name
+                // + provider are locked; the user enters fresh credentials.
+                // On success the disabled stub is swapped for a live
+                // NativeProtonClient (handled in the reauth submit path).
+                let mut draft = add_remote::Draft::default();
+                draft.name = name;
+                draft.provider = Some(add_remote::ProviderKind::ProtonDrive);
+                draft.reauth = true;
+                self.add_remote_draft = Some(draft);
+                Command::none()
+            }
+
             Message::Remote(remote_page::Msg::DeleteLocalFiles(path)) => Command::perform(
                 async move {
                     tokio::task::spawn_blocking(move || {
@@ -778,6 +829,7 @@ impl Application for CelesteApp {
                     .map(|(l, r)| (l.as_str(), r.as_str()))
                     .unwrap_or(("", ""));
                 let eta = self.next_sync_eta(remote.id);
+                let needs_reauth = self.rclone.is_disabled_native(&remote.name);
                 remote_page::view(
                     remote,
                     dirs,
@@ -788,6 +840,7 @@ impl Application for CelesteApp {
                     &self.draft_exclusion,
                     (draft_local, draft_remote),
                     eta,
+                    needs_reauth,
                 )
                 .map(Message::Remote)
             }

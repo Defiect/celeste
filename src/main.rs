@@ -89,19 +89,26 @@ fn main() {
 /// Load every remote from the DB, and for those flagged
 /// `Backend::NativeProton` resume the saved session (if any), wrap
 /// the UID in a [`NativeProtonClient`], and register it on the
-/// router keyed by remote name. Failures are logged and skipped —
-/// the remote just stays without an override and the sync scheduler
-/// will surface normal errors when it tries to reach it.
+/// router keyed by remote name. When the resume fails, register a
+/// [`DisabledProtonClient`] instead so the sync engine surfaces a
+/// clear "Re-authenticate" message rather than falling through to
+/// rclone (which would error with an opaque config-lookup failure).
 fn resume_native_sessions(repo: &dyn Repository, router: &ClientRouter) {
+    use crate::infrastructure::proton::client::DisabledProtonClient;
     let remotes = util::await_future(repo.list_remotes()).unwrap_or_default();
     for remote in remotes {
         if remote.backend != Backend::NativeProton {
             continue;
         }
         let Some(path) = remote.session_path.as_deref() else {
-            eprintln!(
-                "celeste: native-proton remote '{}' has no session_path; skipping resume.",
+            let reason = format!(
+                "Proton Drive session blob missing for '{}'. Click Reauthenticate on the remote page to log in again.",
                 remote.name,
+            );
+            eprintln!("celeste: {reason}");
+            router.register_disabled_native(
+                remote.name.clone(),
+                Arc::new(DisabledProtonClient::new(reason)),
             );
             continue;
         };
@@ -117,9 +124,14 @@ fn resume_native_sessions(repo: &dyn Repository, router: &ClientRouter) {
                 );
             }
             Err(err) => {
-                eprintln!(
-                    "celeste: native-proton resume failed for '{}': {err}",
+                let reason = format!(
+                    "Proton Drive session for '{}' could not be resumed ({err}). Click Reauthenticate on the remote page to log in again.",
                     remote.name,
+                );
+                eprintln!("celeste: {reason}");
+                router.register_disabled_native(
+                    remote.name.clone(),
+                    Arc::new(DisabledProtonClient::new(reason)),
                 );
             }
         }

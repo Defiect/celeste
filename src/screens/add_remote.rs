@@ -146,6 +146,11 @@ pub struct Draft {
     /// WebDAV validation is in flight). Disables the Submit button
     /// and swaps the header for a "please wait" hint.
     pub busy: bool,
+    /// When `Some`, the dialog is a re-authentication flow for an
+    /// existing remote (not a new one). The name and provider are
+    /// locked, submit reuses the existing DB row + session path
+    /// instead of inserting a new one.
+    pub reauth: bool,
 }
 
 fn field_label(l: &'static str) -> Element<'static, Msg> {
@@ -153,29 +158,61 @@ fn field_label(l: &'static str) -> Element<'static, Msg> {
 }
 
 pub fn view(draft: &Draft) -> Element<'_, Msg> {
-    let heading = text("Add remote").size(22);
+    let heading = text(if draft.reauth { "Re-authenticate remote" } else { "Add remote" })
+        .size(22);
 
-    let name_row = row![
-        field_label("Name"),
-        text_input("My remote", &draft.name)
-            .on_input(Msg::NameChanged)
-            .padding(6),
-    ]
-    .align_items(iced::Alignment::Center)
-    .spacing(8);
+    // In re-auth mode the name is fixed (it keys the DB row + session
+    // file), so show it as plain text rather than an editable input.
+    let name_row: Element<'_, Msg> = if draft.reauth {
+        row![field_label("Name"), text(&draft.name).size(13)]
+            .align_items(iced::Alignment::Center)
+            .spacing(8)
+            .into()
+    } else {
+        row![
+            field_label("Name"),
+            text_input("My remote", &draft.name)
+                .on_input(Msg::NameChanged)
+                .padding(6),
+        ]
+        .align_items(iced::Alignment::Center)
+        .spacing(8)
+        .into()
+    };
 
     let selected_option = draft.provider.map(ProviderOption);
-    let picker = pick_list(&PROVIDER_OPTIONS[..], selected_option, |o| {
-        Msg::ProviderChanged(o.0)
-    })
-    .text_shaping(Shaping::Advanced)
-    .placeholder("Pick a provider");
-
-    let provider_row = row![field_label("Type"), picker,]
+    let provider_row: Element<'_, Msg> = if draft.reauth {
+        row![
+            field_label("Type"),
+            text(selected_option.map(|o| o.to_string()).unwrap_or_default()).size(13),
+        ]
         .align_items(iced::Alignment::Center)
-        .spacing(8);
+        .spacing(8)
+        .into()
+    } else {
+        let picker = pick_list(&PROVIDER_OPTIONS[..], selected_option, |o| {
+            Msg::ProviderChanged(o.0)
+        })
+        .text_shaping(Shaping::Advanced)
+        .placeholder("Pick a provider");
+        row![field_label("Type"), picker,]
+            .align_items(iced::Alignment::Center)
+            .spacing(8)
+            .into()
+    };
 
     let mut body = column![heading, name_row, provider_row].spacing(SECTION_SPACING);
+
+    if draft.reauth {
+        body = body.push(
+            text(
+                "Enter fresh credentials below. Your sync directories, \
+                 exclusions, and schedule are preserved — only the \
+                 authentication session is replaced.",
+            )
+            .size(12),
+        );
+    }
 
     match draft.provider {
         Some(p) if p.is_webdav_family() => {
@@ -295,9 +332,13 @@ pub fn view(draft: &Draft) -> Element<'_, Msg> {
         body = body.push(text(format!("⚠ {err}")).size(13));
     }
 
-    let submit_label = match draft.provider {
-        Some(p) if p.is_oauth() => "Connect",
-        _ => "Add",
+    let submit_label = if draft.reauth {
+        "Re-authenticate"
+    } else {
+        match draft.provider {
+            Some(p) if p.is_oauth() => "Connect",
+            _ => "Add",
+        }
     };
     let submit_btn = {
         let b = button(text(submit_label));
