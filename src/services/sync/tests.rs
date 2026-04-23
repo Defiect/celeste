@@ -233,6 +233,7 @@ fn cancellation_between_snapshot_and_apply_stops_the_pass() {
         &sd,
         &repo,
         &client,
+        &[],
         |e| captured.lock().unwrap().push(e),
         || true,
         |_| false,
@@ -278,6 +279,7 @@ fn rate_limit_probe_short_circuits_to_degraded() {
         &sd,
         &repo,
         &client,
+        &[],
         |e| captured.lock().unwrap().push(e),
         || false,
         |_| true,
@@ -408,6 +410,63 @@ fn delete_local_still_fires_with_visible_sibling() {
     assert!(sibling.exists(), "unaffected sibling must survive");
     assert!(!repo.has_item(gone.to_str().unwrap(), "dir/gone.txt"));
     assert!(repo.has_item(sibling.to_str().unwrap(), "dir/kept.txt"));
+}
+
+/// A legitimate mass-delete + replace scenario: the user wiped all
+/// DB-tracked files under a parent and populated it with new content.
+/// The listing comes back non-empty but doesn't contain any of the
+/// old DB-tracked items. The guard must NOT treat this as a rate-
+/// limit glitch — a non-empty enumeration of the parent is proof the
+/// list call succeeded, so the missing DB-tracked files were really
+/// deleted and local copies should mirror the delete.
+#[test]
+fn delete_local_fires_when_listing_replaced_under_parent() {
+    let tmp = TempDir::new("sync_pd_mass_replace");
+    let old_a = tmp.write_file("dir/old_a.txt", b"x");
+    let old_b = tmp.write_file("dir/old_b.txt", b"y");
+    touch_mtime(&old_a, 1_700_000_000);
+    touch_mtime(&old_b, 1_700_000_000);
+
+    let repo = FakeRepo::new();
+    repo.insert_item(
+        SyncDirId(1),
+        old_a.to_str().unwrap(),
+        "dir/old_a.txt",
+        1_700_000_000,
+        1_700_000_000,
+    );
+    repo.insert_item(
+        SyncDirId(1),
+        old_b.to_str().unwrap(),
+        "dir/old_b.txt",
+        1_700_000_000,
+        1_700_000_000,
+    );
+
+    let client = FakeRclone::default();
+    // Listing: different content under the same parent — none of the
+    // DB-tracked files survive, but two new ones are present. A true
+    // rate-limit glitch would return zero items under dir/.
+    client.set_list(
+        "",
+        Ok(vec![
+            remote_item("dir/new_a.txt", false, 1_700_000_000),
+            remote_item("dir/new_b.txt", false, 1_700_000_000),
+        ]),
+    );
+
+    let (outcome, _events) = run_full(&tmp, &repo, &client);
+    assert_eq!(outcome, Outcome::Synced);
+    assert!(
+        !old_a.exists(),
+        "old DB-tracked file must be removed locally when listing enumerates the parent",
+    );
+    assert!(
+        !old_b.exists(),
+        "second old DB-tracked file must be removed locally",
+    );
+    assert!(!repo.has_item(old_a.to_str().unwrap(), "dir/old_a.txt"));
+    assert!(!repo.has_item(old_b.to_str().unwrap(), "dir/old_b.txt"));
 }
 
 /// The symmetric case: a local walk that's missing multiple tracked

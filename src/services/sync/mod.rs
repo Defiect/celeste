@@ -133,9 +133,32 @@ impl Snapshot {
             .map(|r| (r.remote_path.clone(), r))
             .collect();
 
-        // 2. Remote listing — single authoritative call.
-        let remote_items =
-            client.list(&remote.name, &sync_dir.remote_path, true, ListFilter::All)?;
+        // 2. Remote listing — single authoritative call. When the
+        //    sync_dir's root doesn't exist on the remote (user or a
+        //    prior incident trashed it), treat the listing as empty
+        //    and mkdir the root so the upload phase can recreate the
+        //    tree. Without this, the sync aborts every cycle and the
+        //    user has to delete + re-add the sync_dir just to force
+        //    a fresh mkdir.
+        let remote_items = match client.list(
+            &remote.name,
+            &sync_dir.remote_path,
+            true,
+            ListFilter::All,
+        ) {
+            Ok(items) => items,
+            Err(err) if is_directory_missing_error(&err) => {
+                eprintln!(
+                    "sync: remote dir '{}' missing for remote='{}' ({err}); recreating and proceeding with empty listing.",
+                    sync_dir.remote_path, remote.name,
+                );
+                if !sync_dir.remote_path.is_empty() {
+                    let _ = client.mkdir(&remote.name, &sync_dir.remote_path);
+                }
+                Vec::new()
+            }
+            Err(err) => return Err(err),
+        };
 
         let remote: HashMap<String, RemoteItem> = remote_items
             .into_iter()
@@ -153,6 +176,19 @@ impl Snapshot {
             walk_unreliable,
         })
     }
+}
+
+/// Does `err` look like a "remote directory doesn't exist" failure?
+/// Providers word this differently: rclone's GDrive backend bubbles up
+/// `error in ListJSON: directory not found`, the native Proton client
+/// returns our own `resolve_path` miss, WebDAV can reply with a 404
+/// body. Match broadly — a false positive here costs us one speculative
+/// mkdir, a miss costs the user a broken sync cycle.
+fn is_directory_missing_error(err: &str) -> bool {
+    let lower = err.to_ascii_lowercase();
+    lower.contains("directory not found")
+        || lower.contains("not found on remote")
+        || lower.contains("no such file or directory")
 }
 
 /// Returns the candidate's path *relative to* `ancestor.remote_path` when
@@ -386,15 +422,27 @@ fn group_db_keys_by_parent(
     out
 }
 
-/// Is at least one DB-tracked sibling of `path` (under the same parent,
-/// excluding itself) present in `items`? Returns `true` also when the
-/// DB has no other siblings recorded under that parent — that's the
-/// legitimate "last file in its parent" case and must not block the
-/// delete. Returns `false` only when the DB says siblings should exist
-/// but none of them appear in `items`, indicating the listing / walk
-/// for that parent is untrustworthy (rate-limit, cache flush, mid-
-/// write race).
-fn parent_has_tracked_sibling<T>(
+/// Did the listing / walk successfully enumerate `path`'s parent?
+/// Used to distinguish a legitimate "parent was emptied" from a
+/// rate-limit / cache-flush / concurrent-write glitch that returned
+/// partial data.
+///
+/// Returns `true` when any of the following holds:
+///   1. The DB has no other tracked siblings under that parent — this
+///      is the legitimate "last file in its parent" case.
+///   2. At least one DB-tracked sibling of `path` is present in
+///      `items`. Proof that the listing / walk reached the parent.
+///   3. `items` contains *any* entry directly under the same parent
+///      — even untracked ones. A non-empty enumeration of the parent
+///      is proof the call succeeded; the DB-tracked ones are genuinely
+///      gone. This is the mass-replace / bulk-delete case where none
+///      of the old DB-tracked items survive but new content arrived.
+///
+/// Returns `false` only when the DB says siblings should exist, none
+/// of them appear in `items`, and the listing / walk shows nothing
+/// at all under that parent — the dangerous "we saw zero where we
+/// expected many" pattern.
+fn parent_is_verified<T>(
     path: &str,
     items: &HashMap<String, T>,
     db_by_parent: &HashMap<&str, Vec<&str>>,
@@ -414,7 +462,10 @@ fn parent_has_tracked_sibling<T>(
             return true;
         }
     }
-    !any_expected
+    if !any_expected {
+        return true;
+    }
+    items.keys().any(|k| parent_of(k) == parent)
 }
 
 /// Does `path`, or any of its ancestor directories up to the sync-dir
@@ -561,13 +612,13 @@ fn plan_one(
         // Equivalent of the GoogleDrive-era sibling verification in
         // 6117026, adapted to the snapshot algorithm.
         (Some(l), None, Some(db)) => {
-            if !parent_has_tracked_sibling(
+            if !parent_is_verified(
                 remote_path,
                 &snapshot.remote,
                 db_by_parent,
             ) {
                 eprintln!(
-                    "sync: SKIP DeleteLocal for '{remote_path}' — listing has no DB-tracked siblings under '{}' (likely rate-limited / cache flush); preserving local copy.",
+                    "sync: SKIP DeleteLocal for '{remote_path}' — listing enumerated no entries under '{}' (likely rate-limited / cache flush); preserving local copy.",
                     parent_of(remote_path),
                 );
                 return None;
@@ -612,13 +663,13 @@ fn plan_one(
                 );
                 return None;
             }
-            if !parent_has_tracked_sibling(
+            if !parent_is_verified(
                 &r.path,
                 &snapshot.local,
                 db_by_parent,
             ) {
                 eprintln!(
-                    "sync: SKIP DeleteRemote for '{}' — walk has no DB-tracked siblings under '{}' (likely concurrent-write race); preserving remote copy.",
+                    "sync: SKIP DeleteRemote for '{}' — walk found no entries under '{}' (likely concurrent-write race); preserving remote copy.",
                     r.path,
                     parent_of(&r.path),
                 );
