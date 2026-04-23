@@ -220,15 +220,11 @@ mod tests {
     }
 
     #[test]
-    fn proton_drive_defaults_to_thirty_seconds() {
+    fn all_providers_default_to_fifteen_seconds() {
         assert_eq!(
             ProviderKind::ProtonDrive.default_interval(),
-            Interval::ThirtySeconds,
+            Interval::FifteenSeconds,
         );
-    }
-
-    #[test]
-    fn other_providers_default_to_fifteen_seconds() {
         assert_eq!(
             ProviderKind::GDrive.default_interval(),
             Interval::FifteenSeconds,
@@ -240,11 +236,8 @@ mod tests {
     }
 
     #[test]
-    fn short_interval_threshold_only_proton() {
-        assert_eq!(
-            ProviderKind::ProtonDrive.short_interval_threshold(),
-            Some(Interval::ThirtySeconds),
-        );
+    fn short_interval_threshold_is_none_for_all_providers() {
+        assert_eq!(ProviderKind::ProtonDrive.short_interval_threshold(), None);
         assert_eq!(ProviderKind::GDrive.short_interval_threshold(), None);
         assert_eq!(ProviderKind::Dropbox.short_interval_threshold(), None);
     }
