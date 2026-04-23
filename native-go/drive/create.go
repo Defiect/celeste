@@ -24,6 +24,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"mime"
@@ -311,16 +312,20 @@ func (s *Session) createFileDraft(
 		return "", "", nil, nil, err
 	}
 
-	// Fast path: avoid the 422 round-trip + log noise when a file
-	// with this name already exists under the parent. Mirrors
-	// CreateFolder's pre-flight lookup. Also makes the duplicate-
-	// handling deterministic when the Active file has siblings
-	// with the same name (the "multiple conflicting linkIDs per
-	// upload" cascade the user saw on 2026-04-22): we pick via
-	// `findAnyChildFileByName` once and reuse it, rather than
-	// firing off a CreateFile that immediately 422s.
-	if preExisting, _ := s.findAnyChildFileByName(ctx, parentLink.LinkID, name); preExisting != nil {
-		log.Printf("[proton-native] pre-flight found existing link for %q: linkID=%s state=%d type=%d — skipping CreateFile", name, preExisting.LinkID, preExisting.State, preExisting.Type)
+	// Fast path: avoid the 422 round-trip when an ACTIVE file with
+	// this name already exists under the parent, and keep the pick
+	// deterministic across sync cycles when duplicates accumulate
+	// (the cascade the user saw on 2026-04-22 where each CreateFile
+	// attempt logged a different conflicting linkID).
+	//
+	// Trashed / deleted / draft ghosts are intentionally excluded
+	// here — trashed links don't always consume the name-hash slot,
+	// so pre-empting CreateFile on them forces the reconcile path
+	// for names the server would gladly accept. If a ghost really
+	// does occupy the slot, CreateFile 422s below and the post-422
+	// fallback (`findAnyChildFileByName`) handles it.
+	if preExisting, _ := s.findActiveChildFileByName(ctx, parentLink.LinkID, name); preExisting != nil {
+		log.Printf("[proton-native] pre-flight found active link for %q: linkID=%s — skipping CreateFile", name, preExisting.LinkID)
 		return s.reconcileExistingFileLink(ctx, &parentLink, parentNodeKR, parentHashKey, preExisting, name, srcPath)
 	}
 
@@ -404,9 +409,15 @@ func (s *Session) createFileDraft(
 // fallback (CreateFile 422'd between our lookup and the retry).
 //
 // Paths:
-//   - Trashed / Deleted / Draft ghost → permanently delete the ghost,
-//     build a fresh CreateFile request, and submit it. Server's
-//     name-hash index releases the slot once the ghost is gone.
+//   - Draft ghost → delete via DeleteChildren (the folder's
+//     `/delete_multiple` endpoint permanently removes drafts) and
+//     submit a fresh CreateFile. Name-hash slot releases.
+//   - Trashed / Deleted ghost → `/delete_multiple` only handles
+//     drafts, returning 2501 "Draft file not found" for these
+//     states; we have no bound endpoint that can permanently
+//     remove a trashed link. Surface an actionable error so the
+//     user can clear the block by emptying their Proton trash,
+//     and dedupe the warning so the sync log doesn't spam.
 //   - Active with matching XAttr SHA-1 → short-circuit: return the
 //     existing link ID with an empty revision ID so UploadFile skips
 //     blocks + commit entirely.
@@ -414,9 +425,6 @@ func (s *Session) createFileDraft(
 //     (deletes any stale draft, creates a new revision on the link).
 //     Returns the existing link's keyring / session key so blocks
 //     encrypt with the same content key the server expects.
-//   - Draft-only link whose revision list was empty → the inner call
-//     deletes the link and signals needRetry; we build a fresh
-//     CreateFile request and submit it.
 func (s *Session) reconcileExistingFileLink(
 	ctx context.Context,
 	parentLink *proton.Link,
@@ -425,12 +433,9 @@ func (s *Session) reconcileExistingFileLink(
 	existingLink *proton.Link,
 	name, srcPath string,
 ) (string, string, *crypto.SessionKey, *crypto.KeyRing, error) {
-	// ---- Trashed / Deleted / Draft ghost: permanently delete, then retry CreateFile ----
-	// Draft links with no committed revision can't even have their
-	// revisions listed (server returns 2501), so we treat them the
-	// same as trashed ghosts: nuke and retry.
-	if existingLink.State == proton.LinkStateTrashed || existingLink.State == proton.LinkStateDeleted || existingLink.State == proton.LinkStateDraft {
-		log.Printf("[proton-native] permanently deleting ghost link %s (state=%d)", existingLink.LinkID, existingLink.State)
+	// ---- Draft ghost: DeleteChildren works for this state ----
+	if existingLink.State == proton.LinkStateDraft {
+		log.Printf("[proton-native] permanently deleting draft ghost %s", existingLink.LinkID)
 		if delErr := s.c.DeleteChildren(ctx, s.mainShare.ShareID, existingLink.ParentLinkID, existingLink.LinkID); delErr != nil {
 			return "", "", nil, nil, delErr
 		}
@@ -439,14 +444,23 @@ func (s *Session) reconcileExistingFileLink(
 		return s.createFreshFileDraft(ctx, parentLink, parentNodeKR, parentHashKey, name)
 	}
 
-	// ---- Draft / Active: handle revision conflicts ----
+	// ---- Trashed / Deleted ghost: actionable failure, no retry ----
+	if existingLink.State == proton.LinkStateTrashed || existingLink.State == proton.LinkStateDeleted {
+		s.warnGhostBlocker(existingLink.LinkID, name, existingLink.State)
+		return "", "", nil, nil, fmt.Errorf(
+			"upload blocked: %q has a trashed copy on Proton (linkID=%s) occupying the name slot; empty your Proton Drive trash at https://drive.proton.me and retry",
+			name, existingLink.LinkID,
+		)
+	}
+
+	// ---- Active: hash-first short-circuit, otherwise new revision ----
 	//
-	// Hash-first short-circuit: for active-state links, see whether
-	// the active revision's XAttr SHA-1 matches the local file. If
-	// it does, there's nothing to upload — return the existing link
-	// ID with an empty revision ID so UploadFile can bail out. Any
-	// error (XAttr missing, decrypt failure, hash I/O error) falls
-	// through to the normal new-revision handling.
+	// Hash-first: see whether the active revision's XAttr SHA-1
+	// matches the local file. If it does, there's nothing to
+	// upload — return the existing link ID with an empty revision
+	// ID so UploadFile can bail out. Any error (XAttr missing,
+	// decrypt failure, hash I/O error) falls through to the normal
+	// new-revision handling.
 	if existingLink.State == proton.LinkStateActive {
 		if skip := s.contentAlreadyMatches(ctx, existingLink, parentNodeKR, srcPath); skip {
 			log.Printf("[proton-native] content-hash match for %q — skipping upload, reusing linkID=%s", name, existingLink.LinkID)
@@ -528,6 +542,78 @@ func (s *Session) createFreshFileDraft(
 		return "", "", nil, nil, err
 	}
 	return res.ID, res.RevisionID, sessionKey, nodeKR, nil
+}
+
+// findActiveChildFileByName searches the ACTIVE children of
+// parentLinkID for a file matching `name`. Used by the pre-flight
+// optimization in createFileDraft: when we spot an active duplicate
+// we skip CreateFile and reconcile immediately. Trashed / draft /
+// deleted ghosts are deliberately ignored here — they don't
+// reliably occupy the name-hash slot, so pre-empting on them sends
+// uploads down the reconcile path unnecessarily. Any actual
+// ghost-slot conflict surfaces when CreateFile 422s and the caller
+// falls back to `findAnyChildFileByName`.
+//
+// Deterministic among active duplicates: lowest LinkID wins so
+// consecutive sync passes don't oscillate between copies.
+func (s *Session) findActiveChildFileByName(ctx context.Context, parentLinkID, name string) (*proton.Link, error) {
+	allEntries, err := s.ListAllChildren(ctx, parentLinkID)
+	if err != nil {
+		return nil, err
+	}
+	var matches []*DumpEntry
+	for _, e := range allEntries {
+		if e.Name == name && !e.IsDir && e.State == int(proton.LinkStateActive) {
+			matches = append(matches, e)
+		}
+	}
+	if len(matches) == 0 {
+		return nil, nil
+	}
+	sort.SliceStable(matches, func(i, j int) bool {
+		return matches[i].LinkID < matches[j].LinkID
+	})
+	if len(matches) > 1 {
+		log.Printf("[proton-native] found %d active duplicate links named %q under %s — picking %s", len(matches), name, parentLinkID, matches[0].LinkID)
+	}
+	for _, m := range matches {
+		link, err := s.getLink(ctx, m.LinkID)
+		if err != nil {
+			log.Printf("[proton-native] getLink(%s) failed: %v — skipping", m.LinkID, err)
+			continue
+		}
+		return &link, nil
+	}
+	return nil, nil
+}
+
+// warnGhostBlocker logs a one-liner the first time a trashed/deleted
+// ghost blocks an upload for a given linkID. Subsequent cycles (same
+// session, same ghost) stay silent so the sync log doesn't fill with
+// the same warning every pass while the user resolves the block.
+func (s *Session) warnGhostBlocker(linkID, name string, state proton.LinkState) {
+	if s.warnedGhosts == nil {
+		s.warnedGhosts = make(map[string]struct{})
+	}
+	if _, seen := s.warnedGhosts[linkID]; seen {
+		return
+	}
+	s.warnedGhosts[linkID] = struct{}{}
+	log.Printf("[proton-native] upload blocked for %q — %s ghost linkID=%s still holds the name slot; empty your Proton trash (https://drive.proton.me) to clear it", name, ghostStateLabel(state), linkID)
+}
+
+// ghostStateLabel formats a non-active LinkState for human-facing logs.
+func ghostStateLabel(s proton.LinkState) string {
+	switch s {
+	case proton.LinkStateTrashed:
+		return "trashed"
+	case proton.LinkStateDeleted:
+		return "deleted"
+	case proton.LinkStateDraft:
+		return "draft"
+	default:
+		return fmt.Sprintf("state=%d", int(s))
+	}
 }
 
 // findAnyChildFileByName searches ALL children of parentLinkID —

@@ -80,6 +80,13 @@ type Session struct {
 	// session so no locking needed.
 	linkCache map[string]proton.Link
 	krCache   map[string]*crypto.KeyRing
+
+	// Set of ghost link IDs we've already warned about this session.
+	// Trashed / deleted links that block an upload can't be removed
+	// via the folder's delete_multiple endpoint, so the upload fails
+	// every sync cycle until the user empties their Proton trash.
+	// Dedupe the warning so the log stays readable.
+	warnedGhosts map[string]struct{}
 }
 
 // RootLinkID returns the main share's root folder ID. Callers use this
@@ -157,6 +164,7 @@ func Login(ctx context.Context, p LoginParams) (*Session, error) {
 		addrs:         addrs,
 		linkCache:     make(map[string]proton.Link),
 		krCache:       make(map[string]*crypto.KeyRing),
+		warnedGhosts:  make(map[string]struct{}),
 	}
 	if err := sess.bootstrapDrive(ctx); err != nil {
 		sess.Close()
@@ -193,6 +201,7 @@ func Resume(ctx context.Context, cred ReusableCredential) (*Session, error) {
 		addrs:         addrs,
 		linkCache:     make(map[string]proton.Link),
 		krCache:       make(map[string]*crypto.KeyRing),
+		warnedGhosts:  make(map[string]struct{}),
 	}
 	if err := sess.bootstrapDrive(ctx); err != nil {
 		sess.Close()
