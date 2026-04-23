@@ -1,12 +1,12 @@
 # Nix dev-shell for building Celeste on NixOS without a global toolchain
-# install. Enter with `nix-shell` (or `nix-shell --run 'just build'`).
+# install. Enter with `nix-shell` (or `nix-shell --run 'cargo build --release'`).
 { pkgs ? import <nixpkgs> { } }:
 
 pkgs.mkShell {
   nativeBuildInputs = with pkgs; [
-    just
+    rustc
+    cargo
     pkg-config
-    rustup
     go
     rustPlatform.bindgenHook # sets LIBCLANG_PATH + BINDGEN_EXTRA_CLANG_ARGS for librclone-sys
   ];
@@ -25,6 +25,11 @@ pkgs.mkShell {
     openssl
     rclone
   ];
+
+  # Some dependencies use unstable rustc features gated behind RUSTC_BOOTSTRAP.
+  # Matches the value set in the celeste-nix package so dev builds mirror the
+  # packaged build.
+  RUSTC_BOOTSTRAP = 1;
 
   # Tell winit where to find the Wayland / Vulkan shared libs at run time.
   LD_LIBRARY_PATH = with pkgs;
