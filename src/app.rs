@@ -26,6 +26,7 @@ use crate::{
     infrastructure::{
         client_router::ClientRouter,
         stderr_capture::{self, CaptureHandle},
+        tray::{self, TrayAction, TrayStatus},
     },
     screens::{add_remote, main_page, remote_page, settings},
     services::sync::Outcome,
@@ -52,6 +53,12 @@ pub enum Message {
     WorkerReady(mpsc::Sender<SyncEvent>),
     SyncEventReceived(SyncEvent),
     Tick,
+    /// Delivered once when the ksni service is live — carries the
+    /// sender the app uses to push fresh [`TrayStatus`] snapshots.
+    TrayReady(mpsc::Sender<TrayStatus>),
+    /// A tray action from the user (menu click or left-click on the
+    /// icon).
+    TrayClick(TrayAction),
 }
 
 /// Aggregate outcome across every sync_dir of one remote's pass. The
@@ -126,6 +133,10 @@ pub struct CelesteApp {
     /// can ask "did any provider rate-limit warning fire since my
     /// pass_start?". Installed once at process startup.
     stderr_capture: CaptureHandle,
+    /// Sender into the ksni subscription task. `Some` once the tray
+    /// handshake has landed; remains `None` if the session has no
+    /// StatusNotifier host.
+    tray_tx: Option<mpsc::Sender<TrayStatus>>,
 }
 
 pub struct Flags {
@@ -163,6 +174,7 @@ impl Application for CelesteApp {
             consecutive_degraded: HashMap::new(),
             syncs_to_skip: HashMap::new(),
             stderr_capture: stderr_capture::handle(),
+            tray_tx: None,
         };
         let repo = flags.repo;
         let load = Command::perform(
@@ -198,11 +210,15 @@ impl Application for CelesteApp {
         // Single ticker at 1 Hz — interval checks are cheap, and the
         // shortest allowed sync cadence is 5 s.
         let ticker = iced::time::every(Duration::from_secs(1)).map(|_| Message::Tick);
-        Subscription::batch([events, ticker])
+        let tray = tray::subscription().map(|signal| match signal {
+            tray::TraySignal::Ready(tx) => Message::TrayReady(tx),
+            tray::TraySignal::Action(action) => Message::TrayClick(action),
+        });
+        Subscription::batch([events, ticker, tray])
     }
 
     fn update(&mut self, message: Message) -> Command<Message> {
-        match message {
+        let cmd = match message {
             Message::RemotesLoaded(mut remotes) => {
                 // Ask rclone for each remote's backend type so the
                 // scheduler can enforce provider-specific interval
@@ -805,7 +821,29 @@ impl Application for CelesteApp {
             ),
 
             Message::LocalFilesDeleted => Command::none(),
-        }
+
+            Message::TrayReady(tx) => {
+                self.tray_tx = Some(tx);
+                // First paint so the icon reflects reality immediately
+                // rather than staying on "Loading" until the next
+                // state change.
+                self.push_tray_status();
+                Command::none()
+            }
+            Message::TrayClick(TrayAction::Open) => {
+                iced::window::change_mode(iced::window::Id::MAIN, iced::window::Mode::Windowed)
+            }
+            Message::TrayClick(TrayAction::Hide) => {
+                iced::window::change_mode(iced::window::Id::MAIN, iced::window::Mode::Hidden)
+            }
+            Message::TrayClick(TrayAction::Quit) => {
+                // Closing the main window ends the Iced runtime, which
+                // returns control to `main` and lets the process exit.
+                iced::window::close(iced::window::Id::MAIN)
+            }
+        };
+        self.push_tray_status();
+        cmd
     }
 
     fn view(&self) -> Element<'_, Message> {
@@ -958,6 +996,41 @@ impl CelesteApp {
             },
             |(id, v)| Message::SyncFinished(id, v),
         )
+    }
+
+    /// Snapshot the app's aggregate sync state into a [`TrayStatus`]
+    /// the tray icon can render. Called after every [`update`] so the
+    /// icon stays in lock-step with the UI.
+    fn compute_tray_status(&self) -> TrayStatus {
+        if self.remotes.is_empty() {
+            return TrayStatus::Disconnected;
+        }
+        let syncing_count = self.syncing.len();
+        if syncing_count > 0 {
+            return TrayStatus::Syncing { count: syncing_count };
+        }
+        if self.consecutive_degraded.values().any(|&c| c > 0) {
+            return TrayStatus::Warning;
+        }
+        if self.remotes.iter().all(|r| !r.policy.enabled) {
+            return TrayStatus::Paused;
+        }
+        let now = Instant::now();
+        let last_sync_ago = self
+            .last_sync_at
+            .values()
+            .map(|t| now.duration_since(*t))
+            .min();
+        TrayStatus::Done { last_sync_ago }
+    }
+
+    /// Push the current tray status to the ksni task, if it's alive.
+    /// Silently drops on a full channel — the tray will catch up on
+    /// the next change (at worst within one scheduler tick).
+    fn push_tray_status(&self) {
+        if let Some(tx) = self.tray_tx.as_ref() {
+            let _ = tx.try_send(self.compute_tray_status());
+        }
     }
 
     /// Time until the scheduler will next attempt this remote, plus a
