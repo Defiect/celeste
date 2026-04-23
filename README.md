@@ -22,6 +22,14 @@ Used components:
 - Google Drive
 - Proton Drive
 
+## Why not also add other providers?
+- Some of them already have a good Linux integration:
+  - [OneDrive](https://abraunegg.github.io)
+  - [Dropbox](https://www.dropbox.com/install-linux)
+  - [Nextcloud](https://nextcloud.com/install/)
+  - etc.
+- Other are not of my interest.
+
 ## Building
 The project ships a `shell.nix` that provides a stable Rust toolchain, Go, and all runtime libraries (Wayland/Vulkan/X11, OpenSSL, rclone). From the repo root:
 
