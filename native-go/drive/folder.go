@@ -56,17 +56,19 @@ type DumpEntry struct {
 	State        int    `json:"state"`
 }
 
+// entryFromLink picks a stable mtime for the sync engine to compare
+// against. proton.Link.ModifyTime is documented (link_types.go:27 in
+// the upstream proton-api) as the *API-side* modification time — it
+// gets bumped server-side after the commit returns (we measured
+// +10..+100 s of post-commit drift), which made the engine flag
+// `BothMoreCurrent` whenever a file was both locally edited and
+// caught mid-drift. The active revision's CreateTime is stamped at
+// revision creation and only changes when a new revision replaces
+// the active one — i.e. when content actually changes — so it's the
+// right "remote content version" signal. Folders have no
+// FileProperties; fall back to the link timestamps for them.
 func entryFromLink(link *proton.Link, name string) *Entry {
-	modTime := link.ModifyTime
-	if modTime == 0 {
-		modTime = link.CreateTime
-	}
-	if modTime == 0 {
-		// Fall back to the wall clock so the sync algorithm's mtime
-		// comparisons don't see zero-valued timestamps when a link
-		// hasn't been modified since creation.
-		modTime = time.Now().Unix()
-	}
+	modTime := stableModTime(link)
 	return &Entry{
 		LinkID:       link.LinkID,
 		ParentLinkID: link.ParentLinkID,
@@ -76,6 +78,21 @@ func entryFromLink(link *proton.Link, name string) *Entry {
 		ModTimeUnix:  modTime,
 		MIMEType:     link.MIMEType,
 	}
+}
+
+func stableModTime(link *proton.Link) int64 {
+	if link.FileProperties != nil {
+		if t := link.FileProperties.ActiveRevision.CreateTime; t != 0 {
+			return t
+		}
+	}
+	if t := link.ModifyTime; t != 0 {
+		return t
+	}
+	if t := link.CreateTime; t != 0 {
+		return t
+	}
+	return time.Now().Unix()
 }
 
 // ListDirectory returns the active children of `folderLinkID`. The
@@ -191,13 +208,7 @@ func (s *Session) ListAllChildren(ctx context.Context, folderLinkID string) ([]*
 			name = "<decrypt-error>"
 		}
 
-		modTime := child.ModifyTime
-		if modTime == 0 {
-			modTime = child.CreateTime
-		}
-		if modTime == 0 {
-			modTime = time.Now().Unix()
-		}
+		modTime := stableModTime(child)
 
 		out = append(out, &DumpEntry{
 			LinkID:       child.LinkID,
