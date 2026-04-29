@@ -47,6 +47,21 @@ fn main() {
         .expect("`go build` failed. Is `go` installed and latest version?");
     assert!(status.success(), "go build failed");
 
+    // Mirror the freshly-built archive into the crate's manifest dir.
+    // The Nix package can't run `go build` (sandboxed, no network) so
+    // it copies `manifest_dir/libceleste_native.{a,h}` into its own
+    // OUT_DIR — meaning whatever sits there is what the installed
+    // binary will execute. Keep it in lockstep with our source so a
+    // plain `cargo build` outside Nix is enough to refresh it before
+    // the next `nixos-rebuild`. The file is gitignored; this is a
+    // pure on-disk handoff.
+    let manifest_lib = manifest_dir.join("libceleste_native.a");
+    let manifest_hdr = manifest_dir.join("libceleste_native.h");
+    std::fs::copy(&lib_path, &manifest_lib)
+        .expect("failed to mirror libceleste_native.a into manifest dir");
+    std::fs::copy(&header_path, &manifest_hdr)
+        .expect("failed to mirror libceleste_native.h into manifest dir");
+
     println!("cargo:rustc-link-search=native={}", out_dir.display());
     // Rust strips the `lib` prefix and `.a` suffix before passing to the
     // linker, so `celeste_native` resolves to `libceleste_native.a`.
