@@ -21,8 +21,8 @@ use crate::{
 /// windows get a taller log pane. Clamped to keep cards usable on both
 /// narrow and very wide layouts.
 const LOG_HEIGHT_RATIO: f32 = 0.35;
-const LOG_HEIGHT_MIN: f32 = 120.0;
-const LOG_HEIGHT_MAX: f32 = 360.0;
+const LOG_HEIGHT_MIN: f32 = 100.0;
+const LOG_HEIGHT_MAX: f32 = 100.0;
 
 #[derive(Debug, Clone)]
 pub enum Msg {
