@@ -106,6 +106,7 @@ fn resume_native_sessions(repo: &dyn Repository, router: &ClientRouter) {
                 remote.name,
             );
             eprintln!("celeste: {reason}");
+            notify_reauth_needed(&remote.name);
             router.register_disabled_native(
                 remote.name.clone(),
                 Arc::new(DisabledProtonClient::new(reason)),
@@ -129,6 +130,7 @@ fn resume_native_sessions(repo: &dyn Repository, router: &ClientRouter) {
                     remote.name,
                 );
                 eprintln!("celeste: {reason}");
+                notify_reauth_needed(&remote.name);
                 router.register_disabled_native(
                     remote.name.clone(),
                     Arc::new(DisabledProtonClient::new(reason)),
@@ -136,6 +138,20 @@ fn resume_native_sessions(repo: &dyn Repository, router: &ClientRouter) {
             }
         }
     }
+}
+
+/// Best-effort OS notification when a native-proton remote can't resume
+/// its session at startup. Silently swallows errors — the remote page
+/// banner + button are the authoritative recovery surface; the toast
+/// is just there to nudge users who've minimised Celeste to the tray.
+fn notify_reauth_needed(remote_name: &str) {
+    let _ = notify_rust::Notification::new()
+        .summary("Celeste: re-authentication needed")
+        .body(&format!(
+            "Sync is paused for '{remote_name}'. Open Celeste and click Reauthenticate to log in again.",
+        ))
+        .appname("Celeste")
+        .show();
 }
 
 fn show_legacy_config_popup(config_dir: &std::path::Path) {

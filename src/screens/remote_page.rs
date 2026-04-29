@@ -94,6 +94,8 @@ pub fn view<'a>(
         countdown,
         Space::with_width(Length::Fill),
         button(text("Refresh now")).on_press(Msg::RefreshNow(remote.id)),
+        button(text("Reauthenticate"))
+            .on_press(Msg::Reauthenticate(remote.id, remote.name.clone())),
         button(text("Delete remote"))
             .on_press(Msg::DeleteRemote(remote.id, remote.name.clone())),
     ]

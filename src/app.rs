@@ -401,7 +401,50 @@ impl Application for CelesteApp {
                         if let Some(provider) = kind.oauth_provider() {
                             let client_id = draft.client_id.trim().to_owned();
                             let client_secret = draft.client_secret.trim().to_owned();
+                            let is_reauth = draft.reauth;
                             draft.busy = true;
+                            if is_reauth {
+                                // Re-auth: keep the existing DB row,
+                                // just refresh the rclone config under
+                                // the same name so the live token gets
+                                // replaced. Inserting a new row would
+                                // create a duplicate-name entry and
+                                // make subsequent delete-by-name flows
+                                // ambiguous.
+                                let existing_id = self
+                                    .remotes
+                                    .iter()
+                                    .find(|r| r.name == name)
+                                    .map(|r| r.id);
+                                let rclone_inner = rclone.clone();
+                                return Command::perform(
+                                    async move {
+                                        let res = tokio::task::spawn_blocking(move || {
+                                            let client_id = (!client_id.is_empty())
+                                                .then_some(client_id.as_str());
+                                            let client_secret = (!client_secret.is_empty())
+                                                .then_some(client_secret.as_str());
+                                            crate::services::auth_service::reauth_oauth_remote(
+                                                &name,
+                                                provider,
+                                                client_id,
+                                                client_secret,
+                                                &*rclone_inner,
+                                            )
+                                        })
+                                        .await
+                                        .unwrap_or_else(|e| Err(e.to_string()));
+                                        match (res, existing_id) {
+                                            (Ok(()), Some(id)) => Ok(id),
+                                            (Ok(()), None) => Err(
+                                                "Remote not found after re-auth.".to_owned(),
+                                            ),
+                                            (Err(e), _) => Err(e),
+                                        }
+                                    },
+                                    Message::AddRemoteResult,
+                                );
+                            }
                             return Command::perform(
                                 async move {
                                     tokio::task::spawn_blocking(move || {
@@ -796,14 +839,22 @@ impl Application for CelesteApp {
                 )
             }
 
-            Message::Remote(remote_page::Msg::Reauthenticate(_id, name)) => {
+            Message::Remote(remote_page::Msg::Reauthenticate(id, name)) => {
                 // Open the Add Remote dialog pre-filled for re-auth: name
                 // + provider are locked; the user enters fresh credentials.
-                // On success the disabled stub is swapped for a live
-                // NativeProtonClient (handled in the reauth submit path).
+                // The provider is taken from the existing remote so the
+                // dialog matches the backend the user is recovering (a
+                // GDrive remote opens the OAuth flow, a Proton remote the
+                // native login flow, etc).
+                let provider = self
+                    .remotes
+                    .iter()
+                    .find(|r| r.id == id)
+                    .and_then(|r| r.provider_kind)
+                    .and_then(map_domain_provider_to_add_remote);
                 let mut draft = add_remote::Draft::default();
                 draft.name = name;
-                draft.provider = Some(add_remote::ProviderKind::ProtonDrive);
+                draft.provider = provider;
                 draft.reauth = true;
                 self.add_remote_draft = Some(draft);
                 Command::none()
@@ -913,6 +964,24 @@ impl Application for CelesteApp {
 /// sync_dirs stay on disjoint subtrees.
 fn local_paths_overlap(a: &str, b: &str) -> bool {
     a == b || b.starts_with(&format!("{a}/")) || a.starts_with(&format!("{b}/"))
+}
+
+/// Bridge the domain `ProviderKind` (persisted on `Remote`) to the
+/// add-remote screen's own enum. Returns `None` for providers the
+/// add-remote UI doesn't currently expose, so re-auth falls back to
+/// the picker rather than locking onto a wrong backend.
+fn map_domain_provider_to_add_remote(
+    p: ProviderKind,
+) -> Option<add_remote::ProviderKind> {
+    match p {
+        ProviderKind::ProtonDrive => Some(add_remote::ProviderKind::ProtonDrive),
+        ProviderKind::GDrive => Some(add_remote::ProviderKind::GDrive),
+        ProviderKind::Dropbox => Some(add_remote::ProviderKind::Dropbox),
+        ProviderKind::PCloud => Some(add_remote::ProviderKind::PCloud),
+        ProviderKind::WebDav => Some(add_remote::ProviderKind::WebDav),
+        ProviderKind::Nextcloud => Some(add_remote::ProviderKind::Nextcloud),
+        ProviderKind::Owncloud => Some(add_remote::ProviderKind::Owncloud),
+    }
 }
 
 impl CelesteApp {

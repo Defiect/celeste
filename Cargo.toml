@@ -1,6 +1,6 @@
 [package]
 name = "celeste"
-version = "0.10.1"
+version = "0.10.2"
 edition = "2024"
 license = "GPL-3.0-or-later"
 authors = [
@@ -25,6 +25,7 @@ resvg = { version = "0.47", default-features = false }
 # (drop-in replacement for the upstream `librclone` crate) plus the
 # native ProtonDrive entry points. See `native-go/` for the Go side.
 librclone = { package = "celeste-native-sys", path = "native-go" }
+notify-rust = "4"
 sea-orm = { version = "0.10.7", features = ["sqlx-sqlite", "runtime-async-std-rustls", "macros"] }
 sea-orm-migration = "0.10.7"
 serde = { version = "1.0.228", features = ["derive"] }
