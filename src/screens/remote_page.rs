@@ -21,12 +21,18 @@ use crate::{
 };
 
 /// Fixed height of the per-sync-dir log editor.
-const LOG_HEIGHT: f32 = 100.0;
+const LOG_HEIGHT: f32 = 110.0;
 /// Maximum log lines retained per sync_dir before the oldest are dropped
 /// to keep memory bounded across long-running sessions.
 pub const MAX_LOG_LINES: usize = 200;
 /// Side length of the per-card status icon.
-const STATUS_ICON_SIZE: f32 = 16.0;
+const STATUS_ICON_SIZE: f32 = 24.0;
+/// Font size for the sync_dir path label so it reads larger than the
+/// surrounding chrome (badges, log lines).
+const SYNC_DIR_FONT_SIZE: u16 = 16;
+/// Right-side breathing room reserved inside the cards scrollable so
+/// the trailing buttons aren't sat on by the outer scrollbar.
+const CARDS_RIGHT_GUTTER: u16 = 18;
 
 #[derive(Debug, Clone)]
 pub enum Msg {
@@ -171,7 +177,8 @@ pub fn view<'a>(
         // wraps the text within the container's bounds.
         let top_row = row![
             status_icon(icon_state),
-            container(text(path_label).size(13)).width(Length::Fill),
+            container(text(path_label).size(SYNC_DIR_FONT_SIZE))
+                .width(Length::Fill),
             button(text(excl_label).size(12)).on_press(Msg::ToggleExclusions(sd.id)),
             button(text("Delete").size(12)).on_press(Msg::DeleteSyncDir(
                 sd.local_path.clone(),
@@ -184,10 +191,12 @@ pub fn view<'a>(
         // Log area: read-only multi-line editor stretched to the card
         // width with a small horizontal inset so its frame doesn't merge
         // with the card edge. Lines are capped at MAX_LOG_LINES upstream
-        // to keep RAM bounded.
+        // to keep RAM bounded. App.rs guarantees a Content entry per
+        // sync_dir on load so the editor is always visible — even for a
+        // sync_dir that hasn't emitted a single event yet.
         let sd_id_for_editor = sd.id;
-        let log_area: Element<'a, Msg> = match log.get(&sd.id) {
-            Some(content) => container(
+        let log_area: Element<'a, Msg> = if let Some(content) = log.get(&sd.id) {
+            container(
                 text_editor(content)
                     .height(Length::Fixed(LOG_HEIGHT))
                     .padding(4)
@@ -197,11 +206,14 @@ pub fn view<'a>(
             )
             .padding([0, 6])
             .width(Length::Fill)
-            .into(),
-            None => container(Space::with_height(Length::Fixed(LOG_HEIGHT)))
+            .into()
+        } else {
+            // Defensive fallback: a same-sized blank so card layout
+            // stays steady if a sync_dir somehow lacks a Content entry.
+            container(Space::with_height(Length::Fixed(LOG_HEIGHT)))
                 .padding([0, 6])
                 .width(Length::Fill)
-                .into(),
+                .into()
         };
 
         let mut card_col = column![top_row, log_area].spacing(ROW_SPACING / 2);
@@ -241,7 +253,15 @@ pub fn view<'a>(
     .spacing(ROW_SPACING);
     cards_col = cards_col.push(add_form);
 
-    let sync_dirs_section = scrollable(cards_col).height(Length::FillPortion(2));
+    // Inset the cards by the scrollbar's footprint so the trailing
+    // [Excluded] / [Delete] buttons aren't covered by the outer
+    // scrollbar drawn over the right edge.
+    let sync_dirs_section = scrollable(
+        container(cards_col)
+            .padding([0, CARDS_RIGHT_GUTTER, 0, 0])
+            .width(Length::Fill),
+    )
+    .height(Length::FillPortion(2));
 
     let settings_panel = settings::view(remote).map(Msg::Settings);
 
@@ -366,13 +386,15 @@ fn status_icon<'a>(state: Option<SyncDirRunState>) -> Element<'a, Msg> {
 /// Wrap an [`icondata::Icon`] (raw inner SVG path data plus a viewBox)
 /// in a real `<svg>` document and hand it to iced's SVG widget. The
 /// outer `fill` cascades into any `<path>` that doesn't set its own,
-/// which gives us a one-call recolor for the monochrome icons we use
-/// (the twotone variant still keeps its hard-coded secondary tone).
+/// which gives us a one-call recolor for the monochrome icons we use.
+/// Twotone icons hardcode their secondary fill to `#E6E6E6`; we strip
+/// it to `none` so the disc reads as transparent against the card
+/// background instead of a solid white blob.
 fn icon_svg<'a>(icon: icondata::Icon, color: &str) -> Element<'a, Msg> {
     let view_box = icon.view_box.unwrap_or("0 0 24 24");
+    let data = icon.data.replace("#E6E6E6", "none");
     let svg_doc = format!(
         r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="{view_box}" fill="{color}">{data}</svg>"##,
-        data = icon.data,
     );
     svg(svg::Handle::from_memory(svg_doc.into_bytes()))
         .width(Length::Fixed(STATUS_ICON_SIZE))
