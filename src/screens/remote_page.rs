@@ -164,11 +164,14 @@ pub fn view<'a>(
             status.get(&sd.id).copied()
         };
 
-        // Top row: [icon] paths | [Excluded (n)] [Delete]
+        // Top row: [icon] paths | [Excluded (n)] [Delete].
+        // Wrap the path label in a Fill-width container so a long
+        // `"local" → "remote"` string consumes the row's slack instead
+        // of pushing the trailing buttons off the right edge. iced
+        // wraps the text within the container's bounds.
         let top_row = row![
             status_icon(icon_state),
-            text(path_label).size(13),
-            Space::with_width(Length::Fill),
+            container(text(path_label).size(13)).width(Length::Fill),
             button(text(excl_label).size(12)).on_press(Msg::ToggleExclusions(sd.id)),
             button(text("Delete").size(12)).on_press(Msg::DeleteSyncDir(
                 sd.local_path.clone(),
