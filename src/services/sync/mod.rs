@@ -26,7 +26,7 @@ use std::{
 
 use crate::{
     domain::{
-        events::SyncEvent,
+        events::{SyncDirRunState, SyncEvent},
         ports::{RcloneClient, Repository},
         remote::Remote,
         sync::{ListFilter, RemoteItem, SyncDir, SyncError, SyncItem},
@@ -775,8 +775,15 @@ where
             text,
         });
     };
+    let emit_state = |state: SyncDirRunState| {
+        emit(SyncEvent::SyncDirStateChanged {
+            remote_id: remote.id,
+            sync_dir_id: sync_dir.id,
+            state,
+        });
+    };
 
-    emit_pending(tr::tr!("Listing remote (may take a while)…"));
+    emit_state(SyncDirRunState::Syncing);
     let snapshot_result = Snapshot::build(remote, sync_dir, repo, client, all_sync_dirs);
 
     // Classify rate-limit *before* we commit to a success/failure path:
@@ -794,6 +801,7 @@ where
             tr::tr!("Rate-limit warnings detected during listing; skipping this pass for backoff."),
         ));
         emit_status(tr::tr!("Sync skipped — provider rate-limited."));
+        emit_state(SyncDirRunState::Warning);
         return Outcome::Degraded;
     }
 
@@ -803,6 +811,7 @@ where
             eprintln!("sync: list failed for {}: {err}", remote.name);
             emit_error(SyncError::General(sync_dir.remote_path.clone(), err));
             emit_status(tr::tr!("Sync failed — will retry next tick."));
+            emit_state(SyncDirRunState::Error);
             return Outcome::Aborted;
         }
     };
@@ -851,9 +860,10 @@ where
         emit_status(tr::tr!(
             "Files are synced — provider rate-limited, backing off next tick."
         ));
+        emit_state(SyncDirRunState::Warning);
         return Outcome::Degraded;
     }
-    emit_status(tr::tr!("Files are synced."));
+    emit_state(SyncDirRunState::Synced);
     Outcome::Synced
 }
 

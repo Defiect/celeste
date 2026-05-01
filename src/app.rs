@@ -18,7 +18,7 @@ use std::path::PathBuf;
 
 use crate::{
     domain::{
-        events::SyncEvent,
+        events::{SyncDirRunState, SyncEvent},
         ports::{RcloneClient, Repository},
         remote::{ProviderKind, Remote, RemoteId},
         sync::{SyncDir, SyncDirExclusion, SyncDirId, SyncError},
@@ -97,6 +97,10 @@ pub struct CelesteApp {
     /// Read-only [`text_editor::Content`] mirror of the log lines, kept
     /// in sync so the remote-page editor can borrow it directly.
     sync_dir_log_content: HashMap<SyncDirId, iced::widget::text_editor::Content>,
+    /// Coarse run-state per sync_dir — drives the status icon on the
+    /// remote page. Sticky once a pass surfaces Warning / Error so a
+    /// final clean status doesn't paper over earlier per-file errors.
+    sync_dir_status: HashMap<SyncDirId, SyncDirRunState>,
     /// All sync_dirs across every remote, refreshed on navigation changes.
     /// Used to compute auto-exclusions in the UI.
     all_known_sync_dirs: Vec<SyncDir>,
@@ -165,6 +169,7 @@ impl Application for CelesteApp {
             syncing: std::collections::HashSet::new(),
             sync_dir_log_lines: HashMap::new(),
             sync_dir_log_content: HashMap::new(),
+            sync_dir_status: HashMap::new(),
             all_known_sync_dirs: Vec::new(),
             exclusion_panel: None,
             sync_dir_exclusions: HashMap::new(),
@@ -743,6 +748,37 @@ impl Application for CelesteApp {
                             }
                         };
                         self.push_log_line(sync_dir_id, line);
+                        // Per-file errors surface as Warning so the icon
+                        // mirrors the trouble even if the pass eventually
+                        // ends with the engine-level Synced state.
+                        let cur = self
+                            .sync_dir_status
+                            .get(&sync_dir_id)
+                            .copied()
+                            .unwrap_or(SyncDirRunState::Syncing);
+                        if cur != SyncDirRunState::Error {
+                            self.sync_dir_status
+                                .insert(sync_dir_id, SyncDirRunState::Warning);
+                        }
+                    }
+                    SyncEvent::SyncDirStateChanged {
+                        sync_dir_id, state, ..
+                    } => {
+                        let next = match (
+                            self.sync_dir_status.get(&sync_dir_id).copied(),
+                            state,
+                        ) {
+                            // Don't downgrade: a final Synced after a
+                            // Warning (per-file errors) keeps Warning.
+                            (Some(SyncDirRunState::Warning), SyncDirRunState::Synced) => {
+                                SyncDirRunState::Warning
+                            }
+                            (Some(SyncDirRunState::Error), SyncDirRunState::Synced) => {
+                                SyncDirRunState::Error
+                            }
+                            _ => state,
+                        };
+                        self.sync_dir_status.insert(sync_dir_id, next);
                     }
                     SyncEvent::RemoteStarted { .. }
                     | SyncEvent::RemoteCompleted { .. }
@@ -941,6 +977,7 @@ impl Application for CelesteApp {
                     remote,
                     dirs,
                     &self.sync_dir_log_content,
+                    &self.sync_dir_status,
                     &self.all_known_sync_dirs,
                     self.exclusion_panel,
                     &self.sync_dir_exclusions,

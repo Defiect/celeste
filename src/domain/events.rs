@@ -3,6 +3,23 @@ use super::{
     sync::{SyncDirId, SyncError},
 };
 
+/// Coarse run-state for one sync_dir. Drives the per-card status icon
+/// on the remote page; finer per-event detail still comes through as
+/// status / pending / error text events.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SyncDirRunState {
+    /// A pass is in flight (listing or applying actions).
+    Syncing,
+    /// The most recent pass finished cleanly with no per-file errors.
+    Synced,
+    /// The most recent pass surfaced warnings — rate-limit backoff,
+    /// per-file errors, or sync conflicts.
+    Warning,
+    /// The most recent pass aborted before completing (snapshot fail,
+    /// missing auth, etc.).
+    Error,
+}
+
 /// Events the sync services emit. UI adapters (GTK today, Iced later)
 /// subscribe and translate into their native render calls.
 #[derive(Clone, Debug)]
@@ -41,6 +58,14 @@ pub enum SyncEvent {
         remote_id: RemoteId,
         sync_dir_id: SyncDirId,
         error: SyncError,
+    },
+    /// Per-sync-dir coarse run-state transition. Drives the status icon
+    /// on the remote page without forcing every consumer to string-match
+    /// status text.
+    SyncDirStateChanged {
+        remote_id: RemoteId,
+        sync_dir_id: SyncDirId,
+        state: SyncDirRunState,
     },
     /// Per-file progress (reserved for future streaming). Kept for shape
     /// compatibility with earlier sketches; current callers don't emit it.

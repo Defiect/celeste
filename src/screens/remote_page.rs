@@ -4,13 +4,14 @@ use std::{collections::HashMap, time::Duration};
 
 use iced::{
     widget::{
-        button, column, container, row, scrollable, text_editor, text_input, Rule, Space,
+        button, column, container, row, scrollable, svg, text_editor, text_input, Rule, Space,
     },
     Alignment, Element, Length,
 };
 
 use crate::{
     domain::{
+        events::SyncDirRunState,
         remote::{Remote, RemoteId},
         sync::{SyncDir, SyncDirExclusion, SyncDirExclusionId, SyncDirId},
     },
@@ -24,6 +25,8 @@ const LOG_HEIGHT: f32 = 100.0;
 /// Maximum log lines retained per sync_dir before the oldest are dropped
 /// to keep memory bounded across long-running sessions.
 pub const MAX_LOG_LINES: usize = 200;
+/// Side length of the per-card status icon.
+const STATUS_ICON_SIZE: f32 = 16.0;
 
 #[derive(Debug, Clone)]
 pub enum Msg {
@@ -49,6 +52,7 @@ pub fn view<'a>(
     remote: &'a Remote,
     sync_dirs: &'a [SyncDir],
     log: &'a HashMap<SyncDirId, text_editor::Content>,
+    status: &'a HashMap<SyncDirId, SyncDirRunState>,
     all_known_sync_dirs: &'a [SyncDir],
     exclusion_panel: Option<SyncDirId>,
     exclusions: &'a HashMap<SyncDirId, Vec<SyncDirExclusion>>,
@@ -151,8 +155,18 @@ pub fn view<'a>(
         let total_excl = auto_excl.len() + custom_excl_count;
         let excl_label = format!("Excluded ({})", total_excl);
 
-        // Top row: paths | [Excluded (n)] [Delete]
+        // Re-auth requested at the remote level wins over any per-dir
+        // run-state — the engine can't make progress until the user
+        // signs in again, so surface a red error icon on every card.
+        let icon_state = if needs_reauth {
+            Some(SyncDirRunState::Error)
+        } else {
+            status.get(&sd.id).copied()
+        };
+
+        // Top row: [icon] paths | [Excluded (n)] [Delete]
         let top_row = row![
+            status_icon(icon_state),
             text(path_label).size(13),
             Space::with_width(Length::Fill),
             button(text(excl_label).size(12)).on_press(Msg::ToggleExclusions(sd.id)),
@@ -324,6 +338,43 @@ fn is_remote_descendant(ancestor: &SyncDir, candidate: &SyncDir) -> bool {
             .remote_path
             .starts_with(&format!("{}/", ancestor.remote_path))
     }
+}
+
+/// Render the per-card status icon, or a same-sized blank when there's
+/// no run-state yet so the path label keeps the same horizontal offset
+/// across cards.
+fn status_icon<'a>(state: Option<SyncDirRunState>) -> Element<'a, Msg> {
+    let placeholder = || -> Element<'a, Msg> {
+        Space::with_width(Length::Fixed(STATUS_ICON_SIZE)).into()
+    };
+    match state {
+        // MdiSync rendered blue while a pass is in flight.
+        Some(SyncDirRunState::Syncing) => icon_svg(icondata::MdiSync, "#3b82f6"),
+        // AiCheckCircleTwotone in green for a clean last pass.
+        Some(SyncDirRunState::Synced) => icon_svg(icondata::AiCheckCircleTwotone, "#22c55e"),
+        // AiWarningOutlined in amber for backoff / per-file errors / conflicts.
+        Some(SyncDirRunState::Warning) => icon_svg(icondata::AiWarningOutlined, "#eab308"),
+        // BiErrorAltRegular in red for hard failures (snapshot fail, re-auth needed).
+        Some(SyncDirRunState::Error) => icon_svg(icondata::BiErrorAltRegular, "#ef4444"),
+        None => placeholder(),
+    }
+}
+
+/// Wrap an [`icondata::Icon`] (raw inner SVG path data plus a viewBox)
+/// in a real `<svg>` document and hand it to iced's SVG widget. The
+/// outer `fill` cascades into any `<path>` that doesn't set its own,
+/// which gives us a one-call recolor for the monochrome icons we use
+/// (the twotone variant still keeps its hard-coded secondary tone).
+fn icon_svg<'a>(icon: icondata::Icon, color: &str) -> Element<'a, Msg> {
+    let view_box = icon.view_box.unwrap_or("0 0 24 24");
+    let svg_doc = format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="{view_box}" fill="{color}">{data}</svg>"##,
+        data = icon.data,
+    );
+    svg(svg::Handle::from_memory(svg_doc.into_bytes()))
+        .width(Length::Fixed(STATUS_ICON_SIZE))
+        .height(Length::Fixed(STATUS_ICON_SIZE))
+        .into()
 }
 
 fn format_duration(d: Duration) -> String {
