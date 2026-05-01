@@ -139,7 +139,7 @@ pub fn view<'a>(
         } else {
             &sd.remote_path
         };
-        let path_label = format!("{} → {}", sd.local_path, remote_display);
+        let path_label = format!("\"{}\" → \"{}\"", sd.local_path, remote_display);
 
         // Count auto-excluded descendants + user exclusions for the badge.
         let auto_excl = auto_excluded_for(sd, all_known_sync_dirs);
@@ -239,15 +239,20 @@ fn exclusion_panel_view<'a>(
 ) -> Element<'a, Msg> {
     let mut col = column![].spacing(ROW_SPACING / 2);
 
-    // Auto-excluded (descendant sync_dirs) — read-only.
+    // Auto-excluded (descendant sync_dirs) — read-only. Show the
+    // descendant's remote path so it lines up with what the provider
+    // sees, not the local mirror.
     if !auto_excl.is_empty() {
         col = col.push(text("Auto-excluded:").size(12));
         for desc in auto_excl {
-            let relative = desc
-                .local_path
-                .strip_prefix(&format!("{}/", sd.local_path))
-                .unwrap_or(&desc.local_path);
-            col = col.push(text(format!("  {relative}")).size(12));
+            let remote_relative = if sd.remote_path.is_empty() {
+                desc.remote_path.as_str()
+            } else {
+                desc.remote_path
+                    .strip_prefix(&format!("{}/", sd.remote_path))
+                    .unwrap_or(&desc.remote_path)
+            };
+            col = col.push(text(format!("  \"{remote_relative}\"")).size(12));
         }
     }
 
@@ -259,7 +264,7 @@ fn exclusion_panel_view<'a>(
             let sd_id = sd.id;
             col = col.push(
                 row![
-                    text(format!("  {}", excl.remote_path)).size(12),
+                    text(format!("  \"{}\"", excl.remote_path)).size(12),
                     Space::with_width(Length::Fill),
                     button(text("×").size(11))
                         .on_press(Msg::RemoveExclusion(excl_id, sd_id)),
