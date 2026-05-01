@@ -503,11 +503,36 @@ impl Application for CelesteApp {
                 // so the reauth banner closes immediately instead of
                 // waiting for the next sync pass to confirm.
                 self.auth_failed_remotes.remove(&id);
+                // Re-enable the policy if a prior auth-failure had
+                // auto-paused the remote (or if the user paused it
+                // manually before adding it back). The next scheduler
+                // tick picks up the freshened policy and resumes sync.
+                let mut reenable_policy: Option<crate::domain::remote::SyncPolicy> = None;
+                if let Some(remote) = self.remotes.iter_mut().find(|r| r.id == id)
+                    && !remote.policy.enabled
+                {
+                    remote.policy.enabled = true;
+                    reenable_policy = Some(remote.policy.clone());
+                }
                 let repo = self.repo.clone();
-                Command::perform(
+                let repo_for_policy = self.repo.clone();
+                let reload = Command::perform(
                     async move { repo.list_remotes().await.unwrap_or_default() },
                     Message::RemotesLoaded,
-                )
+                );
+                if let Some(policy) = reenable_policy {
+                    Command::batch([
+                        Command::perform(
+                            async move {
+                                let _ = repo_for_policy.set_policy(id, policy).await;
+                            },
+                            |_| Message::PolicySaved,
+                        ),
+                        reload,
+                    ])
+                } else {
+                    reload
+                }
             }
             Message::AddRemoteResult(Err(msg)) => {
                 if let Some(draft) = self.add_remote_draft.as_mut() {
@@ -748,6 +773,8 @@ impl Application for CelesteApp {
                 Command::none()
             }
             Message::SyncEventReceived(event) => {
+                let mut auto_pause: Option<(RemoteId, crate::domain::remote::SyncPolicy)> =
+                    None;
                 match event {
                     SyncEvent::SyncDirStatus {
                         sync_dir_id, text, ..
@@ -773,10 +800,12 @@ impl Application for CelesteApp {
                         // Auth-failure heuristic: HTTP 401 and the
                         // matching rclone phrasing both indicate the
                         // session is dead and only re-auth fixes it.
-                        // Promote the sync_dir state to Error and flag
+                        // Promote the sync_dir state to Error, flag
                         // the remote so the page surfaces the reauth
-                        // banner (the same one native Proton uses when
-                        // its session expires).
+                        // banner, and auto-pause the policy so the
+                        // scheduler stops hammering an endpoint that
+                        // can only return 401 until the user signs in
+                        // again.
                         let auth_failure = match &error {
                             SyncError::General(_, msg) => is_auth_failure(msg),
                             SyncError::BothMoreCurrent(..) => false,
@@ -786,6 +815,17 @@ impl Application for CelesteApp {
                             self.auth_failed_remotes.insert(remote_id);
                             self.sync_dir_status
                                 .insert(sync_dir_id, SyncDirRunState::Error);
+                            if let Some(remote) =
+                                self.remotes.iter_mut().find(|r| r.id == remote_id)
+                                && remote.policy.enabled
+                            {
+                                remote.policy.enabled = false;
+                                if let Some(flag) = self.cancel_flags.get(&remote_id) {
+                                    flag.store(true, Ordering::Release);
+                                }
+                                self.refresh_requested_after.remove(&remote_id);
+                                auto_pause = Some((remote_id, remote.policy.clone()));
+                            }
                         } else {
                             // Per-file errors surface as Warning so the
                             // icon mirrors the trouble even if the pass
@@ -826,7 +866,17 @@ impl Application for CelesteApp {
                     | SyncEvent::RemoteFailed { .. }
                     | SyncEvent::FileProgress { .. } => {}
                 }
-                Command::none()
+                if let Some((id, policy)) = auto_pause {
+                    let repo = self.repo.clone();
+                    Command::perform(
+                        async move {
+                            let _ = repo.set_policy(id, policy).await;
+                        },
+                        |_| Message::PolicySaved,
+                    )
+                } else {
+                    Command::none()
+                }
             }
             Message::Remote(remote_page::Msg::Settings(sub))
             | Message::Settings(sub) => {

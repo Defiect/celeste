@@ -120,11 +120,14 @@ pub fn view<'a>(
         let msg = "This remote's session isn't loaded. Sync is paused \
                    until you re-authenticate. Your sync directories, \
                    exclusions, and schedule will be preserved.";
+        // Wrap the message in a Fill-width container so a long blurb
+        // wraps inside the available slack instead of pushing the
+        // [Reauthenticate] button off the right edge.
         Some(
             container(
                 row![
-                    text(format!("⚠ {msg}")).size(13),
-                    Space::with_width(Length::Fill),
+                    container(text(format!("⚠ {msg}")).size(13))
+                        .width(Length::Fill),
                     button(text("Reauthenticate"))
                         .on_press(Msg::Reauthenticate(remote.id, remote.name.clone())),
                 ]
