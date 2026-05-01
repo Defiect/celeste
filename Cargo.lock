@@ -745,7 +745,7 @@ dependencies = [
 
 [[package]]
 name = "celeste"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "celeste-native-sys",
  "clap 4.6.1",
