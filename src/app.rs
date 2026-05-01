@@ -46,7 +46,6 @@ pub enum Message {
     SyncDirsLoaded(RemoteId, Vec<SyncDir>),
     AllSyncDirsRefreshed(Vec<SyncDir>),
     ExclusionsLoaded(SyncDirId, Vec<SyncDirExclusion>),
-    LocalFilesDeleted,
     PolicySaved,
     SyncStarted(RemoteId),
     SyncFinished(RemoteId, PassVerdict),
@@ -859,19 +858,6 @@ impl Application for CelesteApp {
                 self.add_remote_draft = Some(draft);
                 Command::none()
             }
-
-            Message::Remote(remote_page::Msg::DeleteLocalFiles(path)) => Command::perform(
-                async move {
-                    tokio::task::spawn_blocking(move || {
-                        let _ = std::fs::remove_dir_all(&path);
-                    })
-                    .await
-                    .ok();
-                },
-                |_| Message::LocalFilesDeleted,
-            ),
-
-            Message::LocalFilesDeleted => Command::none(),
 
             Message::TrayReady(tx) => {
                 self.tray_tx = Some(tx);

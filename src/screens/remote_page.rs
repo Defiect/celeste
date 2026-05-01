@@ -38,7 +38,6 @@ pub enum Msg {
     DraftExclusionChanged(SyncDirId, String),
     AddExclusion(SyncDirId),
     RemoveExclusion(SyncDirExclusionId, SyncDirId),
-    DeleteLocalFiles(String),
     Reauthenticate(RemoteId, String),
 }
 
@@ -240,7 +239,7 @@ fn exclusion_panel_view<'a>(
 ) -> Element<'a, Msg> {
     let mut col = column![].spacing(ROW_SPACING / 2);
 
-    // Auto-excluded (descendant sync_dirs) — read-only, no delete button.
+    // Auto-excluded (descendant sync_dirs) — read-only.
     if !auto_excl.is_empty() {
         col = col.push(text("Auto-excluded:").size(12));
         for desc in auto_excl {
@@ -248,17 +247,7 @@ fn exclusion_panel_view<'a>(
                 .local_path
                 .strip_prefix(&format!("{}/", sd.local_path))
                 .unwrap_or(&desc.local_path);
-            let local_path = desc.local_path.clone();
-            col = col.push(
-                row![
-                    text(format!("  {relative}")).size(12),
-                    Space::with_width(Length::Fill),
-                    button(text("Delete local files").size(11))
-                        .on_press(Msg::DeleteLocalFiles(local_path)),
-                ]
-                .align_items(iced::Alignment::Center)
-                .spacing(ROW_SPACING),
-            );
+            col = col.push(text(format!("  {relative}")).size(12));
         }
     }
 
@@ -266,15 +255,12 @@ fn exclusion_panel_view<'a>(
     if !custom_excl.is_empty() {
         col = col.push(text("Custom excluded:").size(12));
         for excl in custom_excl {
-            let local_path = format!("{}/{}", sd.local_path, excl.remote_path);
             let excl_id = excl.id;
             let sd_id = sd.id;
             col = col.push(
                 row![
                     text(format!("  {}", excl.remote_path)).size(12),
                     Space::with_width(Length::Fill),
-                    button(text("Delete local files").size(11))
-                        .on_press(Msg::DeleteLocalFiles(local_path)),
                     button(text("×").size(11))
                         .on_press(Msg::RemoveExclusion(excl_id, sd_id)),
                 ]
