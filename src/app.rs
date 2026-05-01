@@ -101,6 +101,12 @@ pub struct CelesteApp {
     /// remote page. Sticky once a pass surfaces Warning / Error so a
     /// final clean status doesn't paper over earlier per-file errors.
     sync_dir_status: HashMap<SyncDirId, SyncDirRunState>,
+    /// Remotes whose sync passes have surfaced an auth failure
+    /// (HTTP 401 / "Invalid access token") since the last successful
+    /// re-authentication. Drives the reauth banner for OAuth /
+    /// WebDAV providers — native Proton has its own
+    /// [`ClientRouter::is_disabled_native`] flag.
+    auth_failed_remotes: std::collections::HashSet<RemoteId>,
     /// All sync_dirs across every remote, refreshed on navigation changes.
     /// Used to compute auto-exclusions in the UI.
     all_known_sync_dirs: Vec<SyncDir>,
@@ -170,6 +176,7 @@ impl Application for CelesteApp {
             sync_dir_log_lines: HashMap::new(),
             sync_dir_log_content: HashMap::new(),
             sync_dir_status: HashMap::new(),
+            auth_failed_remotes: std::collections::HashSet::new(),
             all_known_sync_dirs: Vec::new(),
             exclusion_panel: None,
             sync_dir_exclusions: HashMap::new(),
@@ -258,6 +265,15 @@ impl Application for CelesteApp {
                 ])
             }
             Message::SyncDirsLoaded(id, sd) => {
+                // Pre-populate an empty `text_editor::Content` for every
+                // sync_dir so the read-only editor renders even when
+                // the engine hasn't emitted a single event for it yet —
+                // the editor needs a `&Content` to draw against.
+                for d in &sd {
+                    self.sync_dir_log_content
+                        .entry(d.id)
+                        .or_insert_with(iced::widget::text_editor::Content::new);
+                }
                 self.sync_dirs.insert(id, sd);
                 Command::none()
             }
@@ -480,8 +496,13 @@ impl Application for CelesteApp {
                 }
                 Command::none()
             }
-            Message::AddRemoteResult(Ok(_id)) => {
+            Message::AddRemoteResult(Ok(id)) => {
                 self.add_remote_draft = None;
+                // A successful add / re-auth refreshed the credentials
+                // for this remote — clear any stale auth-failure flag
+                // so the reauth banner closes immediately instead of
+                // waiting for the next sync pass to confirm.
+                self.auth_failed_remotes.remove(&id);
                 let repo = self.repo.clone();
                 Command::perform(
                     async move { repo.list_remotes().await.unwrap_or_default() },
@@ -739,7 +760,9 @@ impl Application for CelesteApp {
                         self.push_log_line(sync_dir_id, format!("⟳ {text}"));
                     }
                     SyncEvent::SyncDirError {
-                        sync_dir_id, error, ..
+                        remote_id,
+                        sync_dir_id,
+                        error,
                     } => {
                         let line = match &error {
                             SyncError::General(path, msg) => format!("⚠ {path}: {msg}"),
@@ -747,18 +770,36 @@ impl Application for CelesteApp {
                                 format!("⚠ Conflict: '{local}' vs '{remote}'")
                             }
                         };
+                        // Auth-failure heuristic: HTTP 401 and the
+                        // matching rclone phrasing both indicate the
+                        // session is dead and only re-auth fixes it.
+                        // Promote the sync_dir state to Error and flag
+                        // the remote so the page surfaces the reauth
+                        // banner (the same one native Proton uses when
+                        // its session expires).
+                        let auth_failure = match &error {
+                            SyncError::General(_, msg) => is_auth_failure(msg),
+                            SyncError::BothMoreCurrent(..) => false,
+                        };
                         self.push_log_line(sync_dir_id, line);
-                        // Per-file errors surface as Warning so the icon
-                        // mirrors the trouble even if the pass eventually
-                        // ends with the engine-level Synced state.
-                        let cur = self
-                            .sync_dir_status
-                            .get(&sync_dir_id)
-                            .copied()
-                            .unwrap_or(SyncDirRunState::Syncing);
-                        if cur != SyncDirRunState::Error {
+                        if auth_failure {
+                            self.auth_failed_remotes.insert(remote_id);
                             self.sync_dir_status
-                                .insert(sync_dir_id, SyncDirRunState::Warning);
+                                .insert(sync_dir_id, SyncDirRunState::Error);
+                        } else {
+                            // Per-file errors surface as Warning so the
+                            // icon mirrors the trouble even if the pass
+                            // eventually ends with the engine-level
+                            // Synced state.
+                            let cur = self
+                                .sync_dir_status
+                                .get(&sync_dir_id)
+                                .copied()
+                                .unwrap_or(SyncDirRunState::Syncing);
+                            if cur != SyncDirRunState::Error {
+                                self.sync_dir_status
+                                    .insert(sync_dir_id, SyncDirRunState::Warning);
+                            }
                         }
                     }
                     SyncEvent::SyncDirStateChanged {
@@ -972,7 +1013,8 @@ impl Application for CelesteApp {
                     .map(|(l, r)| (l.as_str(), r.as_str()))
                     .unwrap_or(("", ""));
                 let eta = self.next_sync_eta(remote.id);
-                let needs_reauth = self.rclone.is_disabled_native(&remote.name);
+                let needs_reauth = self.rclone.is_disabled_native(&remote.name)
+                    || self.auth_failed_remotes.contains(&remote.id);
                 remote_page::view(
                     remote,
                     dirs,
@@ -997,6 +1039,21 @@ impl Application for CelesteApp {
 /// True when two local paths overlap — equal, or one is a strict
 /// descendant of the other. Used to reject AddSyncDir requests so all
 /// sync_dirs stay on disjoint subtrees.
+/// Heuristic test for an auth-failure error message. Covers the
+/// canonical HTTP 401 phrasings emitted by both rclone (OAuth, WebDAV)
+/// and the native Proton client. We don't need to be exhaustive — a
+/// false negative just means the user sees a per-file warning instead
+/// of the reauth banner, which is recoverable on the next pass.
+fn is_auth_failure(msg: &str) -> bool {
+    let lower = msg.to_ascii_lowercase();
+    lower.contains("invalid access token")
+        || lower.contains("code=401")
+        || lower.contains("status=401")
+        || lower.contains(" 401 ")
+        || lower.contains("unauthenticated")
+        || lower.contains("unauthorized")
+}
+
 fn local_paths_overlap(a: &str, b: &str) -> bool {
     a == b || b.starts_with(&format!("{a}/")) || a.starts_with(&format!("{b}/"))
 }
