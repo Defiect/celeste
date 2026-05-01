@@ -90,9 +90,13 @@ pub struct CelesteApp {
     selected: Option<RemoteId>,
     /// Remotes whose sync pass is currently running.
     syncing: std::collections::HashSet<RemoteId>,
-    /// Accumulated log lines per sync_dir for the current session.
-    /// Each status/pending/error event appends one line; never cleared.
-    sync_dir_log: HashMap<SyncDirId, Vec<String>>,
+    /// Accumulated log lines per sync_dir, capped at
+    /// [`remote_page::MAX_LOG_LINES`] so a long-running session doesn't
+    /// grow unbounded.
+    sync_dir_log_lines: HashMap<SyncDirId, Vec<String>>,
+    /// Read-only [`text_editor::Content`] mirror of the log lines, kept
+    /// in sync so the remote-page editor can borrow it directly.
+    sync_dir_log_content: HashMap<SyncDirId, iced::widget::text_editor::Content>,
     /// All sync_dirs across every remote, refreshed on navigation changes.
     /// Used to compute auto-exclusions in the UI.
     all_known_sync_dirs: Vec<SyncDir>,
@@ -159,7 +163,8 @@ impl Application for CelesteApp {
             sync_dirs: HashMap::new(),
             selected: None,
             syncing: std::collections::HashSet::new(),
-            sync_dir_log: HashMap::new(),
+            sync_dir_log_lines: HashMap::new(),
+            sync_dir_log_content: HashMap::new(),
             all_known_sync_dirs: Vec::new(),
             exclusion_panel: None,
             sync_dir_exclusions: HashMap::new(),
@@ -497,13 +502,17 @@ impl Application for CelesteApp {
                     // immediate feedback instead of thinking the click was
                     // lost.
                     self.refresh_requested_after.insert(id);
-                    if let Some(dirs) = self.sync_dirs.get(&id) {
-                        for sd in dirs {
-                            self.sync_dir_log
-                                .entry(sd.id)
-                                .or_default()
-                                .push("⟳ Refresh queued — starts after the current pass finishes.".to_owned());
-                        }
+                    let queued_ids: Vec<SyncDirId> = self
+                        .sync_dirs
+                        .get(&id)
+                        .map(|dirs| dirs.iter().map(|sd| sd.id).collect())
+                        .unwrap_or_default();
+                    for sd_id in queued_ids {
+                        self.push_log_line(
+                            sd_id,
+                            "⟳ Refresh queued — starts after the current pass finishes."
+                                .to_owned(),
+                        );
                     }
                     Command::none()
                 } else {
@@ -717,18 +726,12 @@ impl Application for CelesteApp {
                     SyncEvent::SyncDirStatus {
                         sync_dir_id, text, ..
                     } => {
-                        self.sync_dir_log
-                            .entry(sync_dir_id)
-                            .or_default()
-                            .push(text);
+                        self.push_log_line(sync_dir_id, text);
                     }
                     SyncEvent::SyncDirPending {
                         sync_dir_id, text, ..
                     } => {
-                        self.sync_dir_log
-                            .entry(sync_dir_id)
-                            .or_default()
-                            .push(format!("⟳ {text}"));
+                        self.push_log_line(sync_dir_id, format!("⟳ {text}"));
                     }
                     SyncEvent::SyncDirError {
                         sync_dir_id, error, ..
@@ -739,10 +742,7 @@ impl Application for CelesteApp {
                                 format!("⚠ Conflict: '{local}' vs '{remote}'")
                             }
                         };
-                        self.sync_dir_log
-                            .entry(sync_dir_id)
-                            .or_default()
-                            .push(line);
+                        self.push_log_line(sync_dir_id, line);
                     }
                     SyncEvent::RemoteStarted { .. }
                     | SyncEvent::RemoteCompleted { .. }
@@ -838,6 +838,18 @@ impl Application for CelesteApp {
                 )
             }
 
+            Message::Remote(remote_page::Msg::LogEditorAction(sd_id, action)) => {
+                // Read-only: drop edit actions, but feed scroll / select /
+                // click / drag through so the user can still navigate the
+                // history pane.
+                if !action.is_edit()
+                    && let Some(content) = self.sync_dir_log_content.get_mut(&sd_id)
+                {
+                    content.perform(action);
+                }
+                Command::none()
+            }
+
             Message::Remote(remote_page::Msg::Reauthenticate(id, name)) => {
                 // Open the Add Remote dialog pre-filled for re-auth: name
                 // + provider are locked; the user enters fresh credentials.
@@ -928,7 +940,7 @@ impl Application for CelesteApp {
                 remote_page::view(
                     remote,
                     dirs,
-                    &self.sync_dir_log,
+                    &self.sync_dir_log_content,
                     &self.all_known_sync_dirs,
                     self.exclusion_panel,
                     &self.sync_dir_exclusions,
@@ -971,6 +983,24 @@ fn map_domain_provider_to_add_remote(
 }
 
 impl CelesteApp {
+    /// Append a line to the per-sync_dir log, drop the oldest entries
+    /// once the buffer exceeds [`remote_page::MAX_LOG_LINES`], and
+    /// rebuild the matching [`text_editor::Content`] so the read-only
+    /// editor renders the trimmed history.
+    fn push_log_line(&mut self, sync_dir_id: SyncDirId, line: String) {
+        let lines = self.sync_dir_log_lines.entry(sync_dir_id).or_default();
+        lines.push(line);
+        let drop = lines.len().saturating_sub(remote_page::MAX_LOG_LINES);
+        if drop > 0 {
+            lines.drain(..drop);
+        }
+        let joined = lines.join("\n");
+        self.sync_dir_log_content.insert(
+            sync_dir_id,
+            iced::widget::text_editor::Content::with_text(&joined),
+        );
+    }
+
     /// Spawn a sync pass for one remote. No-op if already syncing. Marks the
     /// remote as in-flight so the sidebar shows "(syncing…)" and returns
     /// a Command that will deliver `SyncFinished(id)` when the blocking

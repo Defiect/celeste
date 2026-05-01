@@ -3,7 +3,9 @@
 use std::{collections::HashMap, time::Duration};
 
 use iced::{
-    widget::{button, column, container, responsive, row, scrollable, text_input, Rule, Space},
+    widget::{
+        button, column, container, row, scrollable, text_editor, text_input, Rule, Space,
+    },
     Alignment, Element, Length,
 };
 
@@ -17,12 +19,11 @@ use crate::{
     widgets::text,
 };
 
-/// Log scrollable sizing — height grows with the card width so wider
-/// windows get a taller log pane. Clamped to keep cards usable on both
-/// narrow and very wide layouts.
-const LOG_HEIGHT_RATIO: f32 = 0.35;
-const LOG_HEIGHT_MIN: f32 = 100.0;
-const LOG_HEIGHT_MAX: f32 = 100.0;
+/// Fixed height of the per-sync-dir log editor.
+const LOG_HEIGHT: f32 = 100.0;
+/// Maximum log lines retained per sync_dir before the oldest are dropped
+/// to keep memory bounded across long-running sessions.
+pub const MAX_LOG_LINES: usize = 200;
 
 #[derive(Debug, Clone)]
 pub enum Msg {
@@ -39,12 +40,15 @@ pub enum Msg {
     AddExclusion(SyncDirId),
     RemoveExclusion(SyncDirExclusionId, SyncDirId),
     Reauthenticate(RemoteId, String),
+    /// Read-only log editor swallows edits but forwards scroll/select
+    /// actions so users can drag through history.
+    LogEditorAction(SyncDirId, text_editor::Action),
 }
 
 pub fn view<'a>(
     remote: &'a Remote,
     sync_dirs: &'a [SyncDir],
-    log: &'a HashMap<SyncDirId, Vec<String>>,
+    log: &'a HashMap<SyncDirId, text_editor::Content>,
     all_known_sync_dirs: &'a [SyncDir],
     exclusion_panel: Option<SyncDirId>,
     exclusions: &'a HashMap<SyncDirId, Vec<SyncDirExclusion>>,
@@ -160,22 +164,28 @@ pub fn view<'a>(
         .spacing(ROW_SPACING)
         .align_items(Alignment::Center);
 
-        // Log area: newest entry first so the most recent is always visible.
-        // `responsive` lets us scale the pane height with the actual rendered
-        // width, so wider cards get a taller log instead of a fixed strip.
-        let entries_opt = log.get(&sd.id);
-        let log_area = container(responsive(move |size| {
-            let height = (size.width * LOG_HEIGHT_RATIO)
-                .clamp(LOG_HEIGHT_MIN, LOG_HEIGHT_MAX);
-            let mut log_col = column![].spacing(2);
-            if let Some(entries) = entries_opt {
-                for entry in entries.iter().rev() {
-                    log_col = log_col.push(text(entry.as_str()).size(12));
-                }
-            }
-            scrollable(log_col).height(Length::Fixed(height)).into()
-        }))
-        .height(Length::Fixed(LOG_HEIGHT_MAX));
+        // Log area: read-only multi-line editor stretched to the card
+        // width with a small horizontal inset so its frame doesn't merge
+        // with the card edge. Lines are capped at MAX_LOG_LINES upstream
+        // to keep RAM bounded.
+        let sd_id_for_editor = sd.id;
+        let log_area: Element<'a, Msg> = match log.get(&sd.id) {
+            Some(content) => container(
+                text_editor(content)
+                    .height(Length::Fixed(LOG_HEIGHT))
+                    .padding(4)
+                    .on_action(move |action| {
+                        Msg::LogEditorAction(sd_id_for_editor, action)
+                    }),
+            )
+            .padding([0, 6])
+            .width(Length::Fill)
+            .into(),
+            None => container(Space::with_height(Length::Fixed(LOG_HEIGHT)))
+                .padding([0, 6])
+                .width(Length::Fill)
+                .into(),
+        };
 
         let mut card_col = column![top_row, log_area].spacing(ROW_SPACING / 2);
 
