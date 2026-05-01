@@ -809,8 +809,11 @@ where
         Ok(s) => s,
         Err(err) => {
             eprintln!("sync: list failed for {}: {err}", remote.name);
+            // The error line + Error icon already tell the user what
+            // happened; a separate "will retry" status was redundant
+            // and made the green/red mismatch jarring when the next
+            // tick succeeded but the line stuck around in the log.
             emit_error(SyncError::General(sync_dir.remote_path.clone(), err));
-            emit_status(tr::tr!("Sync failed — will retry next tick."));
             emit_state(SyncDirRunState::Error);
             return Outcome::Aborted;
         }
