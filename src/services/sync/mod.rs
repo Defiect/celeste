@@ -699,22 +699,27 @@ fn plan_one(
                     is_dir: r.is_dir,
                 }),
                 // Both sides drifted since the last recorded sync.
-                // Emitting a Conflict left the user looping on the same
-                // pair every tick with no automatic resolution — and
-                // for the workloads Celeste actually mirrors (game
-                // saves, dotfiles, notes), the local copy is the one
-                // the user just edited. Treat local as authoritative
-                // and re-upload over the remote rather than stalling.
+                // Don't stall on a Conflict — pick the side with the
+                // newer current mtime and propagate it over the other.
+                // Ties go to local on the assumption that the user is
+                // the active editor (Celeste's typical workloads —
+                // game saves, dotfiles, notes — are local-driven).
                 // Two dirs against each other still no-op since the
                 // contents land via their children.
                 (true, true) => {
                     if l.is_dir && r.is_dir {
                         None
-                    } else {
+                    } else if l.mtime_secs >= r.mod_time.unix_timestamp() {
                         Some(Action::Upload {
                             local_path: l.absolute_path.clone(),
                             remote_path: remote_path.to_owned(),
                             is_dir: l.is_dir,
+                        })
+                    } else {
+                        Some(Action::Download {
+                            local_path: l.absolute_path.clone(),
+                            remote_path: remote_path.to_owned(),
+                            is_dir: r.is_dir,
                         })
                     }
                 }

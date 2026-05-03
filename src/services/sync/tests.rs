@@ -147,12 +147,12 @@ fn remote_deleted_mirrors_locally() {
     assert!(!repo.has_item(local.to_str().unwrap(), "gone.txt"));
 }
 
-/// Both sides changed since last sync — local wins. We re-upload the
-/// local copy over the remote so users aren't stuck looping on a
-/// "Conflict" emit every tick. No `BothMoreCurrent` error is emitted.
+/// Both sides changed since last sync — newer-mtime wins. Remote is
+/// strictly newer than local here (1_700_000_700 vs 1_700_000_500), so
+/// we expect a Download. No `BothMoreCurrent` error is emitted.
 #[test]
-fn both_sides_changed_uploads_local() {
-    let tmp = TempDir::new("sync_conflict");
+fn both_sides_changed_remote_newer_downloads() {
+    let tmp = TempDir::new("sync_conflict_remote_newer");
     let local = tmp.write_file("a.txt", b"v2");
     touch_mtime(&local, 1_700_000_500);
     let repo = FakeRepo::new();
@@ -173,14 +173,59 @@ fn both_sides_changed_uploads_local() {
         !errors(&events)
             .iter()
             .any(|e| matches!(e, SyncError::BothMoreCurrent(..))),
-        "local-wins resolution should not emit BothMoreCurrent",
+        "newer-mtime resolution should not emit BothMoreCurrent",
+    );
+    let downloads = client.copy_to_local_calls.lock().unwrap();
+    assert_eq!(
+        downloads.len(),
+        1,
+        "expected exactly one download, got {downloads:?}",
+    );
+    assert!(
+        client.copy_to_remote_calls.lock().unwrap().is_empty(),
+        "should not upload when remote is newer",
+    );
+}
+
+/// Both sides changed since last sync — local mtime is strictly newer
+/// than remote so we expect an Upload. Mirrors the case the user hit
+/// after a slow-train upload: remote drifted but local was edited
+/// further still, so local should win.
+#[test]
+fn both_sides_changed_local_newer_uploads() {
+    let tmp = TempDir::new("sync_conflict_local_newer");
+    let local = tmp.write_file("a.txt", b"v2");
+    touch_mtime(&local, 1_700_000_900);
+    let repo = FakeRepo::new();
+    repo.insert_item(
+        SyncDirId(1),
+        local.to_str().unwrap(),
+        "a.txt",
+        1_700_000_000,
+        1_700_000_000,
+    );
+
+    let client = FakeRclone::default();
+    client.set_list("", Ok(vec![remote_item("a.txt", false, 1_700_000_700)]));
+
+    let (outcome, events) = run_full(&tmp, &repo, &client);
+    assert_eq!(outcome, Outcome::Synced);
+    assert!(
+        !errors(&events)
+            .iter()
+            .any(|e| matches!(e, SyncError::BothMoreCurrent(..))),
+        "newer-mtime resolution should not emit BothMoreCurrent",
     );
     let uploads = client.copy_to_remote_calls.lock().unwrap();
-    assert_eq!(uploads.len(), 1, "expected exactly one upload, got {uploads:?}");
+    assert_eq!(
+        uploads.len(),
+        1,
+        "expected exactly one upload, got {uploads:?}",
+    );
     assert_eq!(uploads[0].1, "a.txt", "uploaded the wrong remote path");
     assert!(
         client.copy_to_local_calls.lock().unwrap().is_empty(),
-        "should not download the remote copy on local-wins",
+        "should not download when local is newer",
     );
 }
 
