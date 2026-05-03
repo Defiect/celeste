@@ -698,13 +698,23 @@ fn plan_one(
                     remote_path: remote_path.to_owned(),
                     is_dir: r.is_dir,
                 }),
+                // Both sides drifted since the last recorded sync.
+                // Emitting a Conflict left the user looping on the same
+                // pair every tick with no automatic resolution — and
+                // for the workloads Celeste actually mirrors (game
+                // saves, dotfiles, notes), the local copy is the one
+                // the user just edited. Treat local as authoritative
+                // and re-upload over the remote rather than stalling.
+                // Two dirs against each other still no-op since the
+                // contents land via their children.
                 (true, true) => {
                     if l.is_dir && r.is_dir {
                         None
                     } else {
-                        Some(Action::Conflict {
+                        Some(Action::Upload {
                             local_path: l.absolute_path.clone(),
                             remote_path: remote_path.to_owned(),
+                            is_dir: l.is_dir,
                         })
                     }
                 }

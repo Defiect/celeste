@@ -147,10 +147,11 @@ fn remote_deleted_mirrors_locally() {
     assert!(!repo.has_item(local.to_str().unwrap(), "gone.txt"));
 }
 
-/// Both sides changed since last sync — emit BothMoreCurrent and
-/// refuse to auto-resolve.
+/// Both sides changed since last sync — local wins. We re-upload the
+/// local copy over the remote so users aren't stuck looping on a
+/// "Conflict" emit every tick. No `BothMoreCurrent` error is emitted.
 #[test]
-fn both_sides_changed_emits_conflict() {
+fn both_sides_changed_uploads_local() {
     let tmp = TempDir::new("sync_conflict");
     let local = tmp.write_file("a.txt", b"v2");
     touch_mtime(&local, 1_700_000_500);
@@ -169,12 +170,18 @@ fn both_sides_changed_emits_conflict() {
     let (outcome, events) = run_full(&tmp, &repo, &client);
     assert_eq!(outcome, Outcome::Synced);
     assert!(
-        errors(&events)
+        !errors(&events)
             .iter()
             .any(|e| matches!(e, SyncError::BothMoreCurrent(..))),
+        "local-wins resolution should not emit BothMoreCurrent",
     );
-    assert!(client.copy_to_remote_calls.lock().unwrap().is_empty());
-    assert!(client.copy_to_local_calls.lock().unwrap().is_empty());
+    let uploads = client.copy_to_remote_calls.lock().unwrap();
+    assert_eq!(uploads.len(), 1, "expected exactly one upload, got {uploads:?}");
+    assert_eq!(uploads[0].1, "a.txt", "uploaded the wrong remote path");
+    assert!(
+        client.copy_to_local_calls.lock().unwrap().is_empty(),
+        "should not download the remote copy on local-wins",
+    );
 }
 
 /// Upload that fails with "source gone" after planning — raced with a
