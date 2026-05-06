@@ -29,7 +29,7 @@ use time::OffsetDateTime;
 use celeste_go::proton as proton_ffi;
 
 use crate::domain::{
-    ports::BackendClient,
+    ports::{BackendClient, Cancel, is_cancelled},
     sync::{ListFilter, RemoteItem},
 };
 
@@ -56,13 +56,20 @@ impl NativeProtonClient {
     /// session root, listing each intermediate folder and matching
     /// by decrypted `Entry.name`. Returns `Ok(None)` when any
     /// segment is absent.
-    fn resolve_path(&self, path: &str) -> Result<Option<String>, String> {
+    ///
+    /// Checks `cancel` between each `list_directory` FFI call so a
+    /// deep path (many nested folders) doesn't block past a cancel
+    /// request indefinitely.
+    fn resolve_path(&self, path: &str, cancel: &Cancel) -> Result<Option<String>, String> {
         let trimmed = path.trim_matches('/');
         if trimmed.is_empty() {
             return Ok(Some(proton_ffi::root_link_id(&self.uid)?));
         }
         let mut current = proton_ffi::root_link_id(&self.uid)?;
         for segment in trimmed.split('/') {
+            if is_cancelled(cancel) {
+                return Err("cancelled".to_owned());
+            }
             let entries = proton_ffi::list_directory(&self.uid, &current)?;
             match entries.into_iter().find(|e| e.name == segment) {
                 Some(entry) => current = entry.link_id,
@@ -76,7 +83,11 @@ impl NativeProtonClient {
     /// create / upload / mkdir where we only have the full remote
     /// path. An empty path resolves to (root, "") which is invalid
     /// for those callers; surface as an error.
-    fn resolve_parent(&self, path: &str) -> Result<(String, String), String> {
+    fn resolve_parent(
+        &self,
+        path: &str,
+        cancel: &Cancel,
+    ) -> Result<(String, String), String> {
         let trimmed = path.trim_matches('/');
         if trimmed.is_empty() {
             return Err("cannot operate on root itself".to_owned());
@@ -85,7 +96,7 @@ impl NativeProtonClient {
             Some((p, b)) => (p, b),
             None => ("", trimmed),
         };
-        let parent_id = match self.resolve_path(parent_path)? {
+        let parent_id = match self.resolve_path(parent_path, cancel)? {
             Some(id) => id,
             None => return Err(format!("parent path '{parent_path}' not found")),
         };
@@ -109,8 +120,13 @@ fn entry_to_remote_item(entry: proton_ffi::Entry, path_prefix: &str) -> RemoteIt
 }
 
 impl BackendClient for NativeProtonClient {
-    fn stat(&self, _remote: &str, path: &str) -> Result<Option<RemoteItem>, String> {
-        let Some(link_id) = self.resolve_path(path)? else {
+    fn stat(
+        &self,
+        _remote: &str,
+        path: &str,
+        cancel: &Cancel,
+    ) -> Result<Option<RemoteItem>, String> {
+        let Some(link_id) = self.resolve_path(path, cancel)? else {
             return Ok(None);
         };
         let Some(entry) = proton_ffi::stat(&self.uid, &link_id)? else {
@@ -142,6 +158,7 @@ impl BackendClient for NativeProtonClient {
         path: &str,
         recursive: bool,
         filter: ListFilter,
+        cancel: &Cancel,
     ) -> Result<Vec<RemoteItem>, String> {
         fn keep(filter: ListFilter, is_dir: bool) -> bool {
             match filter {
@@ -151,7 +168,7 @@ impl BackendClient for NativeProtonClient {
             }
         }
         let trimmed = path.trim_matches('/').to_owned();
-        let Some(link_id) = self.resolve_path(&trimmed)? else {
+        let Some(link_id) = self.resolve_path(&trimmed, cancel)? else {
             return Ok(Vec::new());
         };
 
@@ -195,10 +212,10 @@ impl BackendClient for NativeProtonClient {
         Ok(out)
     }
 
-    fn mkdir(&self, _remote: &str, path: &str) -> Result<(), String> {
+    fn mkdir(&self, _remote: &str, path: &str, cancel: &Cancel) -> Result<(), String> {
         use crate::domain::backend_events::{BackendEvent, EventTranslator, Operation};
         use crate::infrastructure::translators::proton::ProtonTranslator;
-        let (parent, name) = self.resolve_parent(path)?;
+        let (parent, name) = self.resolve_parent(path, cancel)?;
         match proton_ffi::create_folder(&self.uid, &parent, &name) {
             Ok(_) => Ok(()),
             Err(e) => match ProtonTranslator.classify(Operation::Mkdir, &e) {
@@ -208,17 +225,17 @@ impl BackendClient for NativeProtonClient {
         }
     }
 
-    fn delete_file(&self, _remote: &str, path: &str) -> Result<(), String> {
-        let Some(link_id) = self.resolve_path(path)? else {
+    fn delete_file(&self, _remote: &str, path: &str, cancel: &Cancel) -> Result<(), String> {
+        let Some(link_id) = self.resolve_path(path, cancel)? else {
             return Err(format!("path '{path}' not found on remote"));
         };
         proton_ffi::trash_link(&self.uid, &link_id)
     }
 
-    fn purge(&self, _remote: &str, path: &str) -> Result<(), String> {
+    fn purge(&self, remote: &str, path: &str, cancel: &Cancel) -> Result<(), String> {
         // Proton's TrashChildren on a folder cascades server-side,
         // so `purge` and `delete_file` collapse to the same call.
-        self.delete_file(_remote, path)
+        self.delete_file(remote, path, cancel)
     }
 
     fn copy_to_remote(
@@ -226,8 +243,9 @@ impl BackendClient for NativeProtonClient {
         local_path: &str,
         _remote: &str,
         remote_path: &str,
+        cancel: &Cancel,
     ) -> Result<(), String> {
-        let (parent, name) = self.resolve_parent(remote_path)?;
+        let (parent, name) = self.resolve_parent(remote_path, cancel)?;
         proton_ffi::upload_file(&self.uid, &parent, &name, Path::new(local_path))?;
         Ok(())
     }
@@ -237,8 +255,9 @@ impl BackendClient for NativeProtonClient {
         local_path: &str,
         _remote: &str,
         remote_path: &str,
+        cancel: &Cancel,
     ) -> Result<(), String> {
-        let Some(link_id) = self.resolve_path(remote_path)? else {
+        let Some(link_id) = self.resolve_path(remote_path, cancel)? else {
             return Err(format!("path '{remote_path}' not found on remote"));
         };
         proton_ffi::download_file(&self.uid, &link_id, Path::new(local_path))
@@ -281,7 +300,12 @@ impl DisabledProtonClient {
 }
 
 impl BackendClient for DisabledProtonClient {
-    fn stat(&self, _remote: &str, _path: &str) -> Result<Option<RemoteItem>, String> {
+    fn stat(
+        &self,
+        _remote: &str,
+        _path: &str,
+        _cancel: &Cancel,
+    ) -> Result<Option<RemoteItem>, String> {
         Err(self.reason.clone())
     }
     fn list(
@@ -290,16 +314,17 @@ impl BackendClient for DisabledProtonClient {
         _path: &str,
         _recursive: bool,
         _filter: ListFilter,
+        _cancel: &Cancel,
     ) -> Result<Vec<RemoteItem>, String> {
         Err(self.reason.clone())
     }
-    fn mkdir(&self, _remote: &str, _path: &str) -> Result<(), String> {
+    fn mkdir(&self, _remote: &str, _path: &str, _cancel: &Cancel) -> Result<(), String> {
         Err(self.reason.clone())
     }
-    fn delete_file(&self, _remote: &str, _path: &str) -> Result<(), String> {
+    fn delete_file(&self, _remote: &str, _path: &str, _cancel: &Cancel) -> Result<(), String> {
         Err(self.reason.clone())
     }
-    fn purge(&self, _remote: &str, _path: &str) -> Result<(), String> {
+    fn purge(&self, _remote: &str, _path: &str, _cancel: &Cancel) -> Result<(), String> {
         Err(self.reason.clone())
     }
     fn copy_to_remote(
@@ -307,6 +332,7 @@ impl BackendClient for DisabledProtonClient {
         _local_path: &str,
         _remote: &str,
         _remote_path: &str,
+        _cancel: &Cancel,
     ) -> Result<(), String> {
         Err(self.reason.clone())
     }
@@ -315,6 +341,7 @@ impl BackendClient for DisabledProtonClient {
         _local_path: &str,
         _remote: &str,
         _remote_path: &str,
+        _cancel: &Cancel,
     ) -> Result<(), String> {
         Err(self.reason.clone())
     }

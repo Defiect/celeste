@@ -7,7 +7,14 @@
 //! object-safe (`dyn Repository`) without pulling in `async-trait` yet. This
 //! is revisited when the orchestrator actually needs `Arc<dyn Port>`s.
 
-use std::{future::Future, pin::Pin};
+use std::{
+    future::Future,
+    pin::Pin,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+};
 
 use super::{
     remote::{Remote, RemoteId, SyncPolicy},
@@ -18,6 +25,28 @@ use super::{
 };
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+/// Cancellation token for backend operations. A shared `AtomicBool` that
+/// callers flip to `true` to request cancellation; adapters check it at
+/// action boundaries and return early when set.
+///
+/// The type alias is intentionally thin so a future workstream can swap
+/// the implementation to `tokio_util::sync::CancellationToken` in one
+/// commit without touching every call site.
+pub type Cancel = Arc<AtomicBool>;
+
+/// A `Cancel` token that is never set — used when a call site has no
+/// meaningful cancellation requirement (e.g. auth / config operations).
+#[inline]
+pub fn cancel_never() -> Cancel {
+    Arc::new(AtomicBool::new(false))
+}
+
+/// Check whether `cancel` has been tripped.
+#[inline]
+pub fn is_cancelled(cancel: &Cancel) -> bool {
+    cancel.load(Ordering::Acquire)
+}
 
 #[derive(Debug)]
 pub enum RepositoryError {
@@ -158,28 +187,32 @@ pub trait Repository: Send + Sync {
 }
 
 pub trait BackendClient: Send + Sync {
-    fn stat(&self, remote: &str, path: &str) -> Result<Option<RemoteItem>, String>;
+    fn stat(&self, remote: &str, path: &str, cancel: &Cancel)
+        -> Result<Option<RemoteItem>, String>;
     fn list(
         &self,
         remote: &str,
         path: &str,
         recursive: bool,
         filter: ListFilter,
+        cancel: &Cancel,
     ) -> Result<Vec<RemoteItem>, String>;
-    fn mkdir(&self, remote: &str, path: &str) -> Result<(), String>;
-    fn delete_file(&self, remote: &str, path: &str) -> Result<(), String>;
-    fn purge(&self, remote: &str, path: &str) -> Result<(), String>;
+    fn mkdir(&self, remote: &str, path: &str, cancel: &Cancel) -> Result<(), String>;
+    fn delete_file(&self, remote: &str, path: &str, cancel: &Cancel) -> Result<(), String>;
+    fn purge(&self, remote: &str, path: &str, cancel: &Cancel) -> Result<(), String>;
     fn copy_to_remote(
         &self,
         local_path: &str,
         remote: &str,
         remote_path: &str,
+        cancel: &Cancel,
     ) -> Result<(), String>;
     fn copy_to_local(
         &self,
         local_path: &str,
         remote: &str,
         remote_path: &str,
+        cancel: &Cancel,
     ) -> Result<(), String>;
     fn delete_config(&self, remote: &str) -> Result<(), String>;
     /// Create a new rclone config from a JSON body (rclone's

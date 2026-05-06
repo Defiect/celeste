@@ -21,7 +21,7 @@ use std::{
 use time::OffsetDateTime;
 
 use crate::domain::{
-    ports::{BoxFuture, BackendClient, Repository, RepositoryError},
+    ports::{BoxFuture, BackendClient, Cancel, Repository, RepositoryError},
     remote::{Backend, Remote, RemoteId, SyncPolicy},
     sync::{
         ListFilter, RemoteItem, SyncDir, SyncDirExclusion, SyncDirExclusionId, SyncDirId,
@@ -416,7 +416,12 @@ impl FakeRclone {
 }
 
 impl BackendClient for FakeRclone {
-    fn stat(&self, _remote: &str, path: &str) -> Result<Option<RemoteItem>, String> {
+    fn stat(
+        &self,
+        _remote: &str,
+        path: &str,
+        _cancel: &Cancel,
+    ) -> Result<Option<RemoteItem>, String> {
         self.stat_calls.lock().unwrap().push(path.to_owned());
         // Sequence wins if present: pop the next response.
         if let Some(seq) = self.stat_sequence.lock().unwrap().get_mut(path)
@@ -435,6 +440,7 @@ impl BackendClient for FakeRclone {
         path: &str,
         _recursive: bool,
         _filter: ListFilter,
+        _cancel: &Cancel,
     ) -> Result<Vec<RemoteItem>, String> {
         self.list_calls.lock().unwrap().push(path.to_owned());
         match self.list_map.lock().unwrap().get(path) {
@@ -442,15 +448,15 @@ impl BackendClient for FakeRclone {
             None => Ok(vec![]),
         }
     }
-    fn mkdir(&self, _remote: &str, path: &str) -> Result<(), String> {
+    fn mkdir(&self, _remote: &str, path: &str, _cancel: &Cancel) -> Result<(), String> {
         self.mkdir_calls.lock().unwrap().push(path.to_owned());
         self.mkdir_result.lock().unwrap().clone()
     }
-    fn delete_file(&self, _remote: &str, path: &str) -> Result<(), String> {
+    fn delete_file(&self, _remote: &str, path: &str, _cancel: &Cancel) -> Result<(), String> {
         self.delete_file_calls.lock().unwrap().push(path.to_owned());
         self.delete_file_result.lock().unwrap().clone()
     }
-    fn purge(&self, _remote: &str, path: &str) -> Result<(), String> {
+    fn purge(&self, _remote: &str, path: &str, _cancel: &Cancel) -> Result<(), String> {
         self.purge_calls.lock().unwrap().push(path.to_owned());
         self.purge_result.lock().unwrap().clone()
     }
@@ -459,6 +465,7 @@ impl BackendClient for FakeRclone {
         local: &str,
         _remote: &str,
         path: &str,
+        _cancel: &Cancel,
     ) -> Result<(), String> {
         self.copy_to_remote_calls
             .lock()
@@ -471,6 +478,7 @@ impl BackendClient for FakeRclone {
         local: &str,
         _remote: &str,
         path: &str,
+        _cancel: &Cancel,
     ) -> Result<(), String> {
         self.copy_to_local_calls
             .lock()

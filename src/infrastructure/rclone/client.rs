@@ -6,7 +6,7 @@
 //! orchestrator moves onto a proper tokio runtime.
 
 use crate::domain::{
-    ports::BackendClient,
+    ports::{BackendClient, Cancel},
     sync::{ListFilter, RemoteItem},
 };
 
@@ -45,7 +45,7 @@ fn map_filter(filter: ListFilter) -> BackendListFilter {
 }
 
 impl BackendClient for LibrcloneClient {
-    fn stat(&self, remote: &str, path: &str) -> Result<Option<RemoteItem>, String> {
+    fn stat(&self, remote: &str, path: &str, _cancel: &Cancel) -> Result<Option<RemoteItem>, String> {
         rpc::sync::stat(remote, path)
             .map(|opt| opt.map(map_item))
             .map_err(|err| err.error)
@@ -57,21 +57,22 @@ impl BackendClient for LibrcloneClient {
         path: &str,
         recursive: bool,
         filter: ListFilter,
+        _cancel: &Cancel,
     ) -> Result<Vec<RemoteItem>, String> {
         rpc::sync::list(remote, path, recursive, map_filter(filter))
             .map(|items| items.into_iter().map(map_item).collect())
             .map_err(|err| err.error)
     }
 
-    fn mkdir(&self, remote: &str, path: &str) -> Result<(), String> {
+    fn mkdir(&self, remote: &str, path: &str, _cancel: &Cancel) -> Result<(), String> {
         rpc::sync::mkdir(remote, path).map_err(|err| err.error)
     }
 
-    fn delete_file(&self, remote: &str, path: &str) -> Result<(), String> {
+    fn delete_file(&self, remote: &str, path: &str, _cancel: &Cancel) -> Result<(), String> {
         rpc::sync::delete(remote, path).map_err(|err| err.error)
     }
 
-    fn purge(&self, remote: &str, path: &str) -> Result<(), String> {
+    fn purge(&self, remote: &str, path: &str, _cancel: &Cancel) -> Result<(), String> {
         rpc::sync::purge(remote, path).map_err(|err| err.error)
     }
 
@@ -80,6 +81,7 @@ impl BackendClient for LibrcloneClient {
         local_path: &str,
         remote: &str,
         remote_path: &str,
+        _cancel: &Cancel,
     ) -> Result<(), String> {
         rpc::sync::copy_to_remote(local_path, remote, remote_path).map_err(|err| err.error)
     }
@@ -89,6 +91,7 @@ impl BackendClient for LibrcloneClient {
         local_path: &str,
         remote: &str,
         remote_path: &str,
+        _cancel: &Cancel,
     ) -> Result<(), String> {
         rpc::sync::copy_to_local(local_path, remote, remote_path).map_err(|err| err.error)
     }

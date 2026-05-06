@@ -11,6 +11,7 @@ use super::*;
 use crate::{
     domain::{
         events::SyncEvent,
+        ports::cancel_never,
         sync::{SyncDirId, SyncError},
     },
     test_support::{remote, remote_item, sync_dir, touch_mtime, FakeRclone, FakeRepo, TempDir},
@@ -24,6 +25,7 @@ fn run_full(
     let r = remote(1, "TestRemote");
     let sd = sync_dir(1, 1, tmp.as_str(), "");
     let captured: Mutex<Vec<SyncEvent>> = Mutex::new(Vec::new());
+    let cancel = cancel_never();
     let outcome = run(
         &r,
         &sd,
@@ -31,7 +33,7 @@ fn run_full(
         client,
         &[],
         |e| captured.lock().unwrap().push(e),
-        || false,
+        &cancel,
         |_| false,
     );
     let events = captured.lock().unwrap().clone();
@@ -280,6 +282,8 @@ fn cancellation_between_snapshot_and_apply_stops_the_pass() {
 
     // Cancel-on-first-call: the cancel check fires true right after
     // Snapshot::build, before plan/apply.
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let cancel = std::sync::Arc::new(AtomicBool::new(true));
     let outcome = run(
         &r,
         &sd,
@@ -287,7 +291,7 @@ fn cancellation_between_snapshot_and_apply_stops_the_pass() {
         &client,
         &[],
         |e| captured.lock().unwrap().push(e),
-        || true,
+        &cancel,
         |_| false,
     );
 
@@ -326,6 +330,7 @@ fn rate_limit_probe_short_circuits_to_degraded() {
     let r = remote(1, "TestRemote");
     let sd = sync_dir(1, 1, tmp.as_str(), "");
     let captured: Mutex<Vec<SyncEvent>> = Mutex::new(Vec::new());
+    let cancel = cancel_never();
     let outcome = run(
         &r,
         &sd,
@@ -333,7 +338,7 @@ fn rate_limit_probe_short_circuits_to_degraded() {
         &client,
         &[],
         |e| captured.lock().unwrap().push(e),
-        || false,
+        &cancel,
         |_| true,
     );
 

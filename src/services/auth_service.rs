@@ -507,7 +507,12 @@ mod tests {
     }
 
     impl crate::domain::ports::BackendClient for FakeRclone {
-        fn stat(&self, _r: &str, _p: &str) -> Result<Option<RemoteItem>, String> {
+        fn stat(
+            &self,
+            _r: &str,
+            _p: &str,
+            _c: &crate::domain::ports::Cancel,
+        ) -> Result<Option<RemoteItem>, String> {
             Ok(None)
         }
         fn list(
@@ -516,22 +521,50 @@ mod tests {
             _p: &str,
             _rec: bool,
             _f: ListFilter,
+            _c: &crate::domain::ports::Cancel,
         ) -> Result<Vec<RemoteItem>, String> {
             Ok(vec![])
         }
-        fn mkdir(&self, _r: &str, _p: &str) -> Result<(), String> {
+        fn mkdir(
+            &self,
+            _r: &str,
+            _p: &str,
+            _c: &crate::domain::ports::Cancel,
+        ) -> Result<(), String> {
             Ok(())
         }
-        fn delete_file(&self, _r: &str, _p: &str) -> Result<(), String> {
+        fn delete_file(
+            &self,
+            _r: &str,
+            _p: &str,
+            _c: &crate::domain::ports::Cancel,
+        ) -> Result<(), String> {
             Ok(())
         }
-        fn purge(&self, _r: &str, _p: &str) -> Result<(), String> {
+        fn purge(
+            &self,
+            _r: &str,
+            _p: &str,
+            _c: &crate::domain::ports::Cancel,
+        ) -> Result<(), String> {
             Ok(())
         }
-        fn copy_to_remote(&self, _l: &str, _r: &str, _rp: &str) -> Result<(), String> {
+        fn copy_to_remote(
+            &self,
+            _l: &str,
+            _r: &str,
+            _rp: &str,
+            _c: &crate::domain::ports::Cancel,
+        ) -> Result<(), String> {
             Ok(())
         }
-        fn copy_to_local(&self, _l: &str, _r: &str, _rp: &str) -> Result<(), String> {
+        fn copy_to_local(
+            &self,
+            _l: &str,
+            _r: &str,
+            _rp: &str,
+            _c: &crate::domain::ports::Cancel,
+        ) -> Result<(), String> {
             Ok(())
         }
         fn delete_config(&self, _r: &str) -> Result<(), String> {

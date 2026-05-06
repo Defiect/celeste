@@ -620,7 +620,11 @@ impl Application for CelesteApp {
                         let remote_for_mk = remote_norm.clone();
                         let _ = tokio::task::spawn_blocking(move || {
                             let _ = std::fs::create_dir_all(&local_for_mk);
-                            let _ = rclone.mkdir(&remote_name, &remote_for_mk);
+                            let _ = rclone.mkdir(
+                                &remote_name,
+                                &remote_for_mk,
+                                &crate::domain::ports::cancel_never(),
+                            );
                         })
                         .await;
 
@@ -1146,10 +1150,6 @@ impl CelesteApp {
                             let _ = tx.blocking_send(event);
                         }
                     };
-                    let is_cancelled = {
-                        let f = flag.clone();
-                        move || f.load(Ordering::Acquire)
-                    };
                     // The stderr probe: only rclone-transport backends
                     // emit rate-limit warnings to stderr. Native Proton
                     // reports throttling via its own error paths. For
@@ -1175,7 +1175,7 @@ impl CelesteApp {
                     let mut any_error = false;
                     let mut any_synced = false;
                     for sd in sync_dirs {
-                        if is_cancelled() {
+                        if flag.load(Ordering::Acquire) {
                             break;
                         }
                         match crate::services::sync::run(
@@ -1185,7 +1185,7 @@ impl CelesteApp {
                             &*rclone,
                             &all_sync_dirs,
                             emit.clone(),
-                            is_cancelled.clone(),
+                            &flag,
                             rate_limit_seen_since.clone(),
                         ) {
                             Outcome::Synced => any_synced = true,

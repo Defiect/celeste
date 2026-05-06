@@ -10,7 +10,7 @@ use std::{
 };
 
 use crate::domain::{
-    ports::BackendClient,
+    ports::{BackendClient, Cancel},
     sync::{ListFilter, RemoteItem},
 };
 
@@ -55,8 +55,8 @@ impl ClientRouter {
 }
 
 impl BackendClient for ClientRouter {
-    fn stat(&self, remote: &str, path: &str) -> Result<Option<RemoteItem>, String> {
-        self.pick(remote).stat(remote, path)
+    fn stat(&self, remote: &str, path: &str, cancel: &Cancel) -> Result<Option<RemoteItem>, String> {
+        self.pick(remote).stat(remote, path, cancel)
     }
     fn list(
         &self,
@@ -64,33 +64,36 @@ impl BackendClient for ClientRouter {
         path: &str,
         recursive: bool,
         filter: ListFilter,
+        cancel: &Cancel,
     ) -> Result<Vec<RemoteItem>, String> {
-        self.pick(remote).list(remote, path, recursive, filter)
+        self.pick(remote).list(remote, path, recursive, filter, cancel)
     }
-    fn mkdir(&self, remote: &str, path: &str) -> Result<(), String> {
-        self.pick(remote).mkdir(remote, path)
+    fn mkdir(&self, remote: &str, path: &str, cancel: &Cancel) -> Result<(), String> {
+        self.pick(remote).mkdir(remote, path, cancel)
     }
-    fn delete_file(&self, remote: &str, path: &str) -> Result<(), String> {
-        self.pick(remote).delete_file(remote, path)
+    fn delete_file(&self, remote: &str, path: &str, cancel: &Cancel) -> Result<(), String> {
+        self.pick(remote).delete_file(remote, path, cancel)
     }
-    fn purge(&self, remote: &str, path: &str) -> Result<(), String> {
-        self.pick(remote).purge(remote, path)
+    fn purge(&self, remote: &str, path: &str, cancel: &Cancel) -> Result<(), String> {
+        self.pick(remote).purge(remote, path, cancel)
     }
     fn copy_to_remote(
         &self,
         local_path: &str,
         remote: &str,
         remote_path: &str,
+        cancel: &Cancel,
     ) -> Result<(), String> {
-        self.pick(remote).copy_to_remote(local_path, remote, remote_path)
+        self.pick(remote).copy_to_remote(local_path, remote, remote_path, cancel)
     }
     fn copy_to_local(
         &self,
         local_path: &str,
         remote: &str,
         remote_path: &str,
+        cancel: &Cancel,
     ) -> Result<(), String> {
-        self.pick(remote).copy_to_local(local_path, remote, remote_path)
+        self.pick(remote).copy_to_local(local_path, remote, remote_path, cancel)
     }
     fn delete_config(&self, remote: &str) -> Result<(), String> {
         self.pick(remote).delete_config(remote)

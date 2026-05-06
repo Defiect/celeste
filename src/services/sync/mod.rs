@@ -27,7 +27,7 @@ use std::{
 use crate::{
     domain::{
         events::SyncEvent,
-        ports::{BackendClient, Repository},
+        ports::{BackendClient, Cancel, Repository, is_cancelled as cancel_check},
         remote::Remote,
         run_state::{RunState, SyncActivity},
         sync::{ListFilter, RemoteItem, SyncDir, SyncError, SyncItem},
@@ -80,6 +80,7 @@ impl Snapshot {
         repo: &dyn Repository,
         client: &dyn BackendClient,
         all_sync_dirs: &[SyncDir],
+        cancel: &Cancel,
     ) -> Result<Self, String> {
         // Auto-exclusion is keyed off remote-tree descendancy only: when
         // another sync_dir on the same provider sits inside this one's
@@ -146,6 +147,7 @@ impl Snapshot {
             &sync_dir.remote_path,
             true,
             ListFilter::All,
+            cancel,
         ) {
             Ok(items) => items,
             Err(err) if is_directory_missing_error(&err) => {
@@ -154,7 +156,7 @@ impl Snapshot {
                     sync_dir.remote_path, remote.name,
                 );
                 if !sync_dir.remote_path.is_empty() {
-                    let _ = client.mkdir(&remote.name, &sync_dir.remote_path);
+                    let _ = client.mkdir(&remote.name, &sync_dir.remote_path, cancel);
                 }
                 Vec::new()
             }
@@ -754,21 +756,21 @@ fn db_local_path(remote_path: &str, sync_dir: &SyncDir) -> String {
 /// bail out promptly when the user disables the remote or shuts down
 /// the app — in-flight rclone calls still run to completion (we can't
 /// interrupt `copy_to_remote` cleanly), but nothing new fires.
-pub fn run<FE, FC, FD>(
+pub fn run<FE, FD>(
     remote: &Remote,
     sync_dir: &SyncDir,
     repo: &dyn Repository,
     client: &dyn BackendClient,
     all_sync_dirs: &[SyncDir],
     emit: FE,
-    is_cancelled: FC,
+    cancel: &Cancel,
     rate_limit_seen_since: FD,
 ) -> Outcome
 where
     FE: Fn(SyncEvent) + Clone,
-    FC: Fn() -> bool + Clone,
     FD: Fn(Instant) -> bool + Clone,
 {
+    let is_cancelled = || cancel_check(cancel);
     let pass_start = Instant::now();
     let emit_pending = |text: String| {
         emit(SyncEvent::SyncDirPending {
@@ -800,7 +802,7 @@ where
     };
 
     emit_state(RunState::Syncing(SyncActivity::Listing));
-    let snapshot_result = Snapshot::build(remote, sync_dir, repo, client, all_sync_dirs);
+    let snapshot_result = Snapshot::build(remote, sync_dir, repo, client, all_sync_dirs, cancel);
 
     // Classify rate-limit *before* we commit to a success/failure path:
     // list failures caused by quota exhaustion still need to route
@@ -860,7 +862,7 @@ where
         repo,
         client,
         &emit,
-        &is_cancelled,
+        cancel,
     );
 
     if is_cancelled() {
@@ -886,7 +888,7 @@ where
     Outcome::Synced
 }
 
-fn apply<FE, FC>(
+fn apply<FE>(
     actions: Vec<Action>,
     snapshot: &Snapshot,
     remote: &Remote,
@@ -894,11 +896,11 @@ fn apply<FE, FC>(
     repo: &dyn Repository,
     client: &dyn BackendClient,
     emit: &FE,
-    is_cancelled: &FC,
+    cancel: &Cancel,
 ) where
     FE: Fn(SyncEvent) + Clone,
-    FC: Fn() -> bool + Clone,
 {
+    let is_cancelled = || cancel_check(cancel);
     let total = actions.len();
     let emit_status = |text: String| {
         emit(SyncEvent::SyncDirStatus {
@@ -950,7 +952,7 @@ fn apply<FE, FC>(
                     continue;
                 }
                 if is_dir {
-                    if let Err(err) = client.mkdir(&remote.name, &remote_path) {
+                    if let Err(err) = client.mkdir(&remote.name, &remote_path, cancel) {
                         emit_error(SyncError::General(remote_path.clone(), err));
                         continue;
                     }
@@ -962,7 +964,7 @@ fn apply<FE, FC>(
                         util::fmt_home(&local_path)
                     ));
                     if let Err(err) =
-                        client.copy_to_remote(&local_path, &remote.name, &remote_path)
+                        client.copy_to_remote(&local_path, &remote.name, &remote_path, cancel)
                     {
                         if !Path::new(&local_path).exists() {
                             eprintln!(
@@ -974,7 +976,7 @@ fn apply<FE, FC>(
                         continue;
                     }
                 }
-                record_upsert(repo, sync_dir, &local_path, &remote_path, client, &remote.name);
+                record_upsert(repo, sync_dir, &local_path, &remote_path, client, &remote.name, cancel);
             }
             Action::Download {
                 local_path,
@@ -999,13 +1001,13 @@ fn apply<FE, FC>(
                         util::fmt_home(&local_path)
                     ));
                     if let Err(err) =
-                        client.copy_to_local(&local_path, &remote.name, &remote_path)
+                        client.copy_to_local(&local_path, &remote.name, &remote_path, cancel)
                     {
                         emit_error(SyncError::General(remote_path.clone(), err));
                         continue;
                     }
                 }
-                record_upsert(repo, sync_dir, &local_path, &remote_path, client, &remote.name);
+                record_upsert(repo, sync_dir, &local_path, &remote_path, client, &remote.name, cancel);
             }
             Action::DeleteLocal {
                 local_path,
@@ -1053,9 +1055,9 @@ fn apply<FE, FC>(
                     remote_path
                 ));
                 let res = if is_dir {
-                    client.purge(&remote.name, &remote_path)
+                    client.purge(&remote.name, &remote_path, cancel)
                 } else {
-                    client.delete_file(&remote.name, &remote_path)
+                    client.delete_file(&remote.name, &remote_path, cancel)
                 };
                 if let Err(err) = res {
                     emit_error(SyncError::General(remote_path.clone(), err));
@@ -1095,11 +1097,12 @@ fn record_upsert(
     remote_path: &str,
     client: &dyn BackendClient,
     remote_name: &str,
+    cancel: &Cancel,
 ) {
     let Some(local_ts) = local_timestamp(Path::new(local_path)) else {
         return;
     };
-    let Some(rstat) = client.stat(remote_name, remote_path).ok().flatten() else {
+    let Some(rstat) = client.stat(remote_name, remote_path, cancel).ok().flatten() else {
         return;
     };
     let remote_ts = rstat.mod_time.unix_timestamp();
