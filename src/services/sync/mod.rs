@@ -5,7 +5,7 @@
 //! Flow:
 //!
 //! 1. [`Snapshot::build`] fetches the authoritative remote listing
-//!    ([`RcloneClient::list`] recursive), walks the local tree, and loads
+//!    ([`BackendClient::list`] recursive), walks the local tree, and loads
 //!    the DB rows. Bails out on list errors; rate-limit handling lives in
 //!    [`run`]'s stderr-tap check around the build call.
 //!
@@ -27,7 +27,7 @@ use std::{
 use crate::{
     domain::{
         events::{SyncDirRunState, SyncEvent},
-        ports::{RcloneClient, Repository},
+        ports::{BackendClient, Repository},
         remote::Remote,
         sync::{ListFilter, RemoteItem, SyncDir, SyncError, SyncItem},
     },
@@ -77,7 +77,7 @@ impl Snapshot {
         remote: &Remote,
         sync_dir: &SyncDir,
         repo: &dyn Repository,
-        client: &dyn RcloneClient,
+        client: &dyn BackendClient,
         all_sync_dirs: &[SyncDir],
     ) -> Result<Self, String> {
         // Auto-exclusion is keyed off remote-tree descendancy only: when
@@ -757,7 +757,7 @@ pub fn run<FE, FC, FD>(
     remote: &Remote,
     sync_dir: &SyncDir,
     repo: &dyn Repository,
-    client: &dyn RcloneClient,
+    client: &dyn BackendClient,
     all_sync_dirs: &[SyncDir],
     emit: FE,
     is_cancelled: FC,
@@ -891,7 +891,7 @@ fn apply<FE, FC>(
     remote: &Remote,
     sync_dir: &SyncDir,
     repo: &dyn Repository,
-    client: &dyn RcloneClient,
+    client: &dyn BackendClient,
     emit: &FE,
     is_cancelled: &FC,
 ) where
@@ -1092,7 +1092,7 @@ fn record_upsert(
     sync_dir: &SyncDir,
     local_path: &str,
     remote_path: &str,
-    client: &dyn RcloneClient,
+    client: &dyn BackendClient,
     remote_name: &str,
 ) {
     let Some(local_ts) = local_timestamp(Path::new(local_path)) else {

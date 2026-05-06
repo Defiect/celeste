@@ -3,7 +3,7 @@
 //! - [`TempDir`]: RAII-managed scratch directory under the system temp.
 //! - [`FakeRepo`]: in-memory Repository honouring the real CRUD semantics
 //!   on sync_items.
-//! - [`FakeRclone`]: RcloneClient where every op's outcome is configurable
+//! - [`FakeRclone`]: BackendClient where every op's outcome is configurable
 //!   per-path — the only way to exercise interruption scenarios
 //!   (network error, stat cache race) against the sync algorithm without
 //!   actually talking to rclone.
@@ -21,7 +21,7 @@ use std::{
 use time::OffsetDateTime;
 
 use crate::domain::{
-    ports::{BoxFuture, RcloneClient, Repository, RepositoryError},
+    ports::{BoxFuture, BackendClient, Repository, RepositoryError},
     remote::{Backend, Remote, RemoteId, SyncPolicy},
     sync::{
         ListFilter, RemoteItem, SyncDir, SyncDirExclusion, SyncDirExclusionId, SyncDirId,
@@ -336,7 +336,7 @@ impl Repository for FakeRepo {
     }
 }
 
-/// Programmable [`RcloneClient`]. Every op returns whatever the test sets
+/// Programmable [`BackendClient`]. Every op returns whatever the test sets
 /// for the matching path (or a catch-all default). Call counts are
 /// tracked for regression-style assertions.
 pub struct FakeRclone {
@@ -415,7 +415,7 @@ impl FakeRclone {
     }
 }
 
-impl RcloneClient for FakeRclone {
+impl BackendClient for FakeRclone {
     fn stat(&self, _remote: &str, path: &str) -> Result<Option<RemoteItem>, String> {
         self.stat_calls.lock().unwrap().push(path.to_owned());
         // Sequence wins if present: pop the next response.

@@ -1,9 +1,9 @@
 //! Remove-a-remote / remove-a-sync-dir workflows. UI removal is the caller's
 //! problem; these functions handle the DB cascade and rclone-side cleanup
-//! via the Repository and RcloneClient ports.
+//! via the Repository and BackendClient ports.
 
 use crate::{
-    domain::ports::{RcloneClient, Repository},
+    domain::ports::{BackendClient, Repository},
     util,
 };
 
@@ -23,7 +23,7 @@ pub fn delete_sync_dir(
 pub fn delete_remote(
     remote_name: &str,
     repo: &dyn Repository,
-    client: &dyn RcloneClient,
+    client: &dyn BackendClient,
 ) -> Result<(), String> {
     let remote = util::await_future(repo.find_remote_by_name(remote_name))
         .map_err(|e| e.to_string())?

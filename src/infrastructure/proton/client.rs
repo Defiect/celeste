@@ -1,6 +1,6 @@
-//! [`RcloneClient`] implementation that talks directly to Proton via
+//! [`BackendClient`] implementation that talks directly to Proton via
 //! the native Go archive. The sync engine sees this behind
-//! `&dyn RcloneClient` and doesn't know anything has changed; all
+//! `&dyn BackendClient` and doesn't know anything has changed; all
 //! it ever passes are string paths, which this client translates to
 //! ProtonDrive link IDs by walking the tree from the session's root.
 //!
@@ -32,7 +32,7 @@ use time::OffsetDateTime;
 use librclone::proton as proton_ffi;
 
 use crate::domain::{
-    ports::RcloneClient,
+    ports::BackendClient,
     sync::{ListFilter, RemoteItem},
 };
 
@@ -111,7 +111,7 @@ fn entry_to_remote_item(entry: proton_ffi::Entry, path_prefix: &str) -> RemoteIt
     }
 }
 
-impl RcloneClient for NativeProtonClient {
+impl BackendClient for NativeProtonClient {
     fn stat(&self, _remote: &str, path: &str) -> Result<Option<RemoteItem>, String> {
         let Some(link_id) = self.resolve_path(path)? else {
             return Ok(None);
@@ -269,7 +269,7 @@ impl RcloneClient for NativeProtonClient {
 /// "didn't find section in config file" because native-proton remotes
 /// never get written to rclone's config).
 ///
-/// Every [`RcloneClient`] method returns the same owned reason so the
+/// Every [`BackendClient`] method returns the same owned reason so the
 /// UI can surface it verbatim in the sync_dir log.
 #[derive(Clone, Debug)]
 pub struct DisabledProtonClient {
@@ -282,7 +282,7 @@ impl DisabledProtonClient {
     }
 }
 
-impl RcloneClient for DisabledProtonClient {
+impl BackendClient for DisabledProtonClient {
     fn stat(&self, _remote: &str, _path: &str) -> Result<Option<RemoteItem>, String> {
         Err(self.reason.clone())
     }

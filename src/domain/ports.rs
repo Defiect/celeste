@@ -157,7 +157,7 @@ pub trait Repository: Send + Sync {
     ) -> BoxFuture<'_, Result<(), RepositoryError>>;
 }
 
-pub trait RcloneClient: Send + Sync {
+pub trait BackendClient: Send + Sync {
     fn stat(&self, remote: &str, path: &str) -> Result<Option<RemoteItem>, String>;
     fn list(
         &self,

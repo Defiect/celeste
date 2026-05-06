@@ -187,21 +187,21 @@ pub struct RcloneError {
 
 /// The output of an `operations/stat` command.
 #[derive(Clone, Deserialize, Debug)]
-pub struct RcloneStat {
-    item: Option<RcloneRemoteItem>,
+pub struct BackendStat {
+    item: Option<BackendRemoteItem>,
 }
 
 /// The output of an `operations/list` command.
 #[derive(Clone, Deserialize, Debug)]
-pub struct RcloneList {
+pub struct BackendList {
     #[serde(rename = "list")]
-    list: Vec<RcloneRemoteItem>,
+    list: Vec<BackendRemoteItem>,
 }
 
 /// The list of items in a folder, from the `list` object in the output of the
 /// `operations/list` command.
 #[derive(Clone, Deserialize, Debug)]
-pub struct RcloneRemoteItem {
+pub struct BackendRemoteItem {
     #[serde(rename = "IsDir")]
     pub is_dir: bool,
     #[serde(rename = "Path")]
@@ -214,7 +214,7 @@ pub struct RcloneRemoteItem {
 
 /// The types of items to show in an `operations/list` command.
 #[derive(Clone, Debug)]
-pub enum RcloneListFilter {
+pub enum BackendListFilter {
     /// Return all items.
     All,
     /// Only return directories.
@@ -227,7 +227,7 @@ pub enum RcloneListFilter {
 /// Functions for syncing to a remote. Each call is a blocking librclone
 /// RPC — the caller is expected to be on a blocking tokio task.
 pub mod sync {
-    use super::{RcloneError, RcloneList, RcloneListFilter, RcloneRemoteItem, RcloneStat};
+    use super::{RcloneError, BackendList, BackendListFilter, BackendRemoteItem, BackendStat};
     use crate::util;
     use serde_json::json;
 
@@ -271,7 +271,7 @@ pub mod sync {
     }
 
     /// Get statistics about a file or folder.
-    pub fn stat(remote_name: &str, path: &str) -> Result<Option<RcloneRemoteItem>, RcloneError> {
+    pub fn stat(remote_name: &str, path: &str) -> Result<Option<BackendRemoteItem>, RcloneError> {
         let resp = run(
             "operations/stat",
             &json!({
@@ -282,7 +282,7 @@ pub mod sync {
         );
 
         match resp {
-            Ok(json_str) => Ok(serde_json::from_str::<RcloneStat>(&json_str).unwrap().item),
+            Ok(json_str) => Ok(serde_json::from_str::<BackendStat>(&json_str).unwrap().item),
             Err(json_str) => Err(serde_json::from_str(&json_str).unwrap()),
         }
     }
@@ -292,12 +292,12 @@ pub mod sync {
         remote_name: &str,
         path: &str,
         recursive: bool,
-        filter: RcloneListFilter,
-    ) -> Result<Vec<RcloneRemoteItem>, RcloneError> {
+        filter: BackendListFilter,
+    ) -> Result<Vec<BackendRemoteItem>, RcloneError> {
         let opts = match filter {
-            RcloneListFilter::All => json!({ "recurse": recursive }),
-            RcloneListFilter::Dirs => json!({"dirsOnly": true, "recurse": recursive}),
-            RcloneListFilter::Files => json!({"filesOnly": true, "recurse": recursive}),
+            BackendListFilter::All => json!({ "recurse": recursive }),
+            BackendListFilter::Dirs => json!({"dirsOnly": true, "recurse": recursive}),
+            BackendListFilter::Files => json!({"filesOnly": true, "recurse": recursive}),
         };
 
         let resp = run(
@@ -311,7 +311,7 @@ pub mod sync {
         );
 
         match resp {
-            Ok(json_str) => Ok(serde_json::from_str::<RcloneList>(&json_str).unwrap().list),
+            Ok(json_str) => Ok(serde_json::from_str::<BackendList>(&json_str).unwrap().list),
             Err(json_str) => Err(serde_json::from_str(&json_str).unwrap()),
         }
     }

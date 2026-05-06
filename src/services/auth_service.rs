@@ -14,7 +14,7 @@ use serde_json::json;
 
 use crate::{
     domain::{
-        ports::{RcloneClient, Repository},
+        ports::{BackendClient, Repository},
         remote::{ProviderKind, RemoteId, SyncPolicy},
     },
     infrastructure::{client_router::ClientRouter, proton::client::NativeProtonClient},
@@ -49,7 +49,7 @@ pub fn add_webdav_remote(
     pass: &str,
     vendor: WebDavVendor,
     repo: &dyn Repository,
-    client: &dyn RcloneClient,
+    client: &dyn BackendClient,
 ) -> Result<RemoteId, String> {
     // For Nextcloud/Owncloud the GTK flow reformats the URL to include
     // `/remote.php/dav/files/<user>`; mirror that here so configs the
@@ -206,7 +206,7 @@ pub fn add_oauth_remote(
     client_id: Option<&str>,
     client_secret: Option<&str>,
     repo: &dyn Repository,
-    client: &dyn RcloneClient,
+    client: &dyn BackendClient,
 ) -> Result<RemoteId, String> {
     let token = run_rclone_authorize(provider, client_id, client_secret)?;
 
@@ -238,7 +238,7 @@ pub fn reauth_oauth_remote(
     provider: OAuthProvider,
     client_id: Option<&str>,
     client_secret: Option<&str>,
-    client: &dyn RcloneClient,
+    client: &dyn BackendClient,
 ) -> Result<(), String> {
     let token = run_rclone_authorize(provider, client_id, client_secret)?;
 
@@ -506,7 +506,7 @@ mod tests {
         created: Mutex<Vec<String>>,
     }
 
-    impl crate::domain::ports::RcloneClient for FakeRclone {
+    impl crate::domain::ports::BackendClient for FakeRclone {
         fn stat(&self, _r: &str, _p: &str) -> Result<Option<RemoteItem>, String> {
             Ok(None)
         }

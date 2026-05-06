@@ -1,8 +1,8 @@
-//! Router that dispatches [`RcloneClient`] calls to the appropriate
+//! Router that dispatches [`BackendClient`] calls to the appropriate
 //! adapter per-remote. Holds a default (rclone-backed) client plus a
 //! name-keyed override map that points native-backend remotes at a
 //! `NativeProtonClient`. Sync code keeps talking to
-//! `Arc<dyn RcloneClient>` — the router is transparent.
+//! `Arc<dyn BackendClient>` — the router is transparent.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -10,17 +10,18 @@ use std::{
 };
 
 use crate::domain::{
-    ports::RcloneClient,
+    ports::BackendClient,
     sync::{ListFilter, RemoteItem},
 };
 
 pub struct ClientRouter {
-    default: Arc<dyn RcloneClient>,
-    overrides: RwLock<HashMap<String, Arc<dyn RcloneClient>>>,
+    default: Arc<dyn BackendClient>,
+    overrides: RwLock<HashMap<String, Arc<dyn BackendClient>>>,
     /// Subset of overrides that are placeholder adapters for native
     /// remotes which failed to resume at startup (session expired,
     /// blob missing, etc.). The UI reads this to decide whether to
     /// surface a "Re-authenticate" banner on the remote page.
+    /// Removed in W3 once AppState owns auth-failed tracking.
     disabled_native: RwLock<HashSet<String>>,
 }
 
@@ -28,7 +29,7 @@ impl ClientRouter {
     /// Create a router whose fallback is `default`. No overrides
     /// registered initially — call [`register`] for each native
     /// remote at startup.
-    pub fn new(default: Arc<dyn RcloneClient>) -> Self {
+    pub fn new(default: Arc<dyn BackendClient>) -> Self {
         Self {
             default,
             overrides: RwLock::new(HashMap::new()),
@@ -40,7 +41,7 @@ impl ClientRouter {
     /// `remote` name route to `client` instead of the default.
     /// Replaces any existing override for the same name and clears
     /// any "disabled" marker (e.g. after a successful re-auth).
-    pub fn register(&self, remote: String, client: Arc<dyn RcloneClient>) {
+    pub fn register(&self, remote: String, client: Arc<dyn BackendClient>) {
         self.disabled_native.write().unwrap().remove(&remote);
         self.overrides.write().unwrap().insert(remote, client);
     }
@@ -53,7 +54,7 @@ impl ClientRouter {
     pub fn register_disabled_native(
         &self,
         remote: String,
-        client: Arc<dyn RcloneClient>,
+        client: Arc<dyn BackendClient>,
     ) {
         self.overrides
             .write()
@@ -79,7 +80,7 @@ impl ClientRouter {
     /// Resolve which client should handle `remote`. Cheap read-lock
     /// hot path; the override map only mutates at app startup +
     /// add/remove remote.
-    fn pick(&self, remote: &str) -> Arc<dyn RcloneClient> {
+    fn pick(&self, remote: &str) -> Arc<dyn BackendClient> {
         if let Some(client) = self.overrides.read().unwrap().get(remote) {
             return client.clone();
         }
@@ -87,7 +88,7 @@ impl ClientRouter {
     }
 }
 
-impl RcloneClient for ClientRouter {
+impl BackendClient for ClientRouter {
     fn stat(&self, remote: &str, path: &str) -> Result<Option<RemoteItem>, String> {
         self.pick(remote).stat(remote, path)
     }

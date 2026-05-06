@@ -90,7 +90,7 @@ pub struct Remote {
     pub id: RemoteId,
     pub name: String,
     pub policy: SyncPolicy,
-    /// Filled in after load by the app layer via `RcloneClient::remote_type`.
+    /// Filled in after load by the app layer via `BackendClient::remote_type`.
     /// Drives provider-specific UI hints (interval warnings, defaults).
     pub provider_kind: Option<ProviderKind>,
     /// Which adapter owns this remote at runtime. New rows default

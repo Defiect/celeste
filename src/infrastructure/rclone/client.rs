@@ -1,15 +1,16 @@
-//! Adapter implementation of [`crate::domain::ports::RcloneClient`].
+//! Adapter implementation of [`crate::domain::ports::BackendClient`] for
+//! the rclone backend (via the librclone RPC surface).
 //!
 //! Thin wrapper around [`super::rpc::sync`] — blocking calls underneath,
 //! since that's what librclone exposes. Async-ifying is deferred until the
 //! orchestrator moves onto a proper tokio runtime.
 
 use crate::domain::{
-    ports::RcloneClient,
+    ports::BackendClient,
     sync::{ListFilter, RemoteItem},
 };
 
-use super::rpc::{self, RcloneListFilter, RcloneRemoteItem};
+use super::rpc::{self, BackendListFilter, BackendRemoteItem};
 
 #[derive(Clone, Copy)]
 pub struct LibrcloneClient;
@@ -26,7 +27,7 @@ impl Default for LibrcloneClient {
     }
 }
 
-fn map_item(item: RcloneRemoteItem) -> RemoteItem {
+fn map_item(item: BackendRemoteItem) -> RemoteItem {
     RemoteItem {
         is_dir: item.is_dir,
         path: item.path,
@@ -35,15 +36,15 @@ fn map_item(item: RcloneRemoteItem) -> RemoteItem {
     }
 }
 
-fn map_filter(filter: ListFilter) -> RcloneListFilter {
+fn map_filter(filter: ListFilter) -> BackendListFilter {
     match filter {
-        ListFilter::All => RcloneListFilter::All,
-        ListFilter::Dirs => RcloneListFilter::Dirs,
-        ListFilter::Files => RcloneListFilter::Files,
+        ListFilter::All => BackendListFilter::All,
+        ListFilter::Dirs => BackendListFilter::Dirs,
+        ListFilter::Files => BackendListFilter::Files,
     }
 }
 
-impl RcloneClient for LibrcloneClient {
+impl BackendClient for LibrcloneClient {
     fn stat(&self, remote: &str, path: &str) -> Result<Option<RemoteItem>, String> {
         rpc::sync::stat(remote, path)
             .map(|opt| opt.map(map_item))

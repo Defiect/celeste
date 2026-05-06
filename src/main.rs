@@ -17,7 +17,7 @@ use serde_json::json;
 use crate::{
     app::run as iced_run,
     domain::{
-        ports::{RcloneClient, Repository},
+        ports::{BackendClient, Repository},
         remote::Backend,
     },
     infrastructure::{
@@ -80,7 +80,7 @@ fn main() {
     // existing rclone-backed remotes keep working unchanged. Each
     // native-backend remote resumes its saved session up front so
     // the UID is registered before the first sync tick fires.
-    let default_client: Arc<dyn RcloneClient> = Arc::new(LibrcloneClient::new());
+    let default_client: Arc<dyn BackendClient> = Arc::new(LibrcloneClient::new());
     let router = Arc::new(ClientRouter::new(default_client));
     resume_native_sessions(&*repo, &router);
     iced_run(repo, router, config_dir).expect("iced app exited with error");

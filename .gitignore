@@ -3,15 +3,15 @@
 /target
 /src/style.css
 
-# native-go: the `go build -buildmode=c-archive` output. Emitted by
-# native-go/build.rs at OUT_DIR, and occasionally produced at the
+# src/go: the `go build -buildmode=c-archive` output. Emitted by
+# src/go/build.rs at OUT_DIR, and occasionally produced at the
 # crate root when running `go build` ad-hoc.
-/native-go/libceleste_native.a
-/native-go/libceleste_native.h
+/src/go/libceleste_go.a
+/src/go/libceleste_go.h
 
 # Cargo's per-crate artefacts when the sys crate is built standalone
-# (e.g. `cargo run --manifest-path native-go/Cargo.toml --example …`).
+# (e.g. `cargo run --manifest-path src/go/Cargo.toml --example …`).
 # The authoritative Cargo.lock lives at the repo root alongside the
 # main Celeste crate.
-/native-go/target
-/native-go/Cargo.lock
+/src/go/target
+/src/go/Cargo.lock

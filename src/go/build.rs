@@ -1,6 +1,6 @@
 use std::{env, path::PathBuf, process::Command};
 
-/// Build `libceleste_native.a` + `libceleste_native.h` from the Go code
+/// Build `libceleste_go.a` + `libceleste_go.h` from the Go code
 /// in this crate's directory, then feed the header through bindgen to
 /// produce Rust FFI declarations. Mirrors librclone-sys's pattern, with
 /// the addition of our `ProtonDrive_*` surface and the drop of rclone's
@@ -35,8 +35,8 @@ fn main() {
         manifest_dir.join("drive").display()
     );
 
-    let lib_path = out_dir.join("libceleste_native.a");
-    let header_path = out_dir.join("libceleste_native.h");
+    let lib_path = out_dir.join("libceleste_go.a");
+    let header_path = out_dir.join("libceleste_go.h");
 
     let status = Command::new("go")
         .current_dir(&manifest_dir)
@@ -49,23 +49,23 @@ fn main() {
 
     // Mirror the freshly-built archive into the crate's manifest dir.
     // The Nix package can't run `go build` (sandboxed, no network) so
-    // it copies `manifest_dir/libceleste_native.{a,h}` into its own
+    // it copies `manifest_dir/libceleste_go.{a,h}` into its own
     // OUT_DIR — meaning whatever sits there is what the installed
     // binary will execute. Keep it in lockstep with our source so a
     // plain `cargo build` outside Nix is enough to refresh it before
     // the next `nixos-rebuild`. The file is gitignored; this is a
     // pure on-disk handoff.
-    let manifest_lib = manifest_dir.join("libceleste_native.a");
-    let manifest_hdr = manifest_dir.join("libceleste_native.h");
+    let manifest_lib = manifest_dir.join("libceleste_go.a");
+    let manifest_hdr = manifest_dir.join("libceleste_go.h");
     std::fs::copy(&lib_path, &manifest_lib)
-        .expect("failed to mirror libceleste_native.a into manifest dir");
+        .expect("failed to mirror libceleste_go.a into manifest dir");
     std::fs::copy(&header_path, &manifest_hdr)
-        .expect("failed to mirror libceleste_native.h into manifest dir");
+        .expect("failed to mirror libceleste_go.h into manifest dir");
 
     println!("cargo:rustc-link-search=native={}", out_dir.display());
     // Rust strips the `lib` prefix and `.a` suffix before passing to the
-    // linker, so `celeste_native` resolves to `libceleste_native.a`.
-    println!("cargo:rustc-link-lib=static=celeste_native");
+    // linker, so `celeste_go` resolves to `libceleste_go.a`.
+    println!("cargo:rustc-link-lib=static=celeste_go");
 
     // librclone-sys links these frameworks on macOS; mirror for parity.
     if target_triple.ends_with("darwin") {

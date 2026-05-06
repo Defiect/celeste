@@ -49,7 +49,7 @@ pub enum SyncStatus {
 }
 
 /// A single entry on a remote filesystem, as returned by
-/// [`crate::domain::ports::RcloneClient`] listing / stat calls.
+/// [`crate::domain::ports::BackendClient`] listing / stat calls.
 #[derive(Clone, Debug)]
 pub struct RemoteItem {
     pub is_dir: bool,

@@ -19,7 +19,7 @@ use std::path::PathBuf;
 use crate::{
     domain::{
         events::{SyncDirRunState, SyncEvent},
-        ports::{RcloneClient, Repository},
+        ports::{BackendClient, Repository},
         remote::{ProviderKind, Remote, RemoteId},
         sync::{SyncDir, SyncDirExclusion, SyncDirId, SyncError},
     },
@@ -76,11 +76,11 @@ pub enum PassVerdict {
 
 pub struct CelesteApp {
     repo: Arc<dyn Repository>,
-    /// Client router — dispatches RcloneClient calls per-remote.
-    /// `Arc<ClientRouter>` rather than `Arc<dyn RcloneClient>` so the
+    /// Client router — dispatches BackendClient calls per-remote.
+    /// `Arc<ClientRouter>` rather than `Arc<dyn BackendClient>` so the
     /// add-/delete-remote paths can register / unregister native
     /// sessions on it; sync code downcasts on the fly (ClientRouter
-    /// implements RcloneClient).
+    /// implements BackendClient).
     rclone: Arc<ClientRouter>,
     /// User's Celeste config dir — needed so the native Proton
     /// add-remote flow knows where to put session blobs.
