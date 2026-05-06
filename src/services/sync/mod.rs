@@ -26,9 +26,10 @@ use std::{
 
 use crate::{
     domain::{
-        events::{SyncDirRunState, SyncEvent},
+        events::SyncEvent,
         ports::{BackendClient, Repository},
         remote::Remote,
+        run_state::{RunState, SyncActivity},
         sync::{ListFilter, RemoteItem, SyncDir, SyncError, SyncItem},
     },
     util,
@@ -790,7 +791,7 @@ where
             text,
         });
     };
-    let emit_state = |state: SyncDirRunState| {
+    let emit_state = |state: RunState| {
         emit(SyncEvent::SyncDirStateChanged {
             remote_id: remote.id,
             sync_dir_id: sync_dir.id,
@@ -798,7 +799,7 @@ where
         });
     };
 
-    emit_state(SyncDirRunState::Syncing);
+    emit_state(RunState::Syncing(SyncActivity::Listing));
     let snapshot_result = Snapshot::build(remote, sync_dir, repo, client, all_sync_dirs);
 
     // Classify rate-limit *before* we commit to a success/failure path:
@@ -816,7 +817,7 @@ where
             tr::tr!("Rate-limit warnings detected during listing; skipping this pass for backoff."),
         ));
         emit_status(tr::tr!("Sync skipped — provider rate-limited."));
-        emit_state(SyncDirRunState::Warning);
+        emit_state(RunState::Warning);
         return Outcome::Degraded;
     }
 
@@ -829,7 +830,7 @@ where
             // and made the green/red mismatch jarring when the next
             // tick succeeded but the line stuck around in the log.
             emit_error(SyncError::General(sync_dir.remote_path.clone(), err));
-            emit_state(SyncDirRunState::Error);
+            emit_state(RunState::Error);
             return Outcome::Aborted;
         }
     };
@@ -878,10 +879,10 @@ where
         emit_status(tr::tr!(
             "Files are synced — provider rate-limited, backing off next tick."
         ));
-        emit_state(SyncDirRunState::Warning);
+        emit_state(RunState::Warning);
         return Outcome::Degraded;
     }
-    emit_state(SyncDirRunState::Synced);
+    emit_state(RunState::Synced);
     Outcome::Synced
 }
 

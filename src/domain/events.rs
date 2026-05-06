@@ -1,27 +1,11 @@
 use super::{
     remote::RemoteId,
+    run_state::RunState,
     sync::{SyncDirId, SyncError},
 };
 
-/// Coarse run-state for one sync_dir. Drives the per-card status icon
-/// on the remote page; finer per-event detail still comes through as
-/// status / pending / error text events.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SyncDirRunState {
-    /// A pass is in flight (listing or applying actions).
-    Syncing,
-    /// The most recent pass finished cleanly with no per-file errors.
-    Synced,
-    /// The most recent pass surfaced warnings — rate-limit backoff,
-    /// per-file errors, or sync conflicts.
-    Warning,
-    /// The most recent pass aborted before completing (snapshot fail,
-    /// missing auth, etc.).
-    Error,
-}
-
-/// Events the sync services emit. UI adapters (GTK today, Iced later)
-/// subscribe and translate into their native render calls.
+/// Events the sync services emit. UI adapters subscribe and translate into
+/// their native render calls.
 #[derive(Clone, Debug)]
 pub enum SyncEvent {
     /// A remote's full sync pass has begun.
@@ -59,16 +43,16 @@ pub enum SyncEvent {
         sync_dir_id: SyncDirId,
         error: SyncError,
     },
-    /// Per-sync-dir coarse run-state transition. Drives the status icon
-    /// on the remote page without forcing every consumer to string-match
-    /// status text.
+    /// Per-sync-dir coarse run-state transition. Drives the status icon on
+    /// the remote page. The `RunState` variants the sync engine emits are
+    /// `Syncing`, `Synced`, `Warning`, and `Error`; the state machine in
+    /// `AppState` fills in `Waiting`, `Paused`, and `AuthNeeded` internally.
     SyncDirStateChanged {
         remote_id: RemoteId,
         sync_dir_id: SyncDirId,
-        state: SyncDirRunState,
+        state: RunState,
     },
-    /// Per-file progress (reserved for future streaming). Kept for shape
-    /// compatibility with earlier sketches; current callers don't emit it.
+    /// Per-file progress (reserved for future streaming).
     #[allow(dead_code)]
     FileProgress {
         remote_id: RemoteId,

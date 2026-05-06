@@ -11,8 +11,8 @@ use iced::{
 
 use crate::{
     domain::{
-        events::SyncDirRunState,
         remote::{Remote, RemoteId},
+        run_state::RunState,
         sync::{SyncDir, SyncDirExclusion, SyncDirExclusionId, SyncDirId},
     },
     screens::settings,
@@ -58,7 +58,7 @@ pub fn view<'a>(
     remote: &'a Remote,
     sync_dirs: &'a [SyncDir],
     log: &'a HashMap<SyncDirId, text_editor::Content>,
-    status: &'a HashMap<SyncDirId, SyncDirRunState>,
+    status: HashMap<SyncDirId, RunState>,
     all_known_sync_dirs: &'a [SyncDir],
     exclusion_panel: Option<SyncDirId>,
     exclusions: &'a HashMap<SyncDirId, Vec<SyncDirExclusion>>,
@@ -164,11 +164,10 @@ pub fn view<'a>(
         let total_excl = auto_excl.len() + custom_excl_count;
         let excl_label = format!("Excluded ({})", total_excl);
 
-        // Re-auth requested at the remote level wins over any per-dir
-        // run-state — the engine can't make progress until the user
-        // signs in again, so surface a red error icon on every card.
+        // Re-auth needed: show AuthNeeded icon on every card so the
+        // user can see at a glance that no dir can progress.
         let icon_state = if needs_reauth {
-            Some(SyncDirRunState::Error)
+            Some(RunState::AuthNeeded)
         } else {
             status.get(&sd.id).copied()
         };
@@ -369,20 +368,25 @@ fn is_remote_descendant(ancestor: &SyncDir, candidate: &SyncDir) -> bool {
 /// Render the per-card status icon, or a same-sized blank when there's
 /// no run-state yet so the path label keeps the same horizontal offset
 /// across cards.
-fn status_icon<'a>(state: Option<SyncDirRunState>) -> Element<'a, Msg> {
+fn status_icon<'a>(state: Option<RunState>) -> Element<'a, Msg> {
     let placeholder = || -> Element<'a, Msg> {
         Space::with_width(Length::Fixed(STATUS_ICON_SIZE)).into()
     };
     match state {
+        // No state yet (fresh or Waiting) — empty placeholder keeps horizontal alignment.
+        None | Some(RunState::Waiting) => placeholder(),
+        // AiPauseCircleOutlined in gray — explicitly disabled or transitively paused.
+        Some(RunState::Paused) => icon_svg(icondata::AiPauseCircleOutlined, "#6b7280"),
+        // BiKeyRegular in orange — session expired, user must re-authenticate.
+        Some(RunState::AuthNeeded) => icon_svg(icondata::BiKeyRegular, "#f97316"),
         // MdiSync rendered blue while a pass is in flight.
-        Some(SyncDirRunState::Syncing) => icon_svg(icondata::MdiSync, "#3b82f6"),
+        Some(RunState::Syncing(_)) => icon_svg(icondata::MdiSync, "#3b82f6"),
         // AiCheckCircleTwotone in green for a clean last pass.
-        Some(SyncDirRunState::Synced) => icon_svg(icondata::AiCheckCircleTwotone, "#22c55e"),
+        Some(RunState::Synced) => icon_svg(icondata::AiCheckCircleTwotone, "#22c55e"),
         // AiWarningOutlined in amber for backoff / per-file errors / conflicts.
-        Some(SyncDirRunState::Warning) => icon_svg(icondata::AiWarningOutlined, "#eab308"),
-        // BiErrorAltRegular in red for hard failures (snapshot fail, re-auth needed).
-        Some(SyncDirRunState::Error) => icon_svg(icondata::BiErrorAltRegular, "#ef4444"),
-        None => placeholder(),
+        Some(RunState::Warning) => icon_svg(icondata::AiWarningOutlined, "#eab308"),
+        // BiErrorAltRegular in red for hard failures (snapshot fail, etc.).
+        Some(RunState::Error) => icon_svg(icondata::BiErrorAltRegular, "#ef4444"),
     }
 }
 

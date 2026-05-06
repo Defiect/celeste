@@ -5,7 +5,7 @@
 //! `Arc<dyn BackendClient>` — the router is transparent.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     sync::{Arc, RwLock},
 };
 
@@ -17,12 +17,6 @@ use crate::domain::{
 pub struct ClientRouter {
     default: Arc<dyn BackendClient>,
     overrides: RwLock<HashMap<String, Arc<dyn BackendClient>>>,
-    /// Subset of overrides that are placeholder adapters for native
-    /// remotes which failed to resume at startup (session expired,
-    /// blob missing, etc.). The UI reads this to decide whether to
-    /// surface a "Re-authenticate" banner on the remote page.
-    /// Removed in W3 once AppState owns auth-failed tracking.
-    disabled_native: RwLock<HashSet<String>>,
 }
 
 impl ClientRouter {
@@ -33,48 +27,20 @@ impl ClientRouter {
         Self {
             default,
             overrides: RwLock::new(HashMap::new()),
-            disabled_native: RwLock::new(HashSet::new()),
         }
     }
 
     /// Register a per-remote override. Subsequent calls with that
     /// `remote` name route to `client` instead of the default.
-    /// Replaces any existing override for the same name and clears
-    /// any "disabled" marker (e.g. after a successful re-auth).
+    /// Replaces any existing override for the same name.
     pub fn register(&self, remote: String, client: Arc<dyn BackendClient>) {
-        self.disabled_native.write().unwrap().remove(&remote);
         self.overrides.write().unwrap().insert(remote, client);
-    }
-
-    /// Register a placeholder override flagged as "disabled" — the
-    /// caller supplies a stub that returns an error explaining how
-    /// to recover. Keeps sync calls off the default rclone client so
-    /// the user sees the recovery hint instead of a rclone config
-    /// lookup failure.
-    pub fn register_disabled_native(
-        &self,
-        remote: String,
-        client: Arc<dyn BackendClient>,
-    ) {
-        self.overrides
-            .write()
-            .unwrap()
-            .insert(remote.clone(), client);
-        self.disabled_native.write().unwrap().insert(remote);
-    }
-
-    /// Returns `true` when `remote` is a native-backend remote whose
-    /// session isn't currently usable. The remote page reads this to
-    /// show the "Re-authenticate" banner.
-    pub fn is_disabled_native(&self, remote: &str) -> bool {
-        self.disabled_native.read().unwrap().contains(remote)
     }
 
     /// Drop an override — future calls with that name fall back to
     /// the default. No-op if the name isn't registered.
     pub fn unregister(&self, remote: &str) {
         self.overrides.write().unwrap().remove(remote);
-        self.disabled_native.write().unwrap().remove(remote);
     }
 
     /// Resolve which client should handle `remote`. Cheap read-lock

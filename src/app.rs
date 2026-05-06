@@ -18,9 +18,10 @@ use std::path::PathBuf;
 
 use crate::{
     domain::{
-        events::{SyncDirRunState, SyncEvent},
+        events::SyncEvent,
         ports::{BackendClient, Repository},
         remote::{ProviderKind, Remote, RemoteId},
+        run_state::{AppState, RunState},
         sync::{SyncDir, SyncDirExclusion, SyncDirId, SyncError},
     },
     infrastructure::{
@@ -97,16 +98,11 @@ pub struct CelesteApp {
     /// Read-only [`text_editor::Content`] mirror of the log lines, kept
     /// in sync so the remote-page editor can borrow it directly.
     sync_dir_log_content: HashMap<SyncDirId, iced::widget::text_editor::Content>,
-    /// Coarse run-state per sync_dir — drives the status icon on the
-    /// remote page. Sticky once a pass surfaces Warning / Error so a
-    /// final clean status doesn't paper over earlier per-file errors.
-    sync_dir_status: HashMap<SyncDirId, SyncDirRunState>,
-    /// Remotes whose sync passes have surfaced an auth failure
-    /// (HTTP 401 / "Invalid access token") since the last successful
-    /// re-authentication. Drives the reauth banner for OAuth /
-    /// WebDAV providers — native Proton has its own
-    /// [`ClientRouter::is_disabled_native`] flag.
-    auth_failed_remotes: std::collections::HashSet<RemoteId>,
+    /// Hierarchical run-state machine: per-dir states, auth-failure
+    /// bookkeeping, and backoff counters. Replaces the former flat
+    /// `sync_dir_status`, `auth_failed_remotes`, `consecutive_degraded`,
+    /// and `syncs_to_skip` fields.
+    sync_state: AppState,
     /// All sync_dirs across every remote, refreshed on navigation changes.
     /// Used to compute auto-exclusions in the UI.
     all_known_sync_dirs: Vec<SyncDir>,
@@ -134,14 +130,6 @@ pub struct CelesteApp {
     /// sync pass to bail out between actions — the app sets it when
     /// the user disables a remote (or the app shuts down).
     cancel_flags: HashMap<RemoteId, Arc<AtomicBool>>,
-    /// Consecutive degraded (rate-limited) passes per remote. Drives
-    /// the linear backoff — reset to 0 on the next clean pass.
-    consecutive_degraded: HashMap<RemoteId, u32>,
-    /// Remaining sync cycles to skip before attempting another pass on
-    /// this remote. Set to `consecutive_degraded` right after a
-    /// Degraded verdict, decremented on each tick that would otherwise
-    /// have fired a pass.
-    syncs_to_skip: HashMap<RemoteId, u32>,
     /// Stderr ring-buffer handle — shared by every sync pass so each
     /// can ask "did any provider rate-limit warning fire since my
     /// pass_start?". Installed once at process startup.
@@ -175,8 +163,7 @@ impl Application for CelesteApp {
             syncing: std::collections::HashSet::new(),
             sync_dir_log_lines: HashMap::new(),
             sync_dir_log_content: HashMap::new(),
-            sync_dir_status: HashMap::new(),
-            auth_failed_remotes: std::collections::HashSet::new(),
+            sync_state: AppState::new(),
             all_known_sync_dirs: Vec::new(),
             exclusion_panel: None,
             sync_dir_exclusions: HashMap::new(),
@@ -187,8 +174,6 @@ impl Application for CelesteApp {
             add_remote_draft: None,
             events_tx: None,
             cancel_flags: HashMap::new(),
-            consecutive_degraded: HashMap::new(),
-            syncs_to_skip: HashMap::new(),
             stderr_capture: stderr_capture::handle(),
             tray_tx: None,
         };
@@ -247,6 +232,11 @@ impl Application for CelesteApp {
                     }
                 }
                 self.remotes = remotes;
+                // Sync enabled flags into the state machine so roll-ups
+                // reflect the latest policy without waiting for a sync event.
+                for r in &self.remotes {
+                    self.sync_state.ensure_remote(r.id, r.policy.enabled);
+                }
                 Command::none()
             }
             Message::Main(main_page::Msg::Selected(id)) => {
@@ -273,6 +263,7 @@ impl Application for CelesteApp {
                     self.sync_dir_log_content
                         .entry(d.id)
                         .or_insert_with(iced::widget::text_editor::Content::new);
+                    self.sync_state.ensure_dir(id, d.id);
                 }
                 self.sync_dirs.insert(id, sd);
                 Command::none()
@@ -498,15 +489,13 @@ impl Application for CelesteApp {
             }
             Message::AddRemoteResult(Ok(id)) => {
                 self.add_remote_draft = None;
-                // A successful add / re-auth refreshed the credentials
-                // for this remote — clear any stale auth-failure flag
-                // so the reauth banner closes immediately instead of
-                // waiting for the next sync pass to confirm.
-                self.auth_failed_remotes.remove(&id);
-                // Re-enable the policy if a prior auth-failure had
-                // auto-paused the remote (or if the user paused it
-                // manually before adding it back). The next scheduler
-                // tick picks up the freshened policy and resumes sync.
+                // Restore all dir states and re-enable the remote in the
+                // state machine (clears AuthNeeded → Waiting, paused
+                // siblings → pre-pause state, clears pause_snapshot).
+                self.sync_state.reauth_complete(id);
+                self.sync_state.set_remote_enabled(id, true);
+                // Re-enable the policy in the domain model so the scheduler
+                // picks it up on the next tick.
                 let mut reenable_policy: Option<crate::domain::remote::SyncPolicy> = None;
                 if let Some(remote) = self.remotes.iter_mut().find(|r| r.id == id)
                     && !remote.policy.enabled
@@ -660,6 +649,7 @@ impl Application for CelesteApp {
                 self.sync_dirs.remove(&id);
                 self.last_sync_at.remove(&id);
                 self.sync_dir_drafts.remove(&id);
+                self.sync_state.remove_remote(id);
                 self.remotes.retain(|r| r.id != id);
                 // Drop any native-proton override so the router
                 // stops routing its (now-gone) name to a stale
@@ -693,8 +683,7 @@ impl Application for CelesteApp {
                 self.last_sync_at.insert(id, Instant::now());
                 match verdict {
                     PassVerdict::Clean => {
-                        self.consecutive_degraded.remove(&id);
-                        self.syncs_to_skip.remove(&id);
+                        self.sync_state.on_clean_pass(id);
                     }
                     PassVerdict::Degraded => {
                         // Linear backoff: skip N cycles after the N-th
@@ -703,12 +692,7 @@ impl Application for CelesteApp {
                         // moment a pass lands clean. Rclone already
                         // does exponential on its side; the linear
                         // layer just stops us hammering.
-                        let n = self
-                            .consecutive_degraded
-                            .entry(id)
-                            .and_modify(|c| *c = c.saturating_add(1))
-                            .or_insert(1);
-                        self.syncs_to_skip.insert(id, *n);
+                        self.sync_state.on_degraded_pass(id);
                     }
                     PassVerdict::Aborted => {
                         // Intentionally leave counters as-is: an abort
@@ -748,15 +732,7 @@ impl Application for CelesteApp {
                     if elapsed < interval {
                         continue;
                     }
-                    if let Some(skip) = self.syncs_to_skip.get(&id).copied()
-                        && skip > 0
-                    {
-                        let remaining = skip - 1;
-                        if remaining == 0 {
-                            self.syncs_to_skip.remove(&id);
-                        } else {
-                            self.syncs_to_skip.insert(id, remaining);
-                        }
+                    if self.sync_state.should_skip_and_decrement(id) {
                         // Advance the baseline so we wait another full
                         // interval before the next skip decision.
                         self.last_sync_at.insert(id, now);
@@ -812,14 +788,13 @@ impl Application for CelesteApp {
                         };
                         self.push_log_line(sync_dir_id, line);
                         if auth_failure {
-                            self.auth_failed_remotes.insert(remote_id);
-                            self.sync_dir_status
-                                .insert(sync_dir_id, SyncDirRunState::Error);
+                            self.sync_state.auth_failure_on_dir(remote_id, sync_dir_id);
                             if let Some(remote) =
                                 self.remotes.iter_mut().find(|r| r.id == remote_id)
                                 && remote.policy.enabled
                             {
                                 remote.policy.enabled = false;
+                                self.sync_state.set_remote_enabled(remote_id, false);
                                 if let Some(flag) = self.cancel_flags.get(&remote_id) {
                                     flag.store(true, Ordering::Release);
                                 }
@@ -829,37 +804,20 @@ impl Application for CelesteApp {
                         } else {
                             // Per-file errors surface as Warning so the
                             // icon mirrors the trouble even if the pass
-                            // eventually ends with the engine-level
-                            // Synced state.
-                            let cur = self
-                                .sync_dir_status
-                                .get(&sync_dir_id)
-                                .copied()
-                                .unwrap_or(SyncDirRunState::Syncing);
-                            if cur != SyncDirRunState::Error {
-                                self.sync_dir_status
-                                    .insert(sync_dir_id, SyncDirRunState::Warning);
-                            }
+                            // eventually ends with the engine-level Synced.
+                            self.sync_state.transition_dir(
+                                remote_id,
+                                sync_dir_id,
+                                RunState::Warning,
+                            );
                         }
                     }
                     SyncEvent::SyncDirStateChanged {
-                        sync_dir_id, state, ..
+                        remote_id,
+                        sync_dir_id,
+                        state,
                     } => {
-                        let next = match (
-                            self.sync_dir_status.get(&sync_dir_id).copied(),
-                            state,
-                        ) {
-                            // Don't downgrade: a final Synced after a
-                            // Warning (per-file errors) keeps Warning.
-                            (Some(SyncDirRunState::Warning), SyncDirRunState::Synced) => {
-                                SyncDirRunState::Warning
-                            }
-                            (Some(SyncDirRunState::Error), SyncDirRunState::Synced) => {
-                                SyncDirRunState::Error
-                            }
-                            _ => state,
-                        };
-                        self.sync_dir_status.insert(sync_dir_id, next);
+                        self.sync_state.transition_dir(remote_id, sync_dir_id, state);
                     }
                     SyncEvent::RemoteStarted { .. }
                     | SyncEvent::RemoteCompleted { .. }
@@ -889,6 +847,7 @@ impl Application for CelesteApp {
                 let was_enabled = remote.policy.enabled;
                 let new_policy = settings::policy_from(&sub, &remote.policy);
                 remote.policy = new_policy.clone();
+                self.sync_state.set_remote_enabled(id, new_policy.enabled);
                 // If the user just disabled a remote that's currently
                 // syncing, trip its cancel flag so the running pass
                 // bails out between actions. Re-enabling uses the
@@ -1063,13 +1022,12 @@ impl Application for CelesteApp {
                     .map(|(l, r)| (l.as_str(), r.as_str()))
                     .unwrap_or(("", ""));
                 let eta = self.next_sync_eta(remote.id);
-                let needs_reauth = self.rclone.is_disabled_native(&remote.name)
-                    || self.auth_failed_remotes.contains(&remote.id);
+                let needs_reauth = self.sync_state.needs_reauth(remote.id);
                 remote_page::view(
                     remote,
                     dirs,
                     &self.sync_dir_log_content,
-                    &self.sync_dir_status,
+                    self.sync_state.dir_states(remote.id),
                     &self.all_known_sync_dirs,
                     self.exclusion_panel,
                     &self.sync_dir_exclusions,
@@ -1263,11 +1221,10 @@ impl CelesteApp {
         if self.remotes.is_empty() {
             return TrayStatus::Disconnected;
         }
-        let syncing_count = self.syncing.len();
-        if syncing_count > 0 {
-            return TrayStatus::Syncing { count: syncing_count };
+        if !self.syncing.is_empty() {
+            return TrayStatus::Syncing { count: self.syncing.len() };
         }
-        if self.consecutive_degraded.values().any(|&c| c > 0) {
+        if self.sync_state.any_degraded() {
             return TrayStatus::Warning;
         }
         if self.remotes.iter().all(|r| !r.policy.enabled) {
@@ -1310,10 +1267,10 @@ impl CelesteApp {
             None => std::time::Duration::ZERO,
         };
         let in_backoff = self
-            .syncs_to_skip
+            .sync_state
+            .remotes
             .get(&id)
-            .copied()
-            .unwrap_or(0)
+            .map_or(0, |rs| rs.syncs_to_skip)
             > 0;
         Some((base_remaining, in_backoff))
     }

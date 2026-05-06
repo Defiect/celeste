@@ -107,7 +107,7 @@ fn resume_native_sessions(repo: &dyn Repository, router: &ClientRouter) {
             );
             eprintln!("celeste: {reason}");
             notify_reauth_needed(&remote.name);
-            router.register_disabled_native(
+            router.register(
                 remote.name.clone(),
                 Arc::new(DisabledProtonClient::new(reason)),
             );
@@ -131,7 +131,7 @@ fn resume_native_sessions(repo: &dyn Repository, router: &ClientRouter) {
                 );
                 eprintln!("celeste: {reason}");
                 notify_reauth_needed(&remote.name);
-                router.register_disabled_native(
+                router.register(
                     remote.name.clone(),
                     Arc::new(DisabledProtonClient::new(reason)),
                 );
