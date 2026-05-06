@@ -98,12 +98,12 @@ impl BackendClient for LibrcloneClient {
     }
 
     fn create_config(&self, payload_json: String) -> Result<(), String> {
-        librclone::rpc("config/create", payload_json).map(|_| ())
+        celeste_go::rpc("config/create", payload_json).map(|_| ())
     }
 
     fn remote_type(&self, remote: &str) -> Result<Option<String>, String> {
         let payload = serde_json::json!({ "name": remote }).to_string();
-        match librclone::rpc("config/get", payload) {
+        match celeste_go::rpc("config/get", payload) {
             Ok(body) => {
                 let parsed: serde_json::Value =
                     serde_json::from_str(&body).map_err(|e| e.to_string())?;

@@ -1,5 +1,5 @@
-//! Process-wide stderr tap. Installs once at startup, before librclone
-//! is initialised, so that every warning rclone (and its backends) print
+//! Process-wide stderr tap. Installs once at startup, before the Go
+//! runtime is initialised, so that every warning rclone (and its backends) print
 //! to fd 2 lands in a timestamped ring buffer we can query from the
 //! sync code. Everything is still forwarded to the real stderr so the
 //! user's terminal output stays unchanged.
@@ -63,7 +63,7 @@ static GLOBAL: OnceLock<CaptureHandle> = OnceLock::new();
 
 /// Install the stderr tap. Call exactly once, from `main`, **before**
 /// any FFI layer touches fd 2 (in particular before
-/// `librclone::initialize`). Repeat calls return the previously-installed
+/// `celeste_go::initialize`). Repeat calls return the previously-installed
 /// handle.
 pub fn install() -> CaptureHandle {
     if let Some(existing) = GLOBAL.get() {

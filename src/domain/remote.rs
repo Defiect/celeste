@@ -25,8 +25,8 @@ impl ProviderKind {
             "drive" => Some(Self::GDrive),
             "pcloud" => Some(Self::PCloud),
             // Only the native client reports Proton now; rclone's
-            // `protondrive` backend is no longer compiled into our
-            // librclone build (see native-go/wrapper.go).
+            // `protondrive` backend is no longer compiled into the
+            // Go archive (see src/go/wrapper.go).
             "native-proton" => Some(Self::ProtonDrive),
             // WebDAV-family all use rclone's "webdav" backend; the
             // vendor sub-selector picks Nextcloud / Owncloud / plain

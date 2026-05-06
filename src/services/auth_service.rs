@@ -97,19 +97,19 @@ pub fn add_proton_drive_remote(
     repo: &dyn Repository,
     router: &ClientRouter,
 ) -> Result<RemoteId, String> {
-    let params = librclone::proton::LoginParams {
+    let params = celeste_go::proton::LoginParams {
         username: username.to_owned(),
         password: password.to_owned(),
         two_fa: totp.to_owned(),
         mailbox_password: String::new(),
     };
-    let cred = librclone::proton::login(&params)?;
+    let cred = celeste_go::proton::login(&params)?;
 
     let session_path = proton_session_path(config_dir, name);
     if let Some(parent) = session_path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    librclone::proton::save_session(&cred.uid, &session_path)?;
+    celeste_go::proton::save_session(&cred.uid, &session_path)?;
 
     let id = util::await_future(
         repo.insert_native_proton_remote(name.to_owned(), session_path.display().to_string()),
@@ -146,19 +146,19 @@ pub fn reauth_proton_drive_remote(
     config_dir: &Path,
     router: &ClientRouter,
 ) -> Result<(), String> {
-    let params = librclone::proton::LoginParams {
+    let params = celeste_go::proton::LoginParams {
         username: username.to_owned(),
         password: password.to_owned(),
         two_fa: totp.to_owned(),
         mailbox_password: String::new(),
     };
-    let cred = librclone::proton::login(&params)?;
+    let cred = celeste_go::proton::login(&params)?;
 
     let session_path = proton_session_path(config_dir, name);
     if let Some(parent) = session_path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    librclone::proton::save_session(&cred.uid, &session_path)?;
+    celeste_go::proton::save_session(&cred.uid, &session_path)?;
 
     router.register(
         name.to_owned(),

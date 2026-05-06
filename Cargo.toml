@@ -30,9 +30,9 @@ libc = "0.2"
 # Inkscape-era masked paths to a solid black square.
 resvg = { version = "0.47", default-features = false }
 # Celeste's combined Go archive — provides the librclone RPC surface
-# (drop-in replacement for the upstream `librclone` crate) plus the
-# native ProtonDrive entry points. See `src/go/` for the Go side.
-librclone = { package = "celeste-native-sys", path = "src/go" }
+# plus the native ProtonDrive entry points. See `src/go/` for the Go
+# side. Aliased as `celeste_go` to reflect the dual-backend nature.
+celeste_go = { package = "celeste-native-sys", path = "src/go" }
 notify-rust = "4"
 sea-orm = { version = "0.10.7", features = ["sqlx-sqlite", "runtime-async-std-rustls", "macros"] }
 sea-orm-migration = "0.10.7"

@@ -26,10 +26,7 @@ use std::path::Path;
 
 use time::OffsetDateTime;
 
-// Celeste aliases the `celeste-native-sys` crate as `librclone` via
-// `package =` in Cargo.toml — see the combined-archive commit. We pull
-// the native Proton helpers off it here.
-use librclone::proton as proton_ffi;
+use celeste_go::proton as proton_ffi;
 
 use crate::domain::{
     ports::BackendClient,

@@ -34,7 +34,7 @@ use crate::{
 };
 
 fn main() {
-    // Tap stderr before librclone's Go runtime can grab it — that's the
+    // Tap stderr before the Go runtime can grab it — that's the
     // only way to catch the `WARN[...] Too many requests` lines rclone's
     // backends emit when they silently retry a 429. Falls back to a no-op
     // if the platform can't hand us a pipe; sync keeps working, we just
@@ -46,10 +46,10 @@ fn main() {
     std::fs::create_dir_all(&config_dir).expect("failed to create config dir");
     let mut rclone_config = config_dir.clone();
     rclone_config.push("rclone.conf");
-    librclone::initialize();
+    celeste_go::initialize();
     // Prove the combined Go archive loaded — cheap (no network).
-    eprintln!("celeste: native-go identity = {}", librclone::proton_drive_version());
-    librclone::rpc(
+    eprintln!("celeste: native-go identity = {}", celeste_go::proton_drive_version());
+    celeste_go::rpc(
         "config/setpath",
         json!({ "path": rclone_config }).to_string(),
     )
@@ -76,7 +76,7 @@ fn main() {
 
     let repo: Arc<dyn Repository> = Arc::new(SeaOrmRepository::new(db));
 
-    // Per-remote client router. librclone is the default — Celeste's
+    // Per-remote client router. celeste_go's librclone surface is the default — Celeste's
     // existing rclone-backed remotes keep working unchanged. Each
     // native-backend remote resumes its saved session up front so
     // the UID is registered before the first sync tick fires.
@@ -113,7 +113,7 @@ fn resume_native_sessions(repo: &dyn Repository, router: &ClientRouter) {
             );
             continue;
         };
-        match librclone::proton::resume_session(std::path::Path::new(path)) {
+        match celeste_go::proton::resume_session(std::path::Path::new(path)) {
             Ok(cred) => {
                 router.register(
                     remote.name.clone(),
