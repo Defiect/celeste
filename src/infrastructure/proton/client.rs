@@ -196,14 +196,15 @@ impl BackendClient for NativeProtonClient {
     }
 
     fn mkdir(&self, _remote: &str, path: &str) -> Result<(), String> {
+        use crate::domain::backend_events::{BackendEvent, EventTranslator, Operation};
+        use crate::infrastructure::translators::proton::ProtonTranslator;
         let (parent, name) = self.resolve_parent(path)?;
         match proton_ffi::create_folder(&self.uid, &parent, &name) {
             Ok(_) => Ok(()),
-            Err(e) if e.contains("Code=2500") || e.contains("already exists") => {
-                // Folder already exists — treat as success (idempotent mkdir).
-                Ok(())
-            }
-            Err(e) => Err(e),
+            Err(e) => match ProtonTranslator.classify(Operation::Mkdir, &e) {
+                BackendEvent::AlreadyExists => Ok(()),
+                _ => Err(e),
+            },
         }
     }
 

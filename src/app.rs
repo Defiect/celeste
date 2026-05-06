@@ -1086,24 +1086,21 @@ impl Application for CelesteApp {
     }
 }
 
+/// True when an error message indicates an auth failure across any backend.
+/// Delegates to the per-backend translators so the classification logic
+/// lives exactly once, in the translator, not scattered across the call site
+/// and here.
+fn is_auth_failure(msg: &str) -> bool {
+    use crate::domain::backend_events::EventTranslator;
+    use crate::infrastructure::translators::{
+        proton::ProtonTranslator, rclone::RcloneTranslator,
+    };
+    RcloneTranslator.is_auth_failure(msg) || ProtonTranslator.is_auth_failure(msg)
+}
+
 /// True when two local paths overlap — equal, or one is a strict
 /// descendant of the other. Used to reject AddSyncDir requests so all
 /// sync_dirs stay on disjoint subtrees.
-/// Heuristic test for an auth-failure error message. Covers the
-/// canonical HTTP 401 phrasings emitted by both rclone (OAuth, WebDAV)
-/// and the native Proton client. We don't need to be exhaustive — a
-/// false negative just means the user sees a per-file warning instead
-/// of the reauth banner, which is recoverable on the next pass.
-fn is_auth_failure(msg: &str) -> bool {
-    let lower = msg.to_ascii_lowercase();
-    lower.contains("invalid access token")
-        || lower.contains("code=401")
-        || lower.contains("status=401")
-        || lower.contains(" 401 ")
-        || lower.contains("unauthenticated")
-        || lower.contains("unauthorized")
-}
-
 fn local_paths_overlap(a: &str, b: &str) -> bool {
     a == b || b.starts_with(&format!("{a}/")) || a.starts_with(&format!("{b}/"))
 }
@@ -1195,21 +1192,23 @@ impl CelesteApp {
                         let f = flag.clone();
                         move || f.load(Ordering::Acquire)
                     };
-                    // The stderr probe: any line containing *all* of a
-                    // provider's marker substrings, received on or
-                    // after `since`, flips the pass to Degraded. The
-                    // marker table lives on `ProviderKind`; unknown
-                    // providers get an empty table and never degrade.
-                    let markers: &'static [&'static [&'static str]] =
-                        remote.provider_kind.map_or(&[], |k| k.rate_limit_markers());
+                    // The stderr probe: only rclone-transport backends
+                    // emit rate-limit warnings to stderr. Native Proton
+                    // reports throttling via its own error paths. For
+                    // rclone backends, any line matching the rclone
+                    // translator's marker set flips the pass to Degraded.
+                    use crate::infrastructure::translators::rclone::RATE_LIMIT_MARKERS;
+                    let use_stderr_probe = remote
+                        .provider_kind
+                        .map_or(true, |k| k.uses_rclone_transport());
                     let stderr_for_probe = stderr_capture.clone();
                     let rate_limit_seen_since = move |since: Instant| -> bool {
-                        if markers.is_empty() {
+                        if !use_stderr_probe {
                             return false;
                         }
                         stderr_for_probe
                             .any_line_since(since, |line| {
-                                markers
+                                RATE_LIMIT_MARKERS
                                     .iter()
                                     .any(|m| m.iter().all(|needle| line.contains(needle)))
                             })

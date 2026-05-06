@@ -55,33 +55,12 @@ impl ProviderKind {
         None
     }
 
-    /// Substrings that, when spotted in rclone's stderr during a pass,
-    /// mark the pass as *degraded* — the backend was internally retrying
-    /// rate-limits and any `Ok(...)` it returned may reflect partial
-    /// data. All substrings must match within the same log line.
-    ///
-    /// Return an empty slice for backends we don't have a marker set
-    /// for yet; those passes can never be flagged degraded and will
-    /// run as before. ProtonDrive used to have a marker set back when
-    /// it went through rclone's `protondrive` backend — the native
-    /// client reports rate limits directly via its own error paths, so
-    /// the stderr tap no longer carries that signal.
-    pub fn rate_limit_markers(self) -> &'static [&'static [&'static str]] {
-        match self {
-            // Google Drive quota / per-minute limits — the error
-            // message pattern rclone surfaces alongside any internal
-            // retry warnings.
-            ProviderKind::GDrive => &[
-                &["rateLimitExceeded"],
-                &["userRateLimitExceeded"],
-                &["Quota exceeded"],
-            ],
-            // Other backends (Dropbox, pCloud, WebDAV, ProtonDrive)
-            // don't have a characterised marker set. Leaving empty
-            // means "never flag as degraded"; we keep the current
-            // (pre-backoff) behaviour on them.
-            _ => &[],
-        }
+    /// True when this provider uses rclone as its transport and therefore
+    /// can benefit from the stderr-tap rate-limit detection in the rclone
+    /// translator. ProtonDrive reports rate limits via its own error paths,
+    /// so it doesn't need the tap.
+    pub fn uses_rclone_transport(self) -> bool {
+        !matches!(self, Self::ProtonDrive)
     }
 }
 
@@ -271,13 +250,11 @@ mod tests {
     }
 
     #[test]
-    fn proton_drive_has_no_stderr_markers() {
+    fn proton_drive_skips_stderr_probe() {
         // The native client surfaces rate-limits via its own error paths,
         // so the rclone-stderr tap must never flag a ProtonDrive pass as
-        // degraded. The field stayed for the enum's other variants (GDrive
-        // still has markers) but ProtonDrive's empty slice is now the
-        // guard against a false-positive backoff.
-        assert!(ProviderKind::ProtonDrive.rate_limit_markers().is_empty());
-        assert!(!ProviderKind::GDrive.rate_limit_markers().is_empty());
+        // degraded.
+        assert!(!ProviderKind::ProtonDrive.uses_rclone_transport());
+        assert!(ProviderKind::GDrive.uses_rclone_transport());
     }
 }
