@@ -3,9 +3,7 @@
 use std::{collections::HashMap, time::Duration};
 
 use iced::{
-    widget::{
-        button, column, container, row, scrollable, svg, text_editor, text_input, Rule, Space,
-    },
+    widget::{button, column, container, row, scrollable, text_editor, text_input, Rule, Space},
     Alignment, Element, Length,
 };
 
@@ -17,7 +15,7 @@ use crate::{
     },
     screens::settings,
     theme::{PAGE_PADDING, ROW_SPACING, SECTION_SPACING},
-    widgets::text,
+    widgets::{run_state_icon::status_icon, text},
 };
 
 /// Fixed height of the per-sync-dir log editor.
@@ -178,7 +176,7 @@ pub fn view<'a>(
         // of pushing the trailing buttons off the right edge. iced
         // wraps the text within the container's bounds.
         let top_row = row![
-            status_icon(icon_state),
+            status_icon(icon_state, STATUS_ICON_SIZE),
             container(text(path_label).size(SYNC_DIR_FONT_SIZE))
                 .width(Length::Fill),
             button(text(excl_label).size(12)).on_press(Msg::ToggleExclusions(sd.id)),
@@ -363,50 +361,6 @@ fn is_remote_descendant(ancestor: &SyncDir, candidate: &SyncDir) -> bool {
             .remote_path
             .starts_with(&format!("{}/", ancestor.remote_path))
     }
-}
-
-/// Render the per-card status icon, or a same-sized blank when there's
-/// no run-state yet so the path label keeps the same horizontal offset
-/// across cards.
-fn status_icon<'a>(state: Option<RunState>) -> Element<'a, Msg> {
-    let placeholder = || -> Element<'a, Msg> {
-        Space::with_width(Length::Fixed(STATUS_ICON_SIZE)).into()
-    };
-    match state {
-        // No state yet (fresh or Waiting) — empty placeholder keeps horizontal alignment.
-        None | Some(RunState::Waiting) => placeholder(),
-        // AiPauseCircleOutlined in gray — explicitly disabled or transitively paused.
-        Some(RunState::Paused) => icon_svg(icondata::AiPauseCircleOutlined, "#6b7280"),
-        // BiKeyRegular in orange — session expired, user must re-authenticate.
-        Some(RunState::AuthNeeded) => icon_svg(icondata::BiKeyRegular, "#f97316"),
-        // MdiSync rendered blue while a pass is in flight.
-        Some(RunState::Syncing(_)) => icon_svg(icondata::MdiSync, "#3b82f6"),
-        // AiCheckCircleTwotone in green for a clean last pass.
-        Some(RunState::Synced) => icon_svg(icondata::AiCheckCircleTwotone, "#22c55e"),
-        // AiWarningOutlined in amber for backoff / per-file errors / conflicts.
-        Some(RunState::Warning) => icon_svg(icondata::AiWarningOutlined, "#eab308"),
-        // BiErrorAltRegular in red for hard failures (snapshot fail, etc.).
-        Some(RunState::Error) => icon_svg(icondata::BiErrorAltRegular, "#ef4444"),
-    }
-}
-
-/// Wrap an [`icondata::Icon`] (raw inner SVG path data plus a viewBox)
-/// in a real `<svg>` document and hand it to iced's SVG widget. The
-/// outer `fill` cascades into any `<path>` that doesn't set its own,
-/// which gives us a one-call recolor for the monochrome icons we use.
-/// Twotone icons hardcode their secondary fill to `#E6E6E6`; we strip
-/// it to `none` so the disc reads as transparent against the card
-/// background instead of a solid white blob.
-fn icon_svg<'a>(icon: icondata::Icon, color: &str) -> Element<'a, Msg> {
-    let view_box = icon.view_box.unwrap_or("0 0 24 24");
-    let data = icon.data.replace("#E6E6E6", "none");
-    let svg_doc = format!(
-        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="{view_box}" fill="{color}">{data}</svg>"##,
-    );
-    svg(svg::Handle::from_memory(svg_doc.into_bytes()))
-        .width(Length::Fixed(STATUS_ICON_SIZE))
-        .height(Length::Fixed(STATUS_ICON_SIZE))
-        .into()
 }
 
 fn format_duration(d: Duration) -> String {

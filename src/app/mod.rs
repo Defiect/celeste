@@ -330,44 +330,26 @@ impl Application for CelesteApp {
                 )
                 .map(Message::Remote)
             }
-            None => main_page::view(&self.remotes, self.selected, &self.syncing)
+            None => main_page::view(&self.remotes, self.selected, &self.sync_state)
                 .map(Message::Main),
         }
     }
 }
 
 impl CelesteApp {
-    /// Snapshot the app's aggregate sync state into a [`TrayStatus`]
-    /// the tray icon can render. Called after every [`update`] so the
-    /// icon stays in lock-step with the UI.
-    fn compute_tray_status(&self) -> TrayStatus {
-        if self.remotes.is_empty() {
-            return TrayStatus::Disconnected;
-        }
-        if !self.syncing.is_empty() {
-            return TrayStatus::Syncing { count: self.syncing.len() };
-        }
-        if self.sync_state.any_degraded() {
-            return TrayStatus::Warning;
-        }
-        if self.remotes.iter().all(|r| !r.policy.enabled) {
-            return TrayStatus::Paused;
-        }
-        let now = Instant::now();
-        let last_sync_ago = self
-            .last_sync_at
-            .values()
-            .map(|t| now.duration_since(*t))
-            .min();
-        TrayStatus::Done { last_sync_ago }
-    }
-
     /// Push the current tray status to the ksni task, if it's alive.
-    /// Silently drops on a full channel — the tray will catch up on
-    /// the next change (at worst within one scheduler tick).
+    /// Computation lives in the tray module so the mapping rule sits
+    /// next to the icon set it drives. Silently drops on a full channel
+    /// — the tray catches up on the next change (within one tick).
     fn push_tray_status(&self) {
         if let Some(tx) = self.tray_tx.as_ref() {
-            let _ = tx.try_send(self.compute_tray_status());
+            let status = tray::compute_status(
+                &self.sync_state,
+                &self.remotes,
+                &self.syncing,
+                &self.last_sync_at,
+            );
+            let _ = tx.try_send(status);
         }
     }
 }

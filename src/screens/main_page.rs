@@ -1,18 +1,22 @@
 //! The landing page: sidebar listing every configured remote, plus a
 //! placeholder while Phase D fills in the remote detail pane.
 
-use std::collections::HashSet;
-
 use iced::{
     widget::{button, column, container, row, scrollable, Space},
-    Element, Length,
+    Alignment, Element, Length,
 };
 
 use crate::{
-    domain::remote::{Remote, RemoteId},
+    domain::{
+        remote::{Remote, RemoteId},
+        run_state::{AppState, RunState, SyncActivity},
+    },
     theme::{PAGE_PADDING, ROW_SPACING, SECTION_SPACING},
-    widgets::text,
+    widgets::{run_state_icon::status_icon, text},
 };
+
+/// Side length of the per-row roll-up icon.
+const SIDEBAR_ICON_SIZE: f32 = 18.0;
 
 #[derive(Debug, Clone)]
 pub enum Msg {
@@ -24,7 +28,7 @@ pub enum Msg {
 pub fn view<'a>(
     remotes: &'a [Remote],
     selected: Option<RemoteId>,
-    syncing: &'a HashSet<RemoteId>,
+    state: &'a AppState,
 ) -> Element<'a, Msg> {
     let header = row![
         text("Celeste").size(24),
@@ -33,20 +37,20 @@ pub fn view<'a>(
         button(text("Add remote")).on_press(Msg::AddRemote),
     ]
     .spacing(ROW_SPACING)
-    .align_items(iced::Alignment::Center);
+    .align_items(Alignment::Center);
 
     let sidebar = {
         let mut col = column![text("Remotes").size(16)].spacing(ROW_SPACING);
         for remote in remotes {
-            let status = if syncing.contains(&remote.id) {
-                "syncing…"
-            } else if !remote.policy.enabled {
-                "paused"
-            } else {
-                "idle"
-            };
-            let label = format!("{}  ({status})", remote.name);
-            let btn = button(text(label))
+            let roll_up = state.remotes.get(&remote.id).map(|rs| rs.roll_up());
+            let label = format!("{}  ({})", remote.name, status_label(roll_up, remote.policy.enabled));
+            let row_widget = row![
+                status_icon(roll_up, SIDEBAR_ICON_SIZE),
+                text(label),
+            ]
+            .spacing(ROW_SPACING / 2)
+            .align_items(Alignment::Center);
+            let btn = button(row_widget)
                 .width(Length::Fill)
                 .on_press(Msg::Selected(remote.id));
             col = col.push(btn);
@@ -69,4 +73,24 @@ pub fn view<'a>(
     )
     .padding(PAGE_PADDING)
     .into()
+}
+
+/// Short text label paired with the row icon. Falls back to the policy's
+/// `enabled` flag when the state machine has no entry yet (fresh remote
+/// pre-first-tick) so a disabled-from-the-start remote still reads as paused.
+fn status_label(roll_up: Option<RunState>, enabled: bool) -> &'static str {
+    match (roll_up, enabled) {
+        (Some(RunState::Syncing(SyncActivity::Listing)), _) => "listing…",
+        (Some(RunState::Syncing(SyncActivity::Downloading)), _) => "downloading…",
+        (Some(RunState::Syncing(SyncActivity::Uploading)), _) => "uploading…",
+        (Some(RunState::Syncing(SyncActivity::Deleting)), _) => "deleting…",
+        (Some(RunState::Syncing(SyncActivity::Resolving)), _) => "resolving…",
+        (Some(RunState::AuthNeeded), _) => "needs reauth",
+        (Some(RunState::Paused), _) => "paused",
+        (Some(RunState::Synced), _) => "up to date",
+        (Some(RunState::Warning), _) => "warning",
+        (Some(RunState::Error), _) => "error",
+        (Some(RunState::Waiting), false) | (None, false) => "paused",
+        (Some(RunState::Waiting), true) | (None, true) => "idle",
+    }
 }

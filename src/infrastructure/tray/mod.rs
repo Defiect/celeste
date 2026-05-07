@@ -17,7 +17,10 @@
 
 mod icons;
 
-use std::time::Duration;
+use std::{
+    collections::{HashMap, HashSet},
+    time::{Duration, Instant},
+};
 
 use iced::{subscription, Subscription};
 use ksni::{
@@ -25,6 +28,11 @@ use ksni::{
     Icon, MenuItem, ToolTip, TrayMethods,
 };
 use tokio::sync::mpsc;
+
+use crate::domain::{
+    remote::{Remote, RemoteId},
+    run_state::AppState,
+};
 
 use self::icons::IconSet;
 
@@ -253,4 +261,33 @@ fn format_ago(age: Duration) -> String {
     } else {
         format!("{}h ago", secs / 3_600)
     }
+}
+
+/// Roll the per-remote run-state machine plus the app's "what's running
+/// right now" inputs into a single [`TrayStatus`]. Owned by the tray
+/// module so the mapping rule lives next to the icon set it drives.
+pub fn compute_status(
+    state: &AppState,
+    remotes: &[Remote],
+    syncing: &HashSet<RemoteId>,
+    last_sync_at: &HashMap<RemoteId, Instant>,
+) -> TrayStatus {
+    if remotes.is_empty() {
+        return TrayStatus::Disconnected;
+    }
+    if !syncing.is_empty() {
+        return TrayStatus::Syncing { count: syncing.len() };
+    }
+    if state.any_degraded() {
+        return TrayStatus::Warning;
+    }
+    if remotes.iter().all(|r| !r.policy.enabled) {
+        return TrayStatus::Paused;
+    }
+    let now = Instant::now();
+    let last_sync_ago = last_sync_at
+        .values()
+        .map(|t| now.duration_since(*t))
+        .min();
+    TrayStatus::Done { last_sync_ago }
 }
