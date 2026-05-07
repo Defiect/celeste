@@ -12,7 +12,7 @@ use iced::{
 };
 
 use crate::{
-    services::auth_service::{OAuthProvider, WebDavVendor},
+    services::auth::{OAuthProvider, WebDavVendor},
     theme::{PAGE_PADDING, ROW_SPACING, SECTION_SPACING},
     widgets::text,
 };

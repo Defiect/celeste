@@ -4,7 +4,7 @@
 //! infrastructure types directly, which is what makes them unit-testable
 //! against in-memory fakes.
 
-pub mod auth_service;
+pub mod auth;
 pub mod editor_temp;
 pub mod remote_lifecycle;
 pub mod sync;

@@ -1,0 +1,485 @@
+//! Iced application root. The Phase D entry point alongside the existing
+//! GTK `launch::launch`. Runs the pure-Rust UI against the already-extracted
+//! service layer.
+//!
+//! `update()` is a thin dispatch shell — every message variant routes to a
+//! handler method defined in `app::handlers::*` (or `app::log` for the
+//! per-sync_dir log buffer). Handler files own private fields of `CelesteApp`
+//! because they are descendants of this module.
+
+use std::{
+    collections::HashMap,
+    path::PathBuf,
+    sync::{atomic::AtomicBool, Arc},
+    time::{Duration, Instant},
+};
+
+use iced::{executor, subscription, Application, Command, Element, Settings, Subscription, Theme};
+use tokio::sync::mpsc;
+
+use crate::{
+    domain::{
+        events::SyncEvent,
+        ports::Repository,
+        remote::{ProviderKind, Remote, RemoteId},
+        run_state::AppState,
+        sync::{SyncDir, SyncDirExclusion, SyncDirId},
+    },
+    infrastructure::{
+        client_router::ClientRouter,
+        stderr_capture::{self, CaptureHandle},
+        tray::{self, TrayAction, TrayStatus},
+    },
+    screens::{add_remote, main_page, remote_page, settings},
+    theme,
+};
+
+mod handlers;
+mod log;
+
+/// Messages the root application dispatches. Screen-level messages are
+/// wrapped by variants; service results fire their own.
+#[derive(Debug, Clone)]
+pub enum Message {
+    Main(main_page::Msg),
+    Remote(remote_page::Msg),
+    Settings(settings::Msg),
+    AddRemote(add_remote::Msg),
+    AddRemoteResult(Result<RemoteId, String>),
+    RemotesLoaded(Vec<Remote>),
+    SyncDirsLoaded(RemoteId, Vec<SyncDir>),
+    AllSyncDirsRefreshed(Vec<SyncDir>),
+    ExclusionsLoaded(SyncDirId, Vec<SyncDirExclusion>),
+    PolicySaved,
+    SyncStarted(RemoteId),
+    SyncFinished(RemoteId, PassVerdict),
+    WorkerReady(mpsc::Sender<SyncEvent>),
+    SyncEventReceived(SyncEvent),
+    Tick,
+    /// Delivered once when the ksni service is live — carries the
+    /// sender the app uses to push fresh [`TrayStatus`] snapshots.
+    TrayReady(mpsc::Sender<TrayStatus>),
+    /// A tray action from the user (menu click or left-click on the
+    /// icon).
+    TrayClick(TrayAction),
+}
+
+/// Aggregate outcome across every sync_dir of one remote's pass. The
+/// scheduler uses this to drive linear backoff on provider rate-limits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PassVerdict {
+    /// Every sync_dir finished cleanly.
+    Clean,
+    /// At least one sync_dir detected rate-limiting (stderr tap fired).
+    /// Scheduler bumps `consecutive_degraded` and skips more cycles.
+    Degraded,
+    /// Pass aborted for a non-rate-limit reason (cancel, list error).
+    /// Backoff counter is left alone.
+    Aborted,
+}
+
+pub struct CelesteApp {
+    repo: Arc<dyn Repository>,
+    /// Client router — dispatches BackendClient calls per-remote.
+    /// `Arc<ClientRouter>` rather than `Arc<dyn BackendClient>` so the
+    /// add-/delete-remote paths can register / unregister native
+    /// sessions on it; sync code downcasts on the fly (ClientRouter
+    /// implements BackendClient).
+    rclone: Arc<ClientRouter>,
+    /// User's Celeste config dir — needed so the native Proton
+    /// add-remote flow knows where to put session blobs.
+    config_dir: PathBuf,
+    remotes: Vec<Remote>,
+    sync_dirs: HashMap<RemoteId, Vec<SyncDir>>,
+    selected: Option<RemoteId>,
+    /// Remotes whose sync pass is currently running.
+    syncing: std::collections::HashSet<RemoteId>,
+    /// Accumulated log lines per sync_dir, capped at
+    /// [`remote_page::MAX_LOG_LINES`] so a long-running session doesn't
+    /// grow unbounded.
+    sync_dir_log_lines: HashMap<SyncDirId, Vec<String>>,
+    /// Read-only [`text_editor::Content`] mirror of the log lines, kept
+    /// in sync so the remote-page editor can borrow it directly.
+    sync_dir_log_content: HashMap<SyncDirId, iced::widget::text_editor::Content>,
+    /// Hierarchical run-state machine: per-dir states, auth-failure
+    /// bookkeeping, and backoff counters. Replaces the former flat
+    /// `sync_dir_status`, `auth_failed_remotes`, `consecutive_degraded`,
+    /// and `syncs_to_skip` fields.
+    sync_state: AppState,
+    /// All sync_dirs across every remote, refreshed on navigation changes.
+    /// Used to compute auto-exclusions in the UI.
+    all_known_sync_dirs: Vec<SyncDir>,
+    /// The sync_dir whose exclusion panel is currently open (at most one).
+    exclusion_panel: Option<SyncDirId>,
+    /// Loaded user-defined exclusions per sync_dir.
+    sync_dir_exclusions: HashMap<SyncDirId, Vec<SyncDirExclusion>>,
+    /// Draft remote sub-path for the "add exclusion" form per sync_dir.
+    draft_exclusion: HashMap<SyncDirId, String>,
+    /// Wall-clock timestamp of the last sync completion per remote. Drives
+    /// the interval scheduler.
+    last_sync_at: HashMap<RemoteId, Instant>,
+    /// Remote ids with a refresh request queued while the current pass is
+    /// still running — as soon as SyncFinished lands we kick another pass.
+    refresh_requested_after: std::collections::HashSet<RemoteId>,
+    /// In-progress (local_path, remote_path) inputs for the Add sync_dir form
+    /// on each remote page.
+    sync_dir_drafts: HashMap<RemoteId, (String, String)>,
+    /// In-progress Add Remote form. Some(...) while the screen is shown.
+    add_remote_draft: Option<add_remote::Draft>,
+    /// Sender handed to us by the subscription worker; sync code clones this
+    /// to emit events back into the event loop.
+    events_tx: Option<mpsc::Sender<SyncEvent>>,
+    /// Per-remote cancel flags. Flipping `true` tells the in-flight
+    /// sync pass to bail out between actions — the app sets it when
+    /// the user disables a remote (or the app shuts down).
+    cancel_flags: HashMap<RemoteId, Arc<AtomicBool>>,
+    /// Stderr ring-buffer handle — shared by every sync pass so each
+    /// can ask "did any provider rate-limit warning fire since my
+    /// pass_start?". Installed once at process startup.
+    stderr_capture: CaptureHandle,
+    /// Sender into the ksni subscription task. `Some` once the tray
+    /// handshake has landed; remains `None` if the session has no
+    /// StatusNotifier host.
+    tray_tx: Option<mpsc::Sender<TrayStatus>>,
+}
+
+pub struct Flags {
+    pub repo: Arc<dyn Repository>,
+    pub rclone: Arc<ClientRouter>,
+    pub config_dir: PathBuf,
+}
+
+impl Application for CelesteApp {
+    type Executor = executor::Default;
+    type Message = Message;
+    type Theme = Theme;
+    type Flags = Flags;
+
+    fn new(flags: Flags) -> (Self, Command<Message>) {
+        let state = Self {
+            repo: flags.repo.clone(),
+            rclone: flags.rclone,
+            config_dir: flags.config_dir,
+            remotes: Vec::new(),
+            sync_dirs: HashMap::new(),
+            selected: None,
+            syncing: std::collections::HashSet::new(),
+            sync_dir_log_lines: HashMap::new(),
+            sync_dir_log_content: HashMap::new(),
+            sync_state: AppState::new(),
+            all_known_sync_dirs: Vec::new(),
+            exclusion_panel: None,
+            sync_dir_exclusions: HashMap::new(),
+            draft_exclusion: HashMap::new(),
+            last_sync_at: HashMap::new(),
+            refresh_requested_after: std::collections::HashSet::new(),
+            sync_dir_drafts: HashMap::new(),
+            add_remote_draft: None,
+            events_tx: None,
+            cancel_flags: HashMap::new(),
+            stderr_capture: stderr_capture::handle(),
+            tray_tx: None,
+        };
+        let repo = flags.repo;
+        let load = Command::perform(
+            async move { repo.list_remotes().await.unwrap_or_default() },
+            Message::RemotesLoaded,
+        );
+        (state, load)
+    }
+
+    fn title(&self) -> String {
+        "Celeste".to_string()
+    }
+
+    fn theme(&self) -> Theme {
+        theme::celeste_theme()
+    }
+
+    fn subscription(&self) -> Subscription<Message> {
+        let events = subscription::channel(
+            std::any::TypeId::of::<CelesteApp>(),
+            128,
+            |mut output| async move {
+                use iced::futures::SinkExt;
+                let (tx, mut rx) = mpsc::channel::<SyncEvent>(128);
+                let _ = output.send(Message::WorkerReady(tx)).await;
+                while let Some(event) = rx.recv().await {
+                    let _ = output.send(Message::SyncEventReceived(event)).await;
+                }
+                std::future::pending::<()>().await;
+                unreachable!()
+            },
+        );
+        // Single ticker at 1 Hz — interval checks are cheap, and the
+        // shortest allowed sync cadence is 5 s.
+        let ticker = iced::time::every(Duration::from_secs(1)).map(|_| Message::Tick);
+        let tray = tray::subscription().map(|signal| match signal {
+            tray::TraySignal::Ready(tx) => Message::TrayReady(tx),
+            tray::TraySignal::Action(action) => Message::TrayClick(action),
+        });
+        Subscription::batch([events, ticker, tray])
+    }
+
+    fn update(&mut self, message: Message) -> Command<Message> {
+        let cmd = match message {
+            // Remote / dialog flow ----------------------------------
+            Message::RemotesLoaded(remotes) => self.handle_remotes_loaded(remotes),
+            Message::Main(main_page::Msg::Selected(id)) => self.handle_remote_selected(id),
+            Message::Main(main_page::Msg::RefreshAll) => self.handle_refresh_all(),
+            Message::Main(main_page::Msg::AddRemote) => self.handle_open_add_remote(),
+            Message::AddRemote(sub) => self.handle_add_remote_msg(sub),
+            Message::AddRemoteResult(Ok(id)) => self.handle_add_remote_result_ok(id),
+            Message::AddRemoteResult(Err(msg)) => self.handle_add_remote_result_err(msg),
+            Message::Remote(remote_page::Msg::Back) => self.handle_remote_back(),
+            Message::Remote(remote_page::Msg::RefreshNow(id)) => self.handle_refresh_now(id),
+            Message::Remote(remote_page::Msg::DeleteRemote(id, name)) => {
+                self.handle_delete_remote(id, name)
+            }
+            Message::Remote(remote_page::Msg::Reauthenticate(id, name)) => {
+                self.handle_reauthenticate(id, name)
+            }
+
+            // Sync_dir CRUD + exclusions + settings ------------------
+            Message::SyncDirsLoaded(id, sd) => self.handle_sync_dirs_loaded(id, sd),
+            Message::AllSyncDirsRefreshed(all) => self.handle_all_sync_dirs_refreshed(all),
+            Message::Remote(remote_page::Msg::DraftLocalPathChanged(s)) => {
+                self.handle_draft_local_path_changed(s)
+            }
+            Message::Remote(remote_page::Msg::DraftRemotePathChanged(s)) => {
+                self.handle_draft_remote_path_changed(s)
+            }
+            Message::Remote(remote_page::Msg::AddSyncDir) => self.handle_add_sync_dir(),
+            Message::Remote(remote_page::Msg::DeleteSyncDir(local, remote)) => {
+                self.handle_delete_sync_dir(local, remote)
+            }
+            Message::Remote(remote_page::Msg::Settings(sub)) | Message::Settings(sub) => {
+                self.handle_settings(sub)
+            }
+            Message::PolicySaved => Command::none(),
+            Message::ExclusionsLoaded(sd_id, excls) => {
+                self.handle_exclusions_loaded(sd_id, excls)
+            }
+            Message::Remote(remote_page::Msg::ToggleExclusions(sd_id)) => {
+                self.handle_toggle_exclusions(sd_id)
+            }
+            Message::Remote(remote_page::Msg::DraftExclusionChanged(sd_id, s)) => {
+                self.handle_draft_exclusion_changed(sd_id, s)
+            }
+            Message::Remote(remote_page::Msg::AddExclusion(sd_id)) => {
+                self.handle_add_exclusion(sd_id)
+            }
+            Message::Remote(remote_page::Msg::RemoveExclusion(excl_id, sd_id)) => {
+                self.handle_remove_exclusion(excl_id, sd_id)
+            }
+            Message::Remote(remote_page::Msg::LogEditorAction(sd_id, action)) => {
+                self.handle_log_editor_action(sd_id, action)
+            }
+
+            // Sync lifecycle ----------------------------------------
+            Message::SyncStarted(id) => self.handle_sync_started(id),
+            Message::SyncFinished(id, verdict) => self.handle_sync_finished(id, verdict),
+            Message::Tick => self.handle_tick(),
+
+            // Worker + sync events ----------------------------------
+            Message::WorkerReady(tx) => self.handle_worker_ready(tx),
+            Message::SyncEventReceived(event) => self.handle_sync_event(event),
+
+            // Tray --------------------------------------------------
+            Message::TrayReady(tx) => self.handle_tray_ready(tx),
+            Message::TrayClick(action) => Self::handle_tray_click(action),
+        };
+        self.push_tray_status();
+        cmd
+    }
+
+    fn view(&self) -> Element<'_, Message> {
+        if let Some(draft) = self.add_remote_draft.as_ref() {
+            return add_remote::view(draft).map(Message::AddRemote);
+        }
+
+        match self
+            .selected
+            .and_then(|id| self.remotes.iter().find(|r| r.id == id))
+        {
+            Some(remote) => {
+                let dirs: &[SyncDir] = self
+                    .sync_dirs
+                    .get(&remote.id)
+                    .map(|v| v.as_slice())
+                    .unwrap_or(&[]);
+                let (draft_local, draft_remote) = self
+                    .sync_dir_drafts
+                    .get(&remote.id)
+                    .map(|(l, r)| (l.as_str(), r.as_str()))
+                    .unwrap_or(("", ""));
+                let eta = self.next_sync_eta(remote.id);
+                let needs_reauth = self.sync_state.needs_reauth(remote.id);
+                remote_page::view(
+                    remote,
+                    dirs,
+                    &self.sync_dir_log_content,
+                    self.sync_state.dir_states(remote.id),
+                    &self.all_known_sync_dirs,
+                    self.exclusion_panel,
+                    &self.sync_dir_exclusions,
+                    &self.draft_exclusion,
+                    (draft_local, draft_remote),
+                    eta,
+                    needs_reauth,
+                )
+                .map(Message::Remote)
+            }
+            None => main_page::view(&self.remotes, self.selected, &self.syncing)
+                .map(Message::Main),
+        }
+    }
+}
+
+impl CelesteApp {
+    /// Snapshot the app's aggregate sync state into a [`TrayStatus`]
+    /// the tray icon can render. Called after every [`update`] so the
+    /// icon stays in lock-step with the UI.
+    fn compute_tray_status(&self) -> TrayStatus {
+        if self.remotes.is_empty() {
+            return TrayStatus::Disconnected;
+        }
+        if !self.syncing.is_empty() {
+            return TrayStatus::Syncing { count: self.syncing.len() };
+        }
+        if self.sync_state.any_degraded() {
+            return TrayStatus::Warning;
+        }
+        if self.remotes.iter().all(|r| !r.policy.enabled) {
+            return TrayStatus::Paused;
+        }
+        let now = Instant::now();
+        let last_sync_ago = self
+            .last_sync_at
+            .values()
+            .map(|t| now.duration_since(*t))
+            .min();
+        TrayStatus::Done { last_sync_ago }
+    }
+
+    /// Push the current tray status to the ksni task, if it's alive.
+    /// Silently drops on a full channel — the tray will catch up on
+    /// the next change (at worst within one scheduler tick).
+    fn push_tray_status(&self) {
+        if let Some(tx) = self.tray_tx.as_ref() {
+            let _ = tx.try_send(self.compute_tray_status());
+        }
+    }
+}
+
+/// True when an error message indicates an auth failure across any backend.
+/// Delegates to the per-backend translators so the classification logic
+/// lives exactly once, in the translator, not scattered across the call site
+/// and here.
+pub(crate) fn is_auth_failure(msg: &str) -> bool {
+    use crate::domain::backend_events::EventTranslator;
+    use crate::infrastructure::translators::{
+        proton::ProtonTranslator, rclone::RcloneTranslator,
+    };
+    RcloneTranslator.is_auth_failure(msg) || ProtonTranslator.is_auth_failure(msg)
+}
+
+/// True when two local paths overlap — equal, or one is a strict
+/// descendant of the other. Used to reject AddSyncDir requests so all
+/// sync_dirs stay on disjoint subtrees.
+pub(crate) fn local_paths_overlap(a: &str, b: &str) -> bool {
+    a == b || b.starts_with(&format!("{a}/")) || a.starts_with(&format!("{b}/"))
+}
+
+/// Bridge the domain `ProviderKind` (persisted on `Remote`) to the
+/// add-remote screen's own enum. Returns `None` for providers the
+/// add-remote UI doesn't currently expose, so re-auth falls back to
+/// the picker rather than locking onto a wrong backend.
+pub(crate) fn map_domain_provider_to_add_remote(
+    p: ProviderKind,
+) -> Option<add_remote::ProviderKind> {
+    match p {
+        ProviderKind::ProtonDrive => Some(add_remote::ProviderKind::ProtonDrive),
+        ProviderKind::GDrive => Some(add_remote::ProviderKind::GDrive),
+        ProviderKind::Dropbox => Some(add_remote::ProviderKind::Dropbox),
+        ProviderKind::PCloud => Some(add_remote::ProviderKind::PCloud),
+        ProviderKind::WebDav => Some(add_remote::ProviderKind::WebDav),
+        ProviderKind::Nextcloud => Some(add_remote::ProviderKind::Nextcloud),
+        ProviderKind::Owncloud => Some(add_remote::ProviderKind::Owncloud),
+    }
+}
+
+/// Launch the Iced application. Blocks until the window closes.
+pub fn run(
+    repo: Arc<dyn Repository>,
+    rclone: Arc<ClientRouter>,
+    config_dir: PathBuf,
+) -> iced::Result {
+    let mut settings = Settings::with_flags(Flags {
+        repo,
+        rclone,
+        config_dir,
+    });
+    // Start hidden — the tray icon brings the window up on demand, so a
+    // login-time launch doesn't steal focus. `Mode::Hidden` works
+    // reliably only before the surface is first mapped; subsequent hide
+    // requests go through `minimize(true)` below.
+    settings.window.visible = false;
+    settings.fonts = fallback_fonts();
+    // Bias iced's default glyph lookup to the sans-serif family so
+    // cosmic-text's fallback layer resolves against the fonts we just
+    // loaded instead of a bare built-in. Without this the ⚠ and
+    // anything beyond basic Latin still falls through to tofu.
+    settings.default_font = iced::Font {
+        family: iced::font::Family::Name("Noto Sans"),
+        ..iced::Font::DEFAULT
+    };
+    CelesteApp::run(settings)
+}
+
+/// Discover fallback fonts via fontconfig at startup and hand them to
+/// iced as `Settings::fonts`. iced 0.12's bundled default only covers
+/// Latin — without fallbacks, anything past ASCII (emoji, ⚠, Cyrillic,
+/// CJK, …) silently drops from the render.
+///
+/// Queries cover three tiers of glyph coverage:
+/// - emoji (color, e.g. Noto Color Emoji) for actual emoji;
+/// - a dedicated symbols font for ⚠ / arrows / checkmarks;
+/// - a general-purpose sans-serif for wide script coverage;
+/// - a monospace for the rare places that want it.
+///
+/// Failures (no `fc-match`, missing fonts, unreadable files) degrade
+/// gracefully — the app still runs, just without the extra coverage.
+/// We log each load/miss to stderr so the first "I see boxes" report
+/// is traceable.
+fn fallback_fonts() -> Vec<std::borrow::Cow<'static, [u8]>> {
+    [
+        "Noto Color Emoji",
+        "Noto Sans Symbols 2",
+        "Noto Sans",
+        "sans-serif",
+        "emoji",
+        "monospace",
+    ]
+    .iter()
+    .filter_map(|q| fc_match_read(q))
+    .map(std::borrow::Cow::Owned)
+    .collect()
+}
+
+fn fc_match_read(pattern: &str) -> Option<Vec<u8>> {
+    let out = std::process::Command::new("fc-match")
+        .args(["-f", "%{file}"])
+        .arg(pattern)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let path = String::from_utf8(out.stdout).ok()?;
+    let path = path.trim();
+    if path.is_empty() {
+        return None;
+    }
+    std::fs::read(path).ok()
+}
