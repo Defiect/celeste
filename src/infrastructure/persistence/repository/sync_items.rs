@@ -1,0 +1,188 @@
+//! Sync-item CRUD against `sync_items`.
+
+use sea_orm::{
+    ActiveValue, ColumnTrait, Condition, DatabaseConnection, EntityTrait, ModelTrait, QueryFilter,
+};
+
+use crate::domain::{
+    ports::{BoxFuture, RepositoryError},
+    sync::{SyncDirId, SyncItem, SyncItemId},
+};
+
+use super::super::models::{SyncItemsActiveModel, SyncItemsColumn, SyncItemsEntity};
+use super::{map_err, map_sync_item};
+
+pub(super) fn list_sync_items(
+    db: &DatabaseConnection,
+    sync_dir: SyncDirId,
+) -> BoxFuture<'_, Result<Vec<SyncItem>, RepositoryError>> {
+    Box::pin(async move {
+        let rows = SyncItemsEntity::find()
+            .filter(SyncItemsColumn::SyncDirId.eq(sync_dir.0))
+            .all(db)
+            .await
+            .map_err(map_err)?;
+        Ok(rows.into_iter().map(map_sync_item).collect())
+    })
+}
+
+pub(super) fn find_sync_item_by_paths(
+    db: &DatabaseConnection,
+    sync_dir: SyncDirId,
+    local_path: String,
+    remote_path: String,
+) -> BoxFuture<'_, Result<Option<SyncItem>, RepositoryError>> {
+    Box::pin(async move {
+        let row = SyncItemsEntity::find()
+            .filter(SyncItemsColumn::SyncDirId.eq(sync_dir.0))
+            .filter(SyncItemsColumn::LocalPath.eq(local_path))
+            .filter(SyncItemsColumn::RemotePath.eq(remote_path))
+            .one(db)
+            .await
+            .map_err(map_err)?;
+        Ok(row.map(map_sync_item))
+    })
+}
+
+pub(super) fn find_sync_item_by_local(
+    db: &DatabaseConnection,
+    sync_dir: SyncDirId,
+    local_path: String,
+) -> BoxFuture<'_, Result<Option<SyncItem>, RepositoryError>> {
+    Box::pin(async move {
+        let row = SyncItemsEntity::find()
+            .filter(SyncItemsColumn::SyncDirId.eq(sync_dir.0))
+            .filter(SyncItemsColumn::LocalPath.eq(local_path))
+            .one(db)
+            .await
+            .map_err(map_err)?;
+        Ok(row.map(map_sync_item))
+    })
+}
+
+pub(super) fn find_sync_item_by_remote(
+    db: &DatabaseConnection,
+    sync_dir: SyncDirId,
+    remote_path: String,
+) -> BoxFuture<'_, Result<Option<SyncItem>, RepositoryError>> {
+    Box::pin(async move {
+        let row = SyncItemsEntity::find()
+            .filter(SyncItemsColumn::SyncDirId.eq(sync_dir.0))
+            .filter(SyncItemsColumn::RemotePath.eq(remote_path))
+            .one(db)
+            .await
+            .map_err(map_err)?;
+        Ok(row.map(map_sync_item))
+    })
+}
+
+pub(super) fn insert_sync_item(
+    db: &DatabaseConnection,
+    sync_dir: SyncDirId,
+    local_path: String,
+    remote_path: String,
+    last_local_timestamp: i64,
+    last_remote_timestamp: i64,
+) -> BoxFuture<'_, Result<(), RepositoryError>> {
+    Box::pin(async move {
+        let active = SyncItemsActiveModel {
+            sync_dir_id: ActiveValue::Set(sync_dir.0),
+            local_path: ActiveValue::Set(local_path),
+            remote_path: ActiveValue::Set(remote_path),
+            last_local_timestamp: ActiveValue::Set(
+                last_local_timestamp.try_into().unwrap_or(i32::MAX),
+            ),
+            last_remote_timestamp: ActiveValue::Set(
+                last_remote_timestamp.try_into().unwrap_or(i32::MAX),
+            ),
+            ..Default::default()
+        };
+        SyncItemsEntity::insert(active)
+            .exec(db)
+            .await
+            .map_err(map_err)?;
+        Ok(())
+    })
+}
+
+pub(super) fn update_sync_item_timestamps(
+    db: &DatabaseConnection,
+    id: SyncItemId,
+    last_local_timestamp: i64,
+    last_remote_timestamp: i64,
+) -> BoxFuture<'_, Result<(), RepositoryError>> {
+    Box::pin(async move {
+        let active = SyncItemsActiveModel {
+            id: ActiveValue::Unchanged(id.0),
+            last_local_timestamp: ActiveValue::Set(
+                last_local_timestamp.try_into().unwrap_or(i32::MAX),
+            ),
+            last_remote_timestamp: ActiveValue::Set(
+                last_remote_timestamp.try_into().unwrap_or(i32::MAX),
+            ),
+            ..Default::default()
+        };
+        SyncItemsEntity::update(active)
+            .exec(db)
+            .await
+            .map_err(map_err)?;
+        Ok(())
+    })
+}
+
+pub(super) fn delete_sync_item(
+    db: &DatabaseConnection,
+    id: SyncItemId,
+) -> BoxFuture<'_, Result<(), RepositoryError>> {
+    Box::pin(async move {
+        SyncItemsEntity::delete_by_id(id.0)
+            .exec(db)
+            .await
+            .map_err(map_err)?;
+        Ok(())
+    })
+}
+
+pub(super) fn delete_sync_item_by_paths(
+    db: &DatabaseConnection,
+    sync_dir: SyncDirId,
+    local_path: String,
+    remote_path: String,
+) -> BoxFuture<'_, Result<(), RepositoryError>> {
+    Box::pin(async move {
+        if let Some(row) = SyncItemsEntity::find()
+            .filter(SyncItemsColumn::SyncDirId.eq(sync_dir.0))
+            .filter(SyncItemsColumn::LocalPath.eq(local_path))
+            .filter(SyncItemsColumn::RemotePath.eq(remote_path))
+            .one(db)
+            .await
+            .map_err(map_err)?
+        {
+            row.delete(db).await.map_err(map_err)?;
+        }
+        Ok(())
+    })
+}
+
+pub(super) fn delete_sync_items_with_local_prefix(
+    db: &DatabaseConnection,
+    sync_dir: SyncDirId,
+    local_prefix: String,
+) -> BoxFuture<'_, Result<(), RepositoryError>> {
+    Box::pin(async move {
+        SyncItemsEntity::delete_many()
+            .filter(SyncItemsColumn::SyncDirId.eq(sync_dir.0))
+            .filter(
+                Condition::any()
+                    .add(SyncItemsColumn::LocalPath.eq(local_prefix.clone()))
+                    .add(
+                        SyncItemsColumn::LocalPath
+                            .starts_with(format!("{local_prefix}/").as_str()),
+                    ),
+            )
+            .exec(db)
+            .await
+            .map_err(map_err)?;
+        Ok(())
+    })
+}
