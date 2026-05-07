@@ -5,9 +5,14 @@
 
 #![cfg(test)]
 
-use std::{fs, path::PathBuf, sync::Mutex};
+use std::{
+    collections::HashSet,
+    fs,
+    path::PathBuf,
+    sync::Mutex,
+};
 
-use super::*;
+use super::{planner::ancestor_in_set, run, Outcome};
 use crate::{
     domain::{
         events::SyncEvent,
