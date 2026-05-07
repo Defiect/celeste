@@ -19,13 +19,13 @@ use crate::{
         ports::cancel_never,
         sync::{SyncDirId, SyncError},
     },
-    test_support::{remote, remote_item, sync_dir, touch_mtime, FakeRclone, FakeRepo, TempDir},
+    test_support::{remote, remote_item, sync_dir, touch_mtime, FakeBackend, FakeRepo, TempDir},
 };
 
 fn run_full(
     tmp: &TempDir,
     repo: &FakeRepo,
-    client: &FakeRclone,
+    client: &FakeBackend,
 ) -> (Outcome, Vec<SyncEvent>) {
     let r = remote(1, "TestRemote");
     let sd = sync_dir(1, 1, tmp.as_str(), "");
@@ -71,7 +71,7 @@ fn snapshot_aborts_when_list_fails() {
         1_700_000_000,
     );
 
-    let client = FakeRclone::default();
+    let client = FakeBackend::default();
     client.set_list("", Err("connection reset".to_owned()));
 
     let (outcome, _events) = run_full(&tmp, &repo, &client);
@@ -95,7 +95,7 @@ fn steady_state_produces_no_actions() {
         1_700_000_000,
     );
 
-    let client = FakeRclone::default();
+    let client = FakeBackend::default();
     client.set_list("", Ok(vec![remote_item("a.txt", false, 1_700_000_000)]));
 
     let (outcome, events) = run_full(&tmp, &repo, &client);
@@ -121,7 +121,7 @@ fn local_deleted_mirrors_to_remote() {
         1_700_000_000,
     );
 
-    let client = FakeRclone::default();
+    let client = FakeBackend::default();
     client.set_list("", Ok(vec![remote_item("gone.txt", false, 1_700_000_000)]));
 
     let (outcome, _events) = run_full(&tmp, &repo, &client);
@@ -145,7 +145,7 @@ fn remote_deleted_mirrors_locally() {
         1_700_000_000,
     );
 
-    let client = FakeRclone::default();
+    let client = FakeBackend::default();
     client.set_list("", Ok(vec![]));
 
     let (outcome, _events) = run_full(&tmp, &repo, &client);
@@ -171,7 +171,7 @@ fn both_sides_changed_remote_newer_downloads() {
         1_700_000_000,
     );
 
-    let client = FakeRclone::default();
+    let client = FakeBackend::default();
     client.set_list("", Ok(vec![remote_item("a.txt", false, 1_700_000_700)]));
 
     let (outcome, events) = run_full(&tmp, &repo, &client);
@@ -212,7 +212,7 @@ fn both_sides_changed_local_newer_uploads() {
         1_700_000_000,
     );
 
-    let client = FakeRclone::default();
+    let client = FakeBackend::default();
     client.set_list("", Ok(vec![remote_item("a.txt", false, 1_700_000_700)]));
 
     let (outcome, events) = run_full(&tmp, &repo, &client);
@@ -245,7 +245,7 @@ fn upload_swallows_source_gone_race() {
     let local = tmp.write_file("a.txt", b"hi");
     touch_mtime(&local, 1_700_000_000);
     let repo = FakeRepo::new();
-    let client = FakeRclone::default();
+    let client = FakeBackend::default();
     client.set_list("", Ok(vec![]));
     // Simulate the race by removing the source before apply() runs —
     // our `!Path::new(local).exists()` early-exit short-circuits the
@@ -275,7 +275,7 @@ fn cancellation_between_snapshot_and_apply_stops_the_pass() {
         1_700_000_000,
     );
 
-    let client = FakeRclone::default();
+    let client = FakeBackend::default();
     client.set_list(
         "",
         Ok(vec![remote_item("doomed.txt", false, 1_700_000_000)]),
@@ -328,7 +328,7 @@ fn rate_limit_probe_short_circuits_to_degraded() {
         1_700_000_000,
     );
 
-    let client = FakeRclone::default();
+    let client = FakeBackend::default();
     // Listing is fine on its own — it's the probe that flags the pass.
     client.set_list("", Ok(vec![]));
 
@@ -404,7 +404,7 @@ fn delete_local_skipped_when_parent_listing_has_no_db_siblings() {
         );
     }
 
-    let client = FakeRclone::default();
+    let client = FakeBackend::default();
     // Listing: all root files present, NONE of the dir/ siblings
     // present (rate-limit returned an empty subfolder).
     let mut listing = Vec::new();
@@ -459,7 +459,7 @@ fn delete_local_still_fires_with_visible_sibling() {
         1_700_000_000,
     );
 
-    let client = FakeRclone::default();
+    let client = FakeBackend::default();
     // Listing has the sibling but not the deleted file.
     client.set_list(
         "",
@@ -505,7 +505,7 @@ fn delete_local_fires_when_listing_replaced_under_parent() {
         1_700_000_000,
     );
 
-    let client = FakeRclone::default();
+    let client = FakeBackend::default();
     // Listing: different content under the same parent — none of the
     // DB-tracked files survive, but two new ones are present. A true
     // rate-limit glitch would return zero items under dir/.
@@ -566,7 +566,7 @@ fn delete_remote_skipped_when_parent_walk_has_no_db_siblings() {
         roots.push(p);
     }
 
-    let client = FakeRclone::default();
+    let client = FakeBackend::default();
     let mut listing = Vec::new();
     for i in 0..20 {
         listing.push(remote_item(&format!("root_{i}.txt"), false, 1_700_000_000));
@@ -646,7 +646,7 @@ fn walk_read_dir_error_blocks_delete_remote_under_subtree() {
         1_700_000_000,
     );
 
-    let client = FakeRclone::default();
+    let client = FakeBackend::default();
     client.set_list(
         "",
         Ok(vec![
@@ -700,7 +700,7 @@ fn editor_swap_files_are_not_seen() {
     touch_mtime(&swap, 1_700_000_000);
 
     let repo = FakeRepo::new();
-    let client = FakeRclone::default();
+    let client = FakeBackend::default();
     client.set_list("", Ok(vec![remote_item("doc.txt", false, 1_700_000_000)]));
     // doc.txt is brand new (no DB row); expected action: record it.
     // Stat after upsert returns the same item.
