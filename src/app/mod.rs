@@ -62,6 +62,11 @@ pub enum Message {
     /// A tray action from the user (menu click or left-click on the
     /// icon).
     TrayClick(TrayAction),
+    /// User-initiated quit — tray "Quit Celeste" or the window-manager
+    /// close button. Handled by an immediate `std::process::exit` so we
+    /// don't wait for in-flight FFI calls (notably librclone listings,
+    /// which expose no cancellation handle) to return.
+    Quit,
 }
 
 /// Aggregate outcome across every sync_dir of one remote's pass. The
@@ -211,7 +216,16 @@ impl CelesteApp {
             tray::TraySignal::Ready(tx) => Message::TrayReady(tx),
             tray::TraySignal::Action(action) => Message::TrayClick(action),
         });
-        Subscription::batch([events, ticker, tray])
+        // Catch the window-manager close (X button, Alt-F4, etc.) and
+        // route it to the same instant-exit path as the tray Quit
+        // entry. Without this iced would try to drive its normal
+        // shutdown, which blocks while the librclone FFI call is still
+        // outstanding.
+        let window_close = iced::event::listen_with(|event, _status, _id| match event {
+            iced::Event::Window(iced::window::Event::CloseRequested) => Some(Message::Quit),
+            _ => None,
+        });
+        Subscription::batch([events, ticker, tray, window_close])
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
@@ -280,7 +294,8 @@ impl CelesteApp {
 
             // Tray --------------------------------------------------
             Message::TrayReady(tx) => self.handle_tray_ready(tx),
-            Message::TrayClick(action) => Self::handle_tray_click(action),
+            Message::TrayClick(action) => self.handle_tray_click(action),
+            Message::Quit => self.handle_quit(),
         };
         self.push_tray_status();
         cmd
@@ -416,7 +431,12 @@ pub fn run(
     .theme(CelesteApp::theme)
     .subscription(CelesteApp::subscription)
     .window(window_settings)
-    .default_font(default_font);
+    .default_font(default_font)
+    // We handle CloseRequested ourselves — see `Message::Quit`. Letting
+    // iced drive the default close path would wait for the active
+    // librclone FFI call to return, which can take minutes for a
+    // mid-listing remote.
+    .exit_on_close_request(false);
 
     for font in fallback_fonts() {
         builder = builder.font(font);

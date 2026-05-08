@@ -1,5 +1,7 @@
 //! Tray-related message handlers: lifecycle handshake and click actions.
 
+use std::sync::atomic::Ordering;
+
 use iced::Task;
 use tokio::sync::mpsc;
 
@@ -23,7 +25,7 @@ impl CelesteApp {
 
     /// Handle [`Message::TrayClick`] — translate the user-action into
     /// the appropriate window-mode change.
-    pub(in crate::app) fn handle_tray_click(action: TrayAction) -> Task<Message> {
+    pub(in crate::app) fn handle_tray_click(&mut self, action: TrayAction) -> Task<Message> {
         match action {
             TrayAction::Open => {
                 // Belt-and-braces: Wayland keeps a minimised xdg-toplevel
@@ -51,11 +53,19 @@ impl CelesteApp {
                     ])
                 })
             }
-            TrayAction::Quit => {
-                // Closing the main window ends the Iced runtime, which
-                // returns control to `main` and lets the process exit.
-                iced::window::latest().and_then(iced::window::close)
-            }
+            TrayAction::Quit => self.handle_quit(),
         }
+    }
+
+    /// Hard-exit the process. We can't wait for in-flight FFI calls
+    /// (librclone's RPC surface has no cancel handle, so a mid-listing
+    /// Google Drive pass would block for minutes); set every cancel
+    /// flag as a courtesy for any non-FFI work, then bail. The OS will
+    /// reap the threads and the GUI window when the process exits.
+    pub(in crate::app) fn handle_quit(&mut self) -> Task<Message> {
+        for flag in self.cancel_flags.values() {
+            flag.store(true, Ordering::Release);
+        }
+        std::process::exit(0);
     }
 }
