@@ -22,7 +22,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use iced::{subscription, Subscription};
+use iced::{stream, Subscription};
 use ksni::{
     menu::{StandardItem, TextDirection},
     Icon, MenuItem, ToolTip, TrayMethods,
@@ -78,17 +78,11 @@ pub enum TraySignal {
     Action(TrayAction),
 }
 
-/// Zero-sized marker so the tray subscription carries a different
-/// hashed id from the sync-events subscription in `app.rs`.
-struct TrayMarker;
-
 /// Build the Iced subscription that owns the ksni service. Batch this
 /// alongside the app's existing subscriptions.
 pub fn subscription() -> Subscription<TraySignal> {
-    subscription::channel(
-        std::any::TypeId::of::<TrayMarker>(),
-        32,
-        |mut output| async move {
+    Subscription::run(|| {
+        stream::channel(32, async move |mut output| {
             use iced::futures::SinkExt;
 
             let (click_tx, mut click_rx) = mpsc::channel::<TrayAction>(32);
@@ -131,9 +125,8 @@ pub fn subscription() -> Subscription<TraySignal> {
             }
 
             std::future::pending::<()>().await;
-            unreachable!()
-        },
-    )
+        })
+    })
 }
 
 /// The tray state held inside the ksni service task. Menu callbacks

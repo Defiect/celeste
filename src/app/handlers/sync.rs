@@ -9,7 +9,7 @@ use std::{
     time::Instant,
 };
 
-use iced::Command;
+use iced::Task;
 
 use crate::{
     domain::{events::SyncEvent, remote::RemoteId},
@@ -20,9 +20,9 @@ use super::super::{CelesteApp, Message, PassVerdict};
 
 impl CelesteApp {
     /// Handle [`Message::SyncStarted`] — mark the remote as in-flight.
-    pub(in crate::app) fn handle_sync_started(&mut self, id: RemoteId) -> Command<Message> {
+    pub(in crate::app) fn handle_sync_started(&mut self, id: RemoteId) -> Task<Message> {
         self.syncing.insert(id);
-        Command::none()
+        Task::none()
     }
 
     /// Handle [`Message::SyncFinished`] — record the verdict, decay
@@ -31,7 +31,7 @@ impl CelesteApp {
         &mut self,
         id: RemoteId,
         verdict: PassVerdict,
-    ) -> Command<Message> {
+    ) -> Task<Message> {
         self.syncing.remove(&id);
         self.last_sync_at.insert(id, Instant::now());
         match verdict {
@@ -57,13 +57,13 @@ impl CelesteApp {
         if self.refresh_requested_after.remove(&id) {
             self.start_sync(id)
         } else {
-            Command::none()
+            Task::none()
         }
     }
 
     /// Handle [`Message::Tick`] — fire syncs for every enabled remote
     /// whose interval has elapsed and that isn't already in flight.
-    pub(in crate::app) fn handle_tick(&mut self) -> Command<Message> {
+    pub(in crate::app) fn handle_tick(&mut self) -> Task<Message> {
         // Check each enabled remote; if its interval has elapsed and
         // it's not already syncing, kick off a new pass. Remotes
         // currently inside a backoff window have `syncs_to_skip > 0` —
@@ -95,18 +95,18 @@ impl CelesteApp {
             }
             due.push(id);
         }
-        let cmds: Vec<Command<Message>> =
+        let cmds: Vec<Task<Message>> =
             due.into_iter().map(|id| self.start_sync(id)).collect();
-        Command::batch(cmds)
+        Task::batch(cmds)
     }
 
     /// Spawn a sync pass for one remote. No-op if already syncing.
     /// Marks the remote as in-flight so the sidebar shows "(syncing…)"
     /// and returns a Command that will deliver `SyncFinished(id)` when
     /// the blocking task completes.
-    pub(in crate::app) fn start_sync(&mut self, id: RemoteId) -> Command<Message> {
+    pub(in crate::app) fn start_sync(&mut self, id: RemoteId) -> Task<Message> {
         if self.syncing.contains(&id) {
-            return Command::none();
+            return Task::none();
         }
         // Fresh cancel flag for this pass. Reusing the existing Arc
         // lets any stored reference remain wired up (we flip-flop the
@@ -122,7 +122,7 @@ impl CelesteApp {
         let rclone = self.rclone.clone();
         let events_tx = self.events_tx.clone();
         let stderr_capture = self.stderr_capture.clone();
-        Command::perform(
+        Task::perform(
             async move {
                 let remote = match repo.find_remote(id).await {
                     Ok(Some(r)) => r,

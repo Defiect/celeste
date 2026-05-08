@@ -2,7 +2,7 @@
 
 use std::sync::atomic::Ordering;
 
-use iced::Command;
+use iced::Task;
 use tokio::sync::mpsc;
 
 use crate::domain::{
@@ -20,14 +20,14 @@ impl CelesteApp {
     pub(in crate::app) fn handle_worker_ready(
         &mut self,
         tx: mpsc::Sender<SyncEvent>,
-    ) -> Command<Message> {
+    ) -> Task<Message> {
         self.events_tx = Some(tx);
-        Command::none()
+        Task::none()
     }
 
     /// Route a single sync event through the state machine, the log
     /// buffer, and (for auth failures) auto-pause persistence.
-    pub(in crate::app) fn handle_sync_event(&mut self, event: SyncEvent) -> Command<Message> {
+    pub(in crate::app) fn handle_sync_event(&mut self, event: SyncEvent) -> Task<Message> {
         let mut auto_pause: Option<(RemoteId, crate::domain::remote::SyncPolicy)> = None;
         match event {
             SyncEvent::SyncDirStatus {
@@ -102,14 +102,14 @@ impl CelesteApp {
         }
         if let Some((id, policy)) = auto_pause {
             let repo = self.repo.clone();
-            Command::perform(
+            Task::perform(
                 async move {
                     let _ = repo.set_policy(id, policy).await;
                 },
                 |_| Message::PolicySaved,
             )
         } else {
-            Command::none()
+            Task::none()
         }
     }
 }

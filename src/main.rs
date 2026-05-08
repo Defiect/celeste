@@ -157,7 +157,7 @@ fn notify_reauth_needed(remote_name: &str) {
 fn show_legacy_config_popup(config_dir: &std::path::Path) {
     use iced::{
         widget::{button, column, text},
-        window, Application, Command, Element, Length, Settings, Theme,
+        Element, Length, Task, Theme,
     };
 
     struct LegacyPopup {
@@ -169,41 +169,40 @@ fn show_legacy_config_popup(config_dir: &std::path::Path) {
         Ack,
     }
 
-    impl Application for LegacyPopup {
-        type Executor = iced::executor::Default;
-        type Message = Msg;
-        type Theme = Theme;
-        type Flags = String;
-
-        fn new(config_dir: String) -> (Self, Command<Msg>) {
-            (Self { config_dir }, Command::none())
-        }
-
-        fn title(&self) -> String {
-            "Celeste — outdated configuration".to_owned()
-        }
-
-        fn update(&mut self, _msg: Msg) -> Command<Msg> {
-            window::close(window::Id::MAIN)
-        }
-
-        fn view(&self) -> Element<'_, Msg> {
-            column![
-                text("Outdated Celeste configuration detected").size(20),
-                text(format!(
-                    "The sync algorithm was rewritten and the database schema is no longer compatible.\n\nDelete the following directory and restart Celeste:\n\n  {}",
-                    self.config_dir,
-                ))
-                .size(14),
-                button(text("Close Celeste")).on_press(Msg::Ack),
-            ]
-            .spacing(16)
-            .padding(24)
-            .max_width(560)
-            .width(Length::Fill)
-            .into()
-        }
+    fn legacy_update(_state: &mut LegacyPopup, _msg: Msg) -> Task<Msg> {
+        iced::window::latest().and_then(iced::window::close)
     }
 
-    let _ = LegacyPopup::run(Settings::with_flags(config_dir.display().to_string()));
+    fn legacy_view(state: &LegacyPopup) -> Element<'_, Msg> {
+        column![
+            text("Outdated Celeste configuration detected").size(20),
+            text(format!(
+                "The sync algorithm was rewritten and the database schema is no longer compatible.\n\nDelete the following directory and restart Celeste:\n\n  {}",
+                state.config_dir,
+            ))
+            .size(14),
+            button(text("Close Celeste")).on_press(Msg::Ack),
+        ]
+        .spacing(16)
+        .padding(24)
+        .max_width(560)
+        .width(Length::Fill)
+        .into()
+    }
+
+    fn legacy_theme(_state: &LegacyPopup) -> Theme {
+        Theme::Dark
+    }
+
+    let config_dir = config_dir.display().to_string();
+    let _ = iced::application(
+        move || LegacyPopup {
+            config_dir: config_dir.clone(),
+        },
+        legacy_update,
+        legacy_view,
+    )
+    .title("Celeste — outdated configuration")
+    .theme(legacy_theme)
+    .run();
 }

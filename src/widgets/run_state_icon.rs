@@ -15,7 +15,7 @@ pub const DEFAULT_SIZE: f32 = 24.0;
 /// Render the per-row status icon, or a same-sized blank when there's no
 /// run-state yet so labels keep horizontal alignment.
 pub fn status_icon<'a, Msg: 'a>(state: Option<RunState>, size: f32) -> Element<'a, Msg> {
-    let placeholder = || -> Element<'a, Msg> { Space::with_width(Length::Fixed(size)).into() };
+    let placeholder = || -> Element<'a, Msg> { Space::new().width(Length::Fixed(size)).into() };
     match state {
         None | Some(RunState::Waiting) => placeholder(),
         Some(RunState::Paused) => icon_svg(icondata::AiPauseCircleOutlined, "#6b7280", size),

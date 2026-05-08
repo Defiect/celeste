@@ -3,7 +3,7 @@
 use std::{collections::HashMap, time::Duration};
 
 use iced::{
-    widget::{button, column, container, row, scrollable, text_editor, text_input, Rule, Space},
+    widget::{button, column, container, row, rule, scrollable, text_editor, text_input, Space},
     Alignment, Element, Length,
 };
 
@@ -27,7 +27,7 @@ pub const MAX_LOG_LINES: usize = 200;
 const STATUS_ICON_SIZE: f32 = 24.0;
 /// Font size for the sync_dir path label so it reads larger than the
 /// surrounding chrome (badges, log lines).
-const SYNC_DIR_FONT_SIZE: u16 = 16;
+const SYNC_DIR_FONT_SIZE: f32 = 16.0;
 /// Right-side breathing room reserved inside the cards scrollable so
 /// the trailing buttons aren't sat on by the outer scrollbar.
 const CARDS_RIGHT_GUTTER: u16 = 18;
@@ -74,10 +74,10 @@ pub fn view<'a>(
                 tooltip(
                     row![
                         countdown_text,
-                        Space::with_width(Length::Fixed(4.0)),
+                        Space::new().width(Length::Fixed(4.0)),
                         text("⚠").size(14),
                     ]
-                    .align_items(Alignment::Center),
+                    .align_y(Alignment::Center),
                     text(
                         "Backoff active — the provider returned rate-limit \
                          warnings on the last pass, so Celeste will skip \
@@ -101,9 +101,9 @@ pub fn view<'a>(
     let header = row![
         button(text("←")).on_press(Msg::Back),
         text(&remote.name).size(22),
-        Space::with_width(Length::Fixed(12.0)),
+        Space::new().width(Length::Fixed(12.0)),
         countdown,
-        Space::with_width(Length::Fill),
+        Space::new().width(Length::Fill),
         button(text("Refresh now")).on_press(Msg::RefreshNow(remote.id)),
         button(text("Reauthenticate"))
             .on_press(Msg::Reauthenticate(remote.id, remote.name.clone())),
@@ -111,7 +111,7 @@ pub fn view<'a>(
             .on_press(Msg::DeleteRemote(remote.id, remote.name.clone())),
     ]
     .spacing(ROW_SPACING)
-    .align_items(Alignment::Center);
+    .align_y(Alignment::Center);
 
     // ── Re-auth banner (native-proton session missing / expired) ───────────
     let reauth_banner: Option<Element<'a, Msg>> = if needs_reauth {
@@ -129,12 +129,12 @@ pub fn view<'a>(
                     button(text("Reauthenticate"))
                         .on_press(Msg::Reauthenticate(remote.id, remote.name.clone())),
                 ]
-                .align_items(Alignment::Center)
+                .align_y(Alignment::Center)
                 .spacing(ROW_SPACING),
             )
             .padding(8)
             .width(Length::Fill)
-            .style(iced::theme::Container::Box)
+            .style(container::bordered_box)
             .into(),
         )
     } else {
@@ -186,7 +186,7 @@ pub fn view<'a>(
             )),
         ]
         .spacing(ROW_SPACING)
-        .align_items(Alignment::Center);
+        .align_y(Alignment::Center);
 
         // Log area: read-only multi-line editor stretched to the card
         // width with a small horizontal inset so its frame doesn't merge
@@ -210,17 +210,17 @@ pub fn view<'a>(
         } else {
             // Defensive fallback: a same-sized blank so card layout
             // stays steady if a sync_dir somehow lacks a Content entry.
-            container(Space::with_height(Length::Fixed(LOG_HEIGHT)))
+            container(Space::new().height(Length::Fixed(LOG_HEIGHT)))
                 .padding([0, 6])
                 .width(Length::Fill)
                 .into()
         };
 
-        let mut card_col = column![top_row, log_area].spacing(ROW_SPACING / 2);
+        let mut card_col = column![top_row, log_area].spacing(ROW_SPACING / 2.0);
 
         // ── Exclusion panel (shown when toggled) ────────────────────────────
         if exclusion_panel == Some(sd.id) {
-            card_col = card_col.push(Rule::horizontal(1));
+            card_col = card_col.push(rule::horizontal(1));
             card_col = card_col.push(exclusion_panel_view(
                 sd,
                 &auto_excl,
@@ -233,7 +233,7 @@ pub fn view<'a>(
             container(card_col)
                 .padding(8)
                 .width(Length::Fill)
-                .style(iced::theme::Container::Box),
+                .style(container::bordered_box),
         );
     }
 
@@ -258,20 +258,20 @@ pub fn view<'a>(
     // scrollbar drawn over the right edge.
     let sync_dirs_section = scrollable(
         container(cards_col)
-            .padding([0, CARDS_RIGHT_GUTTER, 0, 0])
+            .padding(iced::Padding::default().right(f32::from(CARDS_RIGHT_GUTTER)))
             .width(Length::Fill),
     )
     .height(Length::FillPortion(2));
 
     let settings_panel = settings::view(remote).map(Msg::Settings);
 
-    let mut page = column![header, Rule::horizontal(1)].spacing(SECTION_SPACING);
+    let mut page = column![header, rule::horizontal(1)].spacing(SECTION_SPACING);
     if let Some(banner) = reauth_banner {
         page = page.push(banner);
     }
     page = page
         .push(sync_dirs_section)
-        .push(Rule::horizontal(1))
+        .push(rule::horizontal(1))
         .push(settings_panel);
 
     container(page).padding(PAGE_PADDING).into()
@@ -284,7 +284,7 @@ fn exclusion_panel_view<'a>(
     custom_excl: &'a [SyncDirExclusion],
     draft: &'a str,
 ) -> Element<'a, Msg> {
-    let mut col = column![].spacing(ROW_SPACING / 2);
+    let mut col = column![].spacing(ROW_SPACING / 2.0);
 
     // Auto-excluded (descendant sync_dirs) — read-only. Show the
     // descendant's remote path so it lines up with what the provider
@@ -312,11 +312,11 @@ fn exclusion_panel_view<'a>(
             col = col.push(
                 row![
                     text(format!("  \"{}\"", excl.remote_path)).size(12),
-                    Space::with_width(Length::Fill),
+                    Space::new().width(Length::Fill),
                     button(text("×").size(11))
                         .on_press(Msg::RemoveExclusion(excl_id, sd_id)),
                 ]
-                .align_items(iced::Alignment::Center)
+                .align_y(iced::Alignment::Center)
                 .spacing(ROW_SPACING),
             );
         }

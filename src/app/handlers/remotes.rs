@@ -1,7 +1,7 @@
 //! Remote-level message handlers: load list, add/reauth, delete,
 //! refresh, navigation.
 
-use iced::Command;
+use iced::Task;
 
 use crate::{
     domain::{
@@ -20,7 +20,7 @@ impl CelesteApp {
     pub(in crate::app) fn handle_remotes_loaded(
         &mut self,
         mut remotes: Vec<Remote>,
-    ) -> Command<Message> {
+    ) -> Task<Message> {
         // Ask rclone for each remote's backend type so the scheduler
         // can enforce provider-specific interval floors (see
         // `ProviderKind::min_interval`). A failure here is non-fatal —
@@ -35,22 +35,22 @@ impl CelesteApp {
         for r in &self.remotes {
             self.sync_state.ensure_remote(r.id, r.policy.enabled);
         }
-        Command::none()
+        Task::none()
     }
 
     /// Handle [`main_page::Msg::Selected`] — navigate to a remote and
     /// kick off two parallel reads (this remote's sync_dirs + the
     /// global sync_dirs list for auto-exclusion).
-    pub(in crate::app) fn handle_remote_selected(&mut self, id: RemoteId) -> Command<Message> {
+    pub(in crate::app) fn handle_remote_selected(&mut self, id: RemoteId) -> Task<Message> {
         self.selected = Some(id);
         let repo = self.repo.clone();
         let repo2 = self.repo.clone();
-        Command::batch([
-            Command::perform(
+        Task::batch([
+            Task::perform(
                 async move { repo.list_sync_dirs(id).await.unwrap_or_default() },
                 move |sd| Message::SyncDirsLoaded(id, sd),
             ),
-            Command::perform(
+            Task::perform(
                 async move { repo2.list_all_sync_dirs().await.unwrap_or_default() },
                 Message::AllSyncDirsRefreshed,
             ),
@@ -59,23 +59,23 @@ impl CelesteApp {
 
     /// Handle [`main_page::Msg::RefreshAll`] — start a sync pass for
     /// every enabled, idle remote.
-    pub(in crate::app) fn handle_refresh_all(&mut self) -> Command<Message> {
+    pub(in crate::app) fn handle_refresh_all(&mut self) -> Task<Message> {
         let ids: Vec<RemoteId> = self
             .remotes
             .iter()
             .filter(|r| r.policy.enabled && !self.syncing.contains(&r.id))
             .map(|r| r.id)
             .collect();
-        let cmds: Vec<Command<Message>> =
+        let cmds: Vec<Task<Message>> =
             ids.into_iter().map(|id| self.start_sync(id)).collect();
-        Command::batch(cmds)
+        Task::batch(cmds)
     }
 
     /// Handle [`main_page::Msg::AddRemote`] — open the Add Remote
     /// dialog with a fresh draft.
-    pub(in crate::app) fn handle_open_add_remote(&mut self) -> Command<Message> {
+    pub(in crate::app) fn handle_open_add_remote(&mut self) -> Task<Message> {
         self.add_remote_draft = Some(add_remote::Draft::default());
-        Command::none()
+        Task::none()
     }
 
     /// Handle [`Message::AddRemote`] — drive the add/reauth dialog
@@ -84,9 +84,9 @@ impl CelesteApp {
     pub(in crate::app) fn handle_add_remote_msg(
         &mut self,
         sub: add_remote::Msg,
-    ) -> Command<Message> {
+    ) -> Task<Message> {
         let Some(draft) = self.add_remote_draft.as_mut() else {
-            return Command::none();
+            return Task::none();
         };
         match sub {
             add_remote::Msg::NameChanged(s) => draft.name = s,
@@ -99,16 +99,16 @@ impl CelesteApp {
             add_remote::Msg::ClientSecretChanged(s) => draft.client_secret = s,
             add_remote::Msg::Cancel => {
                 self.add_remote_draft = None;
-                return Command::none();
+                return Task::none();
             }
             add_remote::Msg::Submit => {
                 let Some(kind) = draft.provider else {
                     draft.error = Some("Pick a provider first.".to_owned());
-                    return Command::none();
+                    return Task::none();
                 };
                 if draft.name.trim().is_empty() {
                     draft.error = Some("Name is required.".to_owned());
-                    return Command::none();
+                    return Task::none();
                 }
                 let name = draft.name.clone();
                 let repo = self.repo.clone();
@@ -119,13 +119,13 @@ impl CelesteApp {
                     if draft.url.trim().is_empty() || draft.user.trim().is_empty() {
                         draft.error =
                             Some("URL and username are required.".to_owned());
-                        return Command::none();
+                        return Task::none();
                     }
                     let url = draft.url.clone();
                     let user = draft.user.clone();
                     let pass = draft.pass.clone();
                     draft.busy = true;
-                    return Command::perform(
+                    return Task::perform(
                         async move {
                             tokio::task::spawn_blocking(move || {
                                 crate::services::auth::add_webdav_remote(
@@ -142,7 +142,7 @@ impl CelesteApp {
                 if kind.is_proton_drive() {
                     if draft.user.trim().is_empty() {
                         draft.error = Some("Username is required.".to_owned());
-                        return Command::none();
+                        return Task::none();
                     }
                     let user = draft.user.clone();
                     let pass = draft.pass.clone();
@@ -162,7 +162,7 @@ impl CelesteApp {
                             .iter()
                             .find(|r| r.name == name)
                             .map(|r| r.id);
-                        return Command::perform(
+                        return Task::perform(
                             async move {
                                 let router_inner = router.clone();
                                 let res = tokio::task::spawn_blocking(move || {
@@ -188,7 +188,7 @@ impl CelesteApp {
                             Message::AddRemoteResult,
                         );
                     }
-                    return Command::perform(
+                    return Task::perform(
                         async move {
                             tokio::task::spawn_blocking(move || {
                                 crate::services::auth::add_proton_drive_remote(
@@ -226,7 +226,7 @@ impl CelesteApp {
                             .find(|r| r.name == name)
                             .map(|r| r.id);
                         let rclone_inner = rclone.clone();
-                        return Command::perform(
+                        return Task::perform(
                             async move {
                                 let res = tokio::task::spawn_blocking(move || {
                                     let client_id = (!client_id.is_empty())
@@ -254,7 +254,7 @@ impl CelesteApp {
                             Message::AddRemoteResult,
                         );
                     }
-                    return Command::perform(
+                    return Task::perform(
                         async move {
                             tokio::task::spawn_blocking(move || {
                                 let client_id = (!client_id.is_empty())
@@ -278,13 +278,13 @@ impl CelesteApp {
                 }
             }
         }
-        Command::none()
+        Task::none()
     }
 
     /// Handle [`Message::AddRemoteResult(Ok)`] — close the dialog,
     /// clear auth-failure state, re-enable the policy if it was
     /// auto-paused, and reload the remotes list.
-    pub(in crate::app) fn handle_add_remote_result_ok(&mut self, id: RemoteId) -> Command<Message> {
+    pub(in crate::app) fn handle_add_remote_result_ok(&mut self, id: RemoteId) -> Task<Message> {
         self.add_remote_draft = None;
         // Restore all dir states and re-enable the remote in the state
         // machine (clears AuthNeeded → Waiting, paused siblings →
@@ -302,13 +302,13 @@ impl CelesteApp {
         }
         let repo = self.repo.clone();
         let repo_for_policy = self.repo.clone();
-        let reload = Command::perform(
+        let reload = Task::perform(
             async move { repo.list_remotes().await.unwrap_or_default() },
             Message::RemotesLoaded,
         );
         if let Some(policy) = reenable_policy {
-            Command::batch([
-                Command::perform(
+            Task::batch([
+                Task::perform(
                     async move {
                         let _ = repo_for_policy.set_policy(id, policy).await;
                     },
@@ -323,23 +323,23 @@ impl CelesteApp {
 
     /// Handle [`Message::AddRemoteResult(Err)`] — surface the message
     /// inside the open draft.
-    pub(in crate::app) fn handle_add_remote_result_err(&mut self, msg: String) -> Command<Message> {
+    pub(in crate::app) fn handle_add_remote_result_err(&mut self, msg: String) -> Task<Message> {
         if let Some(draft) = self.add_remote_draft.as_mut() {
             draft.error = Some(msg);
             draft.busy = false;
         }
-        Command::none()
+        Task::none()
     }
 
     /// Handle [`remote_page::Msg::Back`] — clear the selected remote.
-    pub(in crate::app) fn handle_remote_back(&mut self) -> Command<Message> {
+    pub(in crate::app) fn handle_remote_back(&mut self) -> Task<Message> {
         self.selected = None;
-        Command::none()
+        Task::none()
     }
 
     /// Handle [`remote_page::Msg::RefreshNow`] — kick a fresh pass
     /// (queue if one is already in flight).
-    pub(in crate::app) fn handle_refresh_now(&mut self, id: RemoteId) -> Command<Message> {
+    pub(in crate::app) fn handle_refresh_now(&mut self, id: RemoteId) -> Task<Message> {
         if self.syncing.contains(&id) {
             // The current pass is still running — queue a follow-up
             // so it fires as soon as the current one completes. Leave
@@ -359,7 +359,7 @@ impl CelesteApp {
                         .to_owned(),
                 );
             }
-            Command::none()
+            Task::none()
         } else {
             self.start_sync(id)
         }
@@ -372,7 +372,7 @@ impl CelesteApp {
         &mut self,
         id: RemoteId,
         name: String,
-    ) -> Command<Message> {
+    ) -> Task<Message> {
         self.selected = None;
         self.syncing.remove(&id);
         self.sync_dirs.remove(&id);
@@ -386,7 +386,7 @@ impl CelesteApp {
         let repo_blocking = self.repo.clone();
         let repo_after = self.repo.clone();
         let rclone = self.rclone.clone();
-        Command::perform(
+        Task::perform(
             async move {
                 tokio::task::spawn_blocking(move || {
                     let _ = crate::services::remote_lifecycle::delete_remote(
@@ -410,7 +410,7 @@ impl CelesteApp {
         &mut self,
         id: RemoteId,
         name: String,
-    ) -> Command<Message> {
+    ) -> Task<Message> {
         let provider = self
             .remotes
             .iter()
@@ -422,6 +422,6 @@ impl CelesteApp {
         draft.provider = provider;
         draft.reauth = true;
         self.add_remote_draft = Some(draft);
-        Command::none()
+        Task::none()
     }
 }

@@ -31,7 +31,9 @@ pub fn policy_from(msg: &Msg, current: &SyncPolicy) -> SyncPolicy {
 
 pub fn view(remote: &Remote) -> Element<'_, Msg> {
     let heading = text("Sync Settings").size(18);
-    let enabled = checkbox("Enabled", remote.policy.enabled).on_toggle(Msg::EnabledToggled);
+    let enabled = checkbox(remote.policy.enabled)
+        .on_toggle(Msg::EnabledToggled)
+        .label("Enabled");
 
     let warn_below = remote
         .provider_kind
@@ -53,7 +55,7 @@ pub fn view(remote: &Remote) -> Element<'_, Msg> {
     let picker_row: Element<'_, Msg> = if let Some(msg) = warning {
         row![
             picker,
-            Space::with_width(Length::Fixed(8.0)),
+            Space::new().width(Length::Fixed(8.0)),
             tooltip(
                 text("⚠").size(16),
                 text(msg).size(12),
@@ -62,7 +64,7 @@ pub fn view(remote: &Remote) -> Element<'_, Msg> {
             .gap(8)
             .padding(8),
         ]
-        .align_items(iced::Alignment::Center)
+        .align_y(iced::Alignment::Center)
         .into()
     } else {
         picker
@@ -70,7 +72,7 @@ pub fn view(remote: &Remote) -> Element<'_, Msg> {
 
     column![
         heading,
-        row![enabled].spacing(ROW_SPACING * 2),
+        row![enabled].spacing(ROW_SPACING * 2.0),
         picker_row,
     ]
     .spacing(SECTION_SPACING)

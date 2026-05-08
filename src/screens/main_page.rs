@@ -32,12 +32,12 @@ pub fn view<'a>(
 ) -> Element<'a, Msg> {
     let header = row![
         text("Celeste").size(24),
-        Space::with_width(Length::Fill),
+        Space::new().width(Length::Fill),
         button(text("Refresh all")).on_press(Msg::RefreshAll),
         button(text("Add remote")).on_press(Msg::AddRemote),
     ]
     .spacing(ROW_SPACING)
-    .align_items(Alignment::Center);
+    .align_y(Alignment::Center);
 
     let sidebar = {
         let mut col = column![text("Remotes").size(16)].spacing(ROW_SPACING);
@@ -48,8 +48,8 @@ pub fn view<'a>(
                 status_icon(roll_up, SIDEBAR_ICON_SIZE),
                 text(label),
             ]
-            .spacing(ROW_SPACING / 2)
-            .align_items(Alignment::Center);
+            .spacing(ROW_SPACING / 2.0)
+            .align_y(Alignment::Center);
             let btn = button(row_widget)
                 .width(Length::Fill)
                 .on_press(Msg::Selected(remote.id));

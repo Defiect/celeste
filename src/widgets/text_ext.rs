@@ -8,10 +8,8 @@
 //! user-facing names, Cyrillic / CJK file paths) should route through
 //! here instead of calling `iced::widget::text` directly.
 
-use std::borrow::Cow;
+use iced::widget::text::{IntoFragment, Shaping, Text};
 
-use iced::widget::text::{Shaping, Text};
-
-pub fn text<'a>(content: impl Into<Cow<'a, str>>) -> Text<'a, iced::Theme, iced::Renderer> {
+pub fn text<'a>(content: impl IntoFragment<'a>) -> Text<'a, iced::Theme, iced::Renderer> {
     Text::new(content).shaping(Shaping::Advanced)
 }

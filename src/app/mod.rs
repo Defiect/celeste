@@ -14,7 +14,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use iced::{executor, subscription, Application, Command, Element, Settings, Subscription, Theme};
+use iced::{stream, Element, Subscription, Task, Theme};
 use tokio::sync::mpsc;
 
 use crate::{
@@ -143,23 +143,16 @@ pub struct CelesteApp {
     tray_tx: Option<mpsc::Sender<TrayStatus>>,
 }
 
-pub struct Flags {
-    pub repo: Arc<dyn Repository>,
-    pub rclone: Arc<ClientRouter>,
-    pub config_dir: PathBuf,
-}
-
-impl Application for CelesteApp {
-    type Executor = executor::Default;
-    type Message = Message;
-    type Theme = Theme;
-    type Flags = Flags;
-
-    fn new(flags: Flags) -> (Self, Command<Message>) {
+impl CelesteApp {
+    fn new(
+        repo: Arc<dyn Repository>,
+        rclone: Arc<ClientRouter>,
+        config_dir: PathBuf,
+    ) -> (Self, Task<Message>) {
         let state = Self {
-            repo: flags.repo.clone(),
-            rclone: flags.rclone,
-            config_dir: flags.config_dir,
+            repo: repo.clone(),
+            rclone,
+            config_dir,
             remotes: Vec::new(),
             sync_dirs: HashMap::new(),
             selected: None,
@@ -180,8 +173,7 @@ impl Application for CelesteApp {
             stderr_capture: stderr_capture::handle(),
             tray_tx: None,
         };
-        let repo = flags.repo;
-        let load = Command::perform(
+        let load = Task::perform(
             async move { repo.list_remotes().await.unwrap_or_default() },
             Message::RemotesLoaded,
         );
@@ -197,10 +189,12 @@ impl Application for CelesteApp {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        let events = subscription::channel(
-            std::any::TypeId::of::<CelesteApp>(),
-            128,
-            |mut output| async move {
+        // Worker channel: the sync engine pushes `SyncEvent`s through
+        // a tokio mpsc; we forward them to the iced runtime as
+        // Messages. The first event the subscription emits is
+        // `WorkerReady(tx)` so the app captures the sender.
+        let events = Subscription::run(|| {
+            stream::channel(128, async move |mut output| {
                 use iced::futures::SinkExt;
                 let (tx, mut rx) = mpsc::channel::<SyncEvent>(128);
                 let _ = output.send(Message::WorkerReady(tx)).await;
@@ -208,9 +202,8 @@ impl Application for CelesteApp {
                     let _ = output.send(Message::SyncEventReceived(event)).await;
                 }
                 std::future::pending::<()>().await;
-                unreachable!()
-            },
-        );
+            })
+        });
         // Single ticker at 1 Hz — interval checks are cheap, and the
         // shortest allowed sync cadence is 5 s.
         let ticker = iced::time::every(Duration::from_secs(1)).map(|_| Message::Tick);
@@ -221,7 +214,7 @@ impl Application for CelesteApp {
         Subscription::batch([events, ticker, tray])
     }
 
-    fn update(&mut self, message: Message) -> Command<Message> {
+    fn update(&mut self, message: Message) -> Task<Message> {
         let cmd = match message {
             // Remote / dialog flow ----------------------------------
             Message::RemotesLoaded(remotes) => self.handle_remotes_loaded(remotes),
@@ -256,7 +249,7 @@ impl Application for CelesteApp {
             Message::Remote(remote_page::Msg::Settings(sub)) | Message::Settings(sub) => {
                 self.handle_settings(sub)
             }
-            Message::PolicySaved => Command::none(),
+            Message::PolicySaved => Task::none(),
             Message::ExclusionsLoaded(sd_id, excls) => {
                 self.handle_exclusions_loaded(sd_id, excls)
             }
@@ -397,26 +390,39 @@ pub fn run(
     rclone: Arc<ClientRouter>,
     config_dir: PathBuf,
 ) -> iced::Result {
-    let mut settings = Settings::with_flags(Flags {
-        repo,
-        rclone,
-        config_dir,
-    });
     // Start hidden — the tray icon brings the window up on demand, so a
     // login-time launch doesn't steal focus. `Mode::Hidden` works
     // reliably only before the surface is first mapped; subsequent hide
     // requests go through `minimize(true)` below.
-    settings.window.visible = false;
-    settings.fonts = fallback_fonts();
+    let window_settings = iced::window::Settings {
+        visible: false,
+        ..iced::window::Settings::default()
+    };
     // Bias iced's default glyph lookup to the sans-serif family so
     // cosmic-text's fallback layer resolves against the fonts we just
     // loaded instead of a bare built-in. Without this the ⚠ and
     // anything beyond basic Latin still falls through to tofu.
-    settings.default_font = iced::Font {
+    let default_font = iced::Font {
         family: iced::font::Family::Name("Noto Sans"),
         ..iced::Font::DEFAULT
     };
-    CelesteApp::run(settings)
+
+    let mut builder = iced::application(
+        move || CelesteApp::new(repo.clone(), rclone.clone(), config_dir.clone()),
+        CelesteApp::update,
+        CelesteApp::view,
+    )
+    .title(CelesteApp::title)
+    .theme(CelesteApp::theme)
+    .subscription(CelesteApp::subscription)
+    .window(window_settings)
+    .default_font(default_font);
+
+    for font in fallback_fonts() {
+        builder = builder.font(font);
+    }
+
+    builder.run()
 }
 
 /// Discover fallback fonts via fontconfig at startup and hand them to

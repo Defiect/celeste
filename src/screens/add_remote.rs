@@ -165,7 +165,7 @@ pub fn view(draft: &Draft) -> Element<'_, Msg> {
     // file), so show it as plain text rather than an editable input.
     let name_row: Element<'_, Msg> = if draft.reauth {
         row![field_label("Name"), text(&draft.name).size(13)]
-            .align_items(iced::Alignment::Center)
+            .align_y(iced::Alignment::Center)
             .spacing(8)
             .into()
     } else {
@@ -175,7 +175,7 @@ pub fn view(draft: &Draft) -> Element<'_, Msg> {
                 .on_input(Msg::NameChanged)
                 .padding(6),
         ]
-        .align_items(iced::Alignment::Center)
+        .align_y(iced::Alignment::Center)
         .spacing(8)
         .into()
     };
@@ -186,7 +186,7 @@ pub fn view(draft: &Draft) -> Element<'_, Msg> {
             field_label("Type"),
             text(selected_option.map(|o| o.to_string()).unwrap_or_default()).size(13),
         ]
-        .align_items(iced::Alignment::Center)
+        .align_y(iced::Alignment::Center)
         .spacing(8)
         .into()
     } else {
@@ -196,7 +196,7 @@ pub fn view(draft: &Draft) -> Element<'_, Msg> {
         .text_shaping(Shaping::Advanced)
         .placeholder("Pick a provider");
         row![field_label("Type"), picker,]
-            .align_items(iced::Alignment::Center)
+            .align_y(iced::Alignment::Center)
             .spacing(8)
             .into()
     };
@@ -223,7 +223,7 @@ pub fn view(draft: &Draft) -> Element<'_, Msg> {
                         .on_input(Msg::UrlChanged)
                         .padding(6),
                 ]
-                .align_items(iced::Alignment::Center)
+                .align_y(iced::Alignment::Center)
                 .spacing(8),
             );
             body = body.push(
@@ -233,7 +233,7 @@ pub fn view(draft: &Draft) -> Element<'_, Msg> {
                         .on_input(Msg::UserChanged)
                         .padding(6),
                 ]
-                .align_items(iced::Alignment::Center)
+                .align_y(iced::Alignment::Center)
                 .spacing(8),
             );
             body = body.push(
@@ -244,7 +244,7 @@ pub fn view(draft: &Draft) -> Element<'_, Msg> {
                         .on_input(Msg::PassChanged)
                         .padding(6),
                 ]
-                .align_items(iced::Alignment::Center)
+                .align_y(iced::Alignment::Center)
                 .spacing(8),
             );
         }
@@ -266,7 +266,7 @@ pub fn view(draft: &Draft) -> Element<'_, Msg> {
                         .on_input(Msg::UserChanged)
                         .padding(6),
                 ]
-                .align_items(iced::Alignment::Center)
+                .align_y(iced::Alignment::Center)
                 .spacing(8),
             );
             body = body.push(
@@ -277,7 +277,7 @@ pub fn view(draft: &Draft) -> Element<'_, Msg> {
                         .on_input(Msg::PassChanged)
                         .padding(6),
                 ]
-                .align_items(iced::Alignment::Center)
+                .align_y(iced::Alignment::Center)
                 .spacing(8),
             );
             body = body.push(
@@ -287,7 +287,7 @@ pub fn view(draft: &Draft) -> Element<'_, Msg> {
                         .on_input(Msg::TotpChanged)
                         .padding(6),
                 ]
-                .align_items(iced::Alignment::Center)
+                .align_y(iced::Alignment::Center)
                 .spacing(8),
             );
         }
@@ -303,7 +303,7 @@ pub fn view(draft: &Draft) -> Element<'_, Msg> {
                         .on_input(Msg::ClientIdChanged)
                         .padding(6),
                 ]
-                .align_items(iced::Alignment::Center)
+                .align_y(iced::Alignment::Center)
                 .spacing(8),
             );
             body = body.push(
@@ -314,7 +314,7 @@ pub fn view(draft: &Draft) -> Element<'_, Msg> {
                         .on_input(Msg::ClientSecretChanged)
                         .padding(6),
                 ]
-                .align_items(iced::Alignment::Center)
+                .align_y(iced::Alignment::Center)
                 .spacing(8),
             );
         }
@@ -359,7 +359,7 @@ pub fn view(draft: &Draft) -> Element<'_, Msg> {
     };
 
     body = body.push(
-        row![Space::with_width(Length::Fill), cancel_btn, submit_btn].spacing(ROW_SPACING),
+        row![Space::new().width(Length::Fill), cancel_btn, submit_btn].spacing(ROW_SPACING),
     );
 
     container(body).padding(PAGE_PADDING).into()

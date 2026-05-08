@@ -4,7 +4,7 @@
 
 use std::sync::atomic::Ordering;
 
-use iced::{widget::text_editor, Command};
+use iced::{widget::text_editor, Task};
 
 use crate::{
     domain::{
@@ -24,7 +24,7 @@ impl CelesteApp {
         &mut self,
         id: RemoteId,
         sd: Vec<SyncDir>,
-    ) -> Command<Message> {
+    ) -> Task<Message> {
         // Pre-populate an empty `text_editor::Content` for every
         // sync_dir so the read-only editor renders even when the
         // engine hasn't emitted a single event for it yet — the
@@ -36,7 +36,7 @@ impl CelesteApp {
             self.sync_state.ensure_dir(id, d.id);
         }
         self.sync_dirs.insert(id, sd);
-        Command::none()
+        Task::none()
     }
 
     /// Handle [`Message::AllSyncDirsRefreshed`] — replace the global
@@ -44,43 +44,43 @@ impl CelesteApp {
     pub(in crate::app) fn handle_all_sync_dirs_refreshed(
         &mut self,
         all: Vec<SyncDir>,
-    ) -> Command<Message> {
+    ) -> Task<Message> {
         self.all_known_sync_dirs = all;
-        Command::none()
+        Task::none()
     }
 
     /// Handle [`remote_page::Msg::DraftLocalPathChanged`] / [`DraftRemotePathChanged`].
-    pub(in crate::app) fn handle_draft_local_path_changed(&mut self, s: String) -> Command<Message> {
+    pub(in crate::app) fn handle_draft_local_path_changed(&mut self, s: String) -> Task<Message> {
         if let Some(id) = self.selected {
             self.sync_dir_drafts.entry(id).or_default().0 = s;
         }
-        Command::none()
+        Task::none()
     }
 
-    pub(in crate::app) fn handle_draft_remote_path_changed(&mut self, s: String) -> Command<Message> {
+    pub(in crate::app) fn handle_draft_remote_path_changed(&mut self, s: String) -> Task<Message> {
         if let Some(id) = self.selected {
             self.sync_dir_drafts.entry(id).or_default().1 = s;
         }
-        Command::none()
+        Task::none()
     }
 
     /// Handle [`remote_page::Msg::AddSyncDir`] — normalise input,
     /// reject overlapping local paths, auto-create the directories,
     /// and insert the DB row.
-    pub(in crate::app) fn handle_add_sync_dir(&mut self) -> Command<Message> {
+    pub(in crate::app) fn handle_add_sync_dir(&mut self) -> Task<Message> {
         let Some(id) = self.selected else {
-            return Command::none();
+            return Task::none();
         };
         let Some((local, remote)) = self.sync_dir_drafts.get(&id).cloned() else {
-            return Command::none();
+            return Task::none();
         };
         if local.trim().is_empty() || remote.trim().is_empty() {
-            return Command::none();
+            return Task::none();
         }
         let Some(remote_name) =
             self.remotes.iter().find(|r| r.id == id).map(|r| r.name.clone())
         else {
-            return Command::none();
+            return Task::none();
         };
         // Normalise to match the on-disk contract: the local path is
         // absolute (leading `/`) and has no trailing `/`; the remote
@@ -101,12 +101,12 @@ impl CelesteApp {
                 "AddSyncDir rejected: local path '{}' overlaps existing sync_dir '{}'",
                 local_norm, conflict.local_path,
             );
-            return Command::none();
+            return Task::none();
         }
         self.sync_dir_drafts.insert(id, (String::new(), String::new()));
         let repo = self.repo.clone();
         let rclone = self.rclone.clone();
-        Command::perform(
+        Task::perform(
             async move {
                 // Auto-create local + remote directory if missing so
                 // the next sync pass doesn't immediately trip
@@ -135,12 +135,12 @@ impl CelesteApp {
         &mut self,
         local: String,
         remote: String,
-    ) -> Command<Message> {
+    ) -> Task<Message> {
         let Some(id) = self.selected else {
-            return Command::none();
+            return Task::none();
         };
         let repo = self.repo.clone();
-        Command::perform(
+        Task::perform(
             async move {
                 let _ = repo.cascade_delete_sync_dir(&local, &remote).await;
                 id
@@ -153,12 +153,12 @@ impl CelesteApp {
     /// update the in-memory policy, sync the enabled flag to the state
     /// machine, cancel an in-flight pass when the user disables, and
     /// persist asynchronously.
-    pub(in crate::app) fn handle_settings(&mut self, sub: settings::Msg) -> Command<Message> {
+    pub(in crate::app) fn handle_settings(&mut self, sub: settings::Msg) -> Task<Message> {
         let Some(id) = self.selected else {
-            return Command::none();
+            return Task::none();
         };
         let Some(remote) = self.remotes.iter_mut().find(|r| r.id == id) else {
-            return Command::none();
+            return Task::none();
         };
         let was_enabled = remote.policy.enabled;
         let new_policy = settings::policy_from(&sub, &remote.policy);
@@ -175,7 +175,7 @@ impl CelesteApp {
             self.refresh_requested_after.remove(&id);
         }
         let repo = self.repo.clone();
-        Command::perform(
+        Task::perform(
             async move {
                 let _ = repo.set_policy(id, new_policy).await;
             },
@@ -188,21 +188,21 @@ impl CelesteApp {
         &mut self,
         sd_id: SyncDirId,
         excls: Vec<SyncDirExclusion>,
-    ) -> Command<Message> {
+    ) -> Task<Message> {
         self.sync_dir_exclusions.insert(sd_id, excls);
-        Command::none()
+        Task::none()
     }
 
     /// Handle [`remote_page::Msg::ToggleExclusions`] — toggle the panel
     /// open/closed; loads the exclusions list when opening.
-    pub(in crate::app) fn handle_toggle_exclusions(&mut self, sd_id: SyncDirId) -> Command<Message> {
+    pub(in crate::app) fn handle_toggle_exclusions(&mut self, sd_id: SyncDirId) -> Task<Message> {
         if self.exclusion_panel == Some(sd_id) {
             self.exclusion_panel = None;
-            Command::none()
+            Task::none()
         } else {
             self.exclusion_panel = Some(sd_id);
             let repo = self.repo.clone();
-            Command::perform(
+            Task::perform(
                 async move { repo.list_exclusions(sd_id).await.unwrap_or_default() },
                 move |excls| Message::ExclusionsLoaded(sd_id, excls),
             )
@@ -213,12 +213,12 @@ impl CelesteApp {
         &mut self,
         sd_id: SyncDirId,
         s: String,
-    ) -> Command<Message> {
+    ) -> Task<Message> {
         self.draft_exclusion.insert(sd_id, s);
-        Command::none()
+        Task::none()
     }
 
-    pub(in crate::app) fn handle_add_exclusion(&mut self, sd_id: SyncDirId) -> Command<Message> {
+    pub(in crate::app) fn handle_add_exclusion(&mut self, sd_id: SyncDirId) -> Task<Message> {
         let raw = self
             .draft_exclusion
             .get(&sd_id)
@@ -226,11 +226,11 @@ impl CelesteApp {
             .unwrap_or_default();
         let path = crate::util::strip_slashes(raw.trim());
         if path.is_empty() {
-            return Command::none();
+            return Task::none();
         }
         self.draft_exclusion.insert(sd_id, String::new());
         let repo = self.repo.clone();
-        Command::perform(
+        Task::perform(
             async move {
                 let _ = repo.insert_exclusion(sd_id, path).await;
                 repo.list_exclusions(sd_id).await.unwrap_or_default()
@@ -243,9 +243,9 @@ impl CelesteApp {
         &mut self,
         excl_id: SyncDirExclusionId,
         sd_id: SyncDirId,
-    ) -> Command<Message> {
+    ) -> Task<Message> {
         let repo = self.repo.clone();
-        Command::perform(
+        Task::perform(
             async move {
                 let _ = repo.delete_exclusion(excl_id).await;
                 repo.list_exclusions(sd_id).await.unwrap_or_default()
@@ -261,12 +261,12 @@ impl CelesteApp {
         &mut self,
         sd_id: SyncDirId,
         action: text_editor::Action,
-    ) -> Command<Message> {
+    ) -> Task<Message> {
         if !action.is_edit()
             && let Some(content) = self.sync_dir_log_content.get_mut(&sd_id)
         {
             content.perform(action);
         }
-        Command::none()
+        Task::none()
     }
 }
