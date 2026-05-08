@@ -24,7 +24,7 @@ use crate::{
         client_router::ClientRouter,
         persistence::{
             self,
-            migrations::{Migrator, MigratorTrait},
+            migrations::{legacy_config_dir, Migrator, MigratorTrait},
             repository::SeaOrmRepository,
         },
         proton::client::NativeProtonClient,
@@ -50,7 +50,7 @@ fn main() {
     let data_dir = util::get_data_dir();
     std::fs::create_dir_all(&data_dir).expect("failed to create data dir");
 
-    migrate_legacy_config_dir(&data_dir);
+    legacy_config_dir::run(&data_dir);
 
     let mut rclone_config = data_dir.clone();
     rclone_config.push("rclone.conf");
@@ -94,111 +94,6 @@ fn main() {
     let router = Arc::new(ClientRouter::new(default_client));
     resume_native_sessions(&*repo, &router);
     iced_run(repo, router).expect("iced app exited with error");
-}
-
-/// Move legacy state out of `~/.config/celeste/` (the previous home for
-/// the SQLite DB and credential blobs) into the new data dir + keyring.
-///
-/// Three jobs:
-///
-/// 1. `data.sqlite` → `<data_dir>/data.sqlite` (file move).
-/// 2. `proton-session-*.json` → keyring entry per remote, file deleted.
-/// 3. `rclone.conf` → keyring entry, file deleted (after we've copied
-///    its text into `<data_dir>/rclone.conf` for librclone to use).
-///
-/// Best-effort: any individual failure is logged and skipped — the
-/// most important guarantee is that the user keeps their data even if
-/// the keyring move trips on a missing Secret Service daemon.
-fn migrate_legacy_config_dir(data_dir: &std::path::Path) {
-    let legacy = util::get_legacy_config_dir();
-    if !legacy.exists() {
-        return;
-    }
-
-    // 1. SQLite DB.
-    let legacy_db = legacy.join("data.sqlite");
-    let new_db = data_dir.join("data.sqlite");
-    if legacy_db.exists() && !new_db.exists() {
-        match std::fs::rename(&legacy_db, &new_db) {
-            Ok(()) => eprintln!(
-                "celeste: migrated SQLite DB to {}",
-                new_db.display(),
-            ),
-            Err(err) => eprintln!(
-                "celeste: couldn't move {} → {}: {err}",
-                legacy_db.display(),
-                new_db.display(),
-            ),
-        }
-    }
-
-    // 2. Proton session JSON blobs.
-    if let Ok(entries) = std::fs::read_dir(&legacy) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let Some(file_name) = path.file_name().and_then(|s| s.to_str()) else {
-                continue;
-            };
-            let Some(name) = file_name
-                .strip_prefix("proton-session-")
-                .and_then(|s| s.strip_suffix(".json"))
-            else {
-                continue;
-            };
-            match std::fs::read_to_string(&path) {
-                Ok(body) => {
-                    let account = secrets::proton_account(name);
-                    match secrets::store(&account, &body) {
-                        Ok(()) => {
-                            let _ = std::fs::remove_file(&path);
-                            eprintln!(
-                                "celeste: migrated proton session for '{name}' into the keyring",
-                            );
-                        }
-                        Err(err) => eprintln!(
-                            "celeste: keyring store of legacy proton session for '{name}' failed: {err}",
-                        ),
-                    }
-                }
-                Err(err) => eprintln!(
-                    "celeste: couldn't read legacy proton session {}: {err}",
-                    path.display(),
-                ),
-            }
-        }
-    }
-
-    // 3. rclone.conf — copy its text into the new path AND stash in the
-    // keyring so the next run can hydrate from there alone.
-    let legacy_rclone = legacy.join("rclone.conf");
-    let new_rclone = data_dir.join("rclone.conf");
-    if legacy_rclone.exists() {
-        match std::fs::read_to_string(&legacy_rclone) {
-            Ok(body) => {
-                if !new_rclone.exists() {
-                    if let Err(err) = std::fs::write(&new_rclone, &body) {
-                        eprintln!(
-                            "celeste: couldn't copy rclone.conf to {}: {err}",
-                            new_rclone.display(),
-                        );
-                    }
-                }
-                match secrets::store(secrets::RCLONE_ACCOUNT, &body) {
-                    Ok(()) => {
-                        let _ = std::fs::remove_file(&legacy_rclone);
-                        eprintln!("celeste: migrated rclone config into the keyring");
-                    }
-                    Err(err) => eprintln!(
-                        "celeste: keyring store of legacy rclone.conf failed: {err}",
-                    ),
-                }
-            }
-            Err(err) => eprintln!(
-                "celeste: couldn't read {}: {err}",
-                legacy_rclone.display(),
-            ),
-        }
-    }
 }
 
 /// Make sure `<data_dir>/rclone.conf` matches what's in the keyring.
