@@ -19,7 +19,13 @@ func main() {
 		fmt.Fprintf(os.Stderr, "cannot find home dir: %v\n", err)
 		os.Exit(1)
 	}
-	sessionPath := home + "/.config/celeste/proton-session-ProtonDrive.json"
+	// Celeste itself stores the session blob in the OS keyring under
+	// `Celeste Keys / proton-session-<remote>`; this tool still wants
+	// a JSON path. Pass one explicitly (e.g. exported with
+	// `secret-tool lookup` first), or fall back to the legacy file
+	// location for users who haven't yet upgraded past the keyring
+	// migration.
+	sessionPath := home + "/.local/share/celeste/proton-session-ProtonDrive.json"
 	if len(os.Args) > 1 {
 		sessionPath = os.Args[1]
 	}

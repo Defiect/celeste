@@ -148,7 +148,6 @@ impl CelesteApp {
                     let pass = draft.pass.clone();
                     let totp = draft.totp.clone();
                     let router = self.rclone.clone();
-                    let config_dir = self.config_dir.clone();
                     let is_reauth = draft.reauth;
                     draft.busy = true;
                     if is_reauth {
@@ -171,7 +170,6 @@ impl CelesteApp {
                                         &user,
                                         &pass,
                                         &totp,
-                                        &config_dir,
                                         &*router_inner,
                                     )
                                 })
@@ -196,7 +194,6 @@ impl CelesteApp {
                                     &user,
                                     &pass,
                                     &totp,
-                                    &config_dir,
                                     &*repo,
                                     &*router,
                                 )

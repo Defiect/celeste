@@ -9,7 +9,8 @@ use self::migrations::LEGACY_MIGRATION_IDS;
 /// Returns true when the connected DB has any legacy migration row —
 /// a signal that the schema is from a pre-2026-04-18 version we no
 /// longer understand. Startup treats this as a hard block: show the
-/// popup, ask the user to remove `~/.config/celeste/` manually, exit.
+/// popup, ask the user to remove `~/.local/share/celeste/` manually,
+/// exit.
 pub async fn has_legacy_migrations(db: &DatabaseConnection) -> bool {
     let table_exists = db
         .query_one(Statement::from_string(

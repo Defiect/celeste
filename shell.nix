@@ -12,7 +12,8 @@ pkgs.mkShell {
   ];
 
   # Iced runtime libraries (winit/wgpu pick these at launch) plus librclone's
-  # OpenSSL + the rclone CLI.
+  # OpenSSL + the rclone CLI. `dbus` is needed by the `keyring` crate's
+  # libsecret backend (libdbus-sys at build time, libdbus at runtime).
   buildInputs = with pkgs; [
     libxkbcommon
     vulkan-loader
@@ -24,6 +25,7 @@ pkgs.mkShell {
     fontconfig
     openssl
     rclone
+    dbus
   ];
 
   # Some dependencies use unstable rustc features gated behind RUSTC_BOOTSTRAP.

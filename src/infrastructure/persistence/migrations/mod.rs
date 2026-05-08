@@ -10,8 +10,8 @@ mod m20260421_000001_exclusions;
 /// `m20260418_000001_initial` is the previous schema (pre-`backend` +
 /// `session_path` columns on remotes). We bump the migration ID every
 /// time we reshape the core schema rather than patching via ALTERs —
-/// the fork is single-user, and wiping ~/.config/celeste/ is cheaper
-/// than accreting migration state.
+/// the fork is single-user, and wiping ~/.local/share/celeste/ is
+/// cheaper than accreting migration state.
 pub const LEGACY_MIGRATION_IDS: &[&str] = &[
     "m20220101_000001_create_table",
     "m20230207_204909_sync_dirs_remove_slash_suffix",

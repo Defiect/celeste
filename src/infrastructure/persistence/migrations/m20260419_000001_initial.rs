@@ -1,7 +1,8 @@
 //! Fresh schema. The old migrations were deleted wholesale — if an
-//! existing config dir has any of the legacy `seaql_migrations` rows the
+//! existing data dir has any of the legacy `seaql_migrations` rows the
 //! startup check refuses to boot and tells the user to delete
-//! `~/.config/celeste/` manually. See `infrastructure::persistence::mod`.
+//! `~/.local/share/celeste/` manually. See
+//! `infrastructure::persistence::mod`.
 
 use sea_orm::{ConnectionTrait, Statement};
 use sea_orm_migration::prelude::*;
@@ -26,10 +27,13 @@ impl MigrationTrait for Migration {
                 -- the remote is added; never mutated on an existing
                 -- row.
                 backend TEXT NOT NULL DEFAULT 'rclone',
-                -- Path to the persisted session blob for native-
-                -- backend remotes. NULL for rclone-backed remotes
-                -- (rclone owns their config). Resolved under
-                -- ~/.config/celeste/.
+                -- Marker that a native-backend remote has a session
+                -- saved to the OS keyring (lookup uses the remote's
+                -- name). NULL for rclone-backed remotes (rclone owns
+                -- their config) and for native remotes still pending
+                -- reauthentication. Column is named `session_path` for
+                -- backward compatibility with the prior file-based
+                -- layout; values are no longer filesystem paths.
                 session_path TEXT NULL
             );
 

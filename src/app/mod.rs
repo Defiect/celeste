@@ -9,7 +9,6 @@
 
 use std::{
     collections::HashMap,
-    path::PathBuf,
     sync::{atomic::AtomicBool, Arc},
     time::{Duration, Instant},
 };
@@ -96,9 +95,6 @@ pub struct CelesteApp {
     /// sessions on it; sync code downcasts on the fly (ClientRouter
     /// implements BackendClient).
     rclone: Arc<ClientRouter>,
-    /// User's Celeste config dir — needed so the native Proton
-    /// add-remote flow knows where to put session blobs.
-    config_dir: PathBuf,
     remotes: Vec<Remote>,
     sync_dirs: HashMap<RemoteId, Vec<SyncDir>>,
     selected: Option<RemoteId>,
@@ -163,12 +159,10 @@ impl CelesteApp {
     fn new(
         repo: Arc<dyn Repository>,
         rclone: Arc<ClientRouter>,
-        config_dir: PathBuf,
     ) -> (Self, Task<Message>) {
         let state = Self {
             repo: repo.clone(),
             rclone,
-            config_dir,
             remotes: Vec::new(),
             sync_dirs: HashMap::new(),
             selected: None,
@@ -426,7 +420,6 @@ pub(crate) fn map_domain_provider_to_add_remote(
 pub fn run(
     repo: Arc<dyn Repository>,
     rclone: Arc<ClientRouter>,
-    config_dir: PathBuf,
 ) -> iced::Result {
     // Bias iced's default glyph lookup to the sans-serif family so
     // cosmic-text's fallback layer resolves against the fonts we just
@@ -438,7 +431,7 @@ pub fn run(
     };
 
     let mut builder = iced::daemon(
-        move || CelesteApp::new(repo.clone(), rclone.clone(), config_dir.clone()),
+        move || CelesteApp::new(repo.clone(), rclone.clone()),
         CelesteApp::update,
         CelesteApp::view,
     )

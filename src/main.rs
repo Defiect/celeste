@@ -31,6 +31,7 @@ use crate::{
         rclone::LibrcloneClient,
         stderr_capture,
     },
+    services::secrets,
 };
 
 fn main() {
@@ -41,11 +42,20 @@ fn main() {
     // lose rate-limit detection for the run.
     let _stderr = stderr_capture::install();
 
-    // rclone config file lives next to our SQLite DB in ~/.config/celeste.
-    let config_dir = util::get_config_dir();
-    std::fs::create_dir_all(&config_dir).expect("failed to create config dir");
-    let mut rclone_config = config_dir.clone();
+    // SQLite DB and rclone config now live under
+    // ${XDG_DATA_HOME:-~/.local/share}/celeste. The rclone config text
+    // itself is mirrored into the OS keyring after every mutation, so
+    // the on-disk file is a regenerable cache: at startup we hydrate it
+    // from the keyring (or from a legacy ~/.config/celeste/ install).
+    let data_dir = util::get_data_dir();
+    std::fs::create_dir_all(&data_dir).expect("failed to create data dir");
+
+    migrate_legacy_config_dir(&data_dir);
+
+    let mut rclone_config = data_dir.clone();
     rclone_config.push("rclone.conf");
+    hydrate_rclone_config(&rclone_config);
+
     celeste_go::initialize();
     // Prove the combined Go archive loaded — cheap (no network).
     eprintln!("celeste: native-go identity = {}", celeste_go::proton_drive_version());
@@ -55,7 +65,7 @@ fn main() {
     )
     .expect("failed to set rclone config path");
 
-    let mut db_path = config_dir.clone();
+    let mut db_path = data_dir.clone();
     db_path.push("data.sqlite");
     if !db_path.exists() {
         std::fs::File::create(&db_path).expect("failed to create db file");
@@ -67,7 +77,7 @@ fn main() {
     .expect("failed to connect to the database");
 
     if util::await_future(persistence::has_legacy_migrations(&db)) {
-        show_legacy_config_popup(&config_dir);
+        show_legacy_config_popup(&data_dir);
         std::process::exit(0);
     }
 
@@ -80,10 +90,140 @@ fn main() {
     // existing rclone-backed remotes keep working unchanged. Each
     // native-backend remote resumes its saved session up front so
     // the UID is registered before the first sync tick fires.
-    let default_client: Arc<dyn BackendClient> = Arc::new(LibrcloneClient::new());
+    let default_client: Arc<dyn BackendClient> = Arc::new(LibrcloneClient::new(rclone_config));
     let router = Arc::new(ClientRouter::new(default_client));
     resume_native_sessions(&*repo, &router);
-    iced_run(repo, router, config_dir).expect("iced app exited with error");
+    iced_run(repo, router).expect("iced app exited with error");
+}
+
+/// Move legacy state out of `~/.config/celeste/` (the previous home for
+/// the SQLite DB and credential blobs) into the new data dir + keyring.
+///
+/// Three jobs:
+///
+/// 1. `data.sqlite` → `<data_dir>/data.sqlite` (file move).
+/// 2. `proton-session-*.json` → keyring entry per remote, file deleted.
+/// 3. `rclone.conf` → keyring entry, file deleted (after we've copied
+///    its text into `<data_dir>/rclone.conf` for librclone to use).
+///
+/// Best-effort: any individual failure is logged and skipped — the
+/// most important guarantee is that the user keeps their data even if
+/// the keyring move trips on a missing Secret Service daemon.
+fn migrate_legacy_config_dir(data_dir: &std::path::Path) {
+    let legacy = util::get_legacy_config_dir();
+    if !legacy.exists() {
+        return;
+    }
+
+    // 1. SQLite DB.
+    let legacy_db = legacy.join("data.sqlite");
+    let new_db = data_dir.join("data.sqlite");
+    if legacy_db.exists() && !new_db.exists() {
+        match std::fs::rename(&legacy_db, &new_db) {
+            Ok(()) => eprintln!(
+                "celeste: migrated SQLite DB to {}",
+                new_db.display(),
+            ),
+            Err(err) => eprintln!(
+                "celeste: couldn't move {} → {}: {err}",
+                legacy_db.display(),
+                new_db.display(),
+            ),
+        }
+    }
+
+    // 2. Proton session JSON blobs.
+    if let Ok(entries) = std::fs::read_dir(&legacy) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some(file_name) = path.file_name().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            let Some(name) = file_name
+                .strip_prefix("proton-session-")
+                .and_then(|s| s.strip_suffix(".json"))
+            else {
+                continue;
+            };
+            match std::fs::read_to_string(&path) {
+                Ok(body) => {
+                    let account = secrets::proton_account(name);
+                    match secrets::store(&account, &body) {
+                        Ok(()) => {
+                            let _ = std::fs::remove_file(&path);
+                            eprintln!(
+                                "celeste: migrated proton session for '{name}' into the keyring",
+                            );
+                        }
+                        Err(err) => eprintln!(
+                            "celeste: keyring store of legacy proton session for '{name}' failed: {err}",
+                        ),
+                    }
+                }
+                Err(err) => eprintln!(
+                    "celeste: couldn't read legacy proton session {}: {err}",
+                    path.display(),
+                ),
+            }
+        }
+    }
+
+    // 3. rclone.conf — copy its text into the new path AND stash in the
+    // keyring so the next run can hydrate from there alone.
+    let legacy_rclone = legacy.join("rclone.conf");
+    let new_rclone = data_dir.join("rclone.conf");
+    if legacy_rclone.exists() {
+        match std::fs::read_to_string(&legacy_rclone) {
+            Ok(body) => {
+                if !new_rclone.exists() {
+                    if let Err(err) = std::fs::write(&new_rclone, &body) {
+                        eprintln!(
+                            "celeste: couldn't copy rclone.conf to {}: {err}",
+                            new_rclone.display(),
+                        );
+                    }
+                }
+                match secrets::store(secrets::RCLONE_ACCOUNT, &body) {
+                    Ok(()) => {
+                        let _ = std::fs::remove_file(&legacy_rclone);
+                        eprintln!("celeste: migrated rclone config into the keyring");
+                    }
+                    Err(err) => eprintln!(
+                        "celeste: keyring store of legacy rclone.conf failed: {err}",
+                    ),
+                }
+            }
+            Err(err) => eprintln!(
+                "celeste: couldn't read {}: {err}",
+                legacy_rclone.display(),
+            ),
+        }
+    }
+}
+
+/// Make sure `<data_dir>/rclone.conf` matches what's in the keyring.
+/// Treats the keyring as the source of truth: if it has an entry, the
+/// on-disk file is overwritten; if not, the file is left as-is (could
+/// be empty, could be a freshly-migrated copy from `migrate_legacy_…`).
+fn hydrate_rclone_config(rclone_config: &std::path::Path) {
+    match secrets::load(secrets::RCLONE_ACCOUNT) {
+        Ok(Some(body)) => {
+            if let Err(err) = std::fs::write(rclone_config, body) {
+                eprintln!(
+                    "celeste: couldn't write rclone config to {}: {err}",
+                    rclone_config.display(),
+                );
+            }
+        }
+        Ok(None) => {
+            // No keyring entry yet. If a stub file is missing, create
+            // an empty one so librclone has something to open.
+            if !rclone_config.exists() {
+                let _ = std::fs::File::create(rclone_config);
+            }
+        }
+        Err(err) => eprintln!("celeste: keyring read of rclone config failed: {err}"),
+    }
 }
 
 /// Load every remote from the DB, and for those flagged
@@ -100,7 +240,7 @@ fn resume_native_sessions(repo: &dyn Repository, router: &ClientRouter) {
         if remote.backend != Backend::NativeProton {
             continue;
         }
-        let Some(path) = remote.session_path.as_deref() else {
+        if remote.session_path.is_none() {
             let reason = format!(
                 "Proton Drive session blob missing for '{}'. Click Reauthenticate on the remote page to log in again.",
                 remote.name,
@@ -112,9 +252,9 @@ fn resume_native_sessions(repo: &dyn Repository, router: &ClientRouter) {
                 Arc::new(DisabledProtonClient::new(reason)),
             );
             continue;
-        };
-        match celeste_go::proton::resume_session(std::path::Path::new(path)) {
-            Ok(cred) => {
+        }
+        match crate::services::auth::resume_proton_session(&remote.name) {
+            Ok(Some(cred)) => {
                 router.register(
                     remote.name.clone(),
                     Arc::new(NativeProtonClient::new(cred.uid)),
@@ -122,6 +262,18 @@ fn resume_native_sessions(repo: &dyn Repository, router: &ClientRouter) {
                 eprintln!(
                     "celeste: native-proton session resumed for '{}'.",
                     remote.name,
+                );
+            }
+            Ok(None) => {
+                let reason = format!(
+                    "Proton Drive session for '{}' not found in keyring. Click Reauthenticate on the remote page to log in again.",
+                    remote.name,
+                );
+                eprintln!("celeste: {reason}");
+                notify_reauth_needed(&remote.name);
+                router.register(
+                    remote.name.clone(),
+                    Arc::new(DisabledProtonClient::new(reason)),
                 );
             }
             Err(err) => {
@@ -154,14 +306,14 @@ fn notify_reauth_needed(remote_name: &str) {
         .show();
 }
 
-fn show_legacy_config_popup(config_dir: &std::path::Path) {
+fn show_legacy_config_popup(data_dir: &std::path::Path) {
     use iced::{
         widget::{button, column, text},
         Element, Length, Task, Theme,
     };
 
     struct LegacyPopup {
-        config_dir: String,
+        data_dir: String,
     }
 
     #[derive(Debug, Clone)]
@@ -178,7 +330,7 @@ fn show_legacy_config_popup(config_dir: &std::path::Path) {
             text("Outdated Celeste configuration detected").size(20),
             text(format!(
                 "The sync algorithm was rewritten and the database schema is no longer compatible.\n\nDelete the following directory and restart Celeste:\n\n  {}",
-                state.config_dir,
+                state.data_dir,
             ))
             .size(14),
             button(text("Close Celeste")).on_press(Msg::Ack),
@@ -194,10 +346,10 @@ fn show_legacy_config_popup(config_dir: &std::path::Path) {
         Theme::Dark
     }
 
-    let config_dir = config_dir.display().to_string();
+    let data_dir = data_dir.display().to_string();
     let _ = iced::application(
         move || LegacyPopup {
-            config_dir: config_dir.clone(),
+            data_dir: data_dir.clone(),
         },
         legacy_update,
         legacy_view,

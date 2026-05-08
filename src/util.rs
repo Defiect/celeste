@@ -21,8 +21,31 @@ pub fn fmt_home(dir: &str) -> String {
     }
 }
 
-/// `${XDG_CONFIG_HOME:-$HOME/.config}/celeste`.
-pub fn get_config_dir() -> PathBuf {
+/// `${XDG_DATA_HOME:-$HOME/.local/share}/celeste`.
+///
+/// We treat the celeste config dir as user data (the SQLite DB and
+/// rclone config file count as state, not human-edited config), so
+/// XDG-wise it belongs under `$XDG_DATA_HOME`, not `$XDG_CONFIG_HOME`.
+pub fn get_data_dir() -> PathBuf {
+    let mut base = match std::env::var_os("XDG_DATA_HOME") {
+        Some(path) if !path.is_empty() => PathBuf::from(path),
+        _ => {
+            let mut home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+            home.push(".local");
+            home.push("share");
+            home
+        }
+    };
+    base.push("celeste");
+    base
+}
+
+/// Legacy `${XDG_CONFIG_HOME:-$HOME/.config}/celeste` location.
+///
+/// Older builds wrote the SQLite DB, rclone config, and proton-session
+/// blobs here. Startup migrates anything still present into the new
+/// data dir / keyring; nothing else should reach for this path.
+pub fn get_legacy_config_dir() -> PathBuf {
     let mut base = match std::env::var_os("XDG_CONFIG_HOME") {
         Some(path) if !path.is_empty() => PathBuf::from(path),
         _ => {

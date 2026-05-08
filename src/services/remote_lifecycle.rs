@@ -3,7 +3,11 @@
 //! via the Repository and BackendClient ports.
 
 use crate::{
-    domain::ports::{BackendClient, Repository},
+    domain::{
+        ports::{BackendClient, Repository},
+        remote::Backend,
+    },
+    services::auth,
     util,
 };
 
@@ -28,6 +32,15 @@ pub fn delete_remote(
     let remote = util::await_future(repo.find_remote_by_name(remote_name))
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("remote '{remote_name}' not found"))?;
+    let backend = remote.backend;
     util::await_future(repo.cascade_delete_remote(remote.id)).map_err(|e| e.to_string())?;
+    if backend == Backend::NativeProton {
+        // Native-Proton remotes own a keyring entry rather than an
+        // rclone config row; drop the entry and skip the rclone side
+        // (calling delete_config for a non-rclone remote would just
+        // surface a "remote not found" error from librclone).
+        auth::forget_proton_session(remote_name)?;
+        return Ok(());
+    }
     client.delete_config(remote_name)
 }

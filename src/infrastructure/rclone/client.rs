@@ -4,26 +4,54 @@
 //! Thin wrapper around [`super::rpc::sync`] — blocking calls underneath,
 //! since that's what librclone exposes. Async-ifying is deferred until the
 //! orchestrator moves onto a proper tokio runtime.
+//!
+//! On every call that mutates the rclone config file (`create_config`,
+//! `delete_config`) we re-read the file from disk and stash its full
+//! text into the OS keyring under `Celeste Keys / rclone-config`. That
+//! way the on-disk file becomes a transient, regenerable artefact and
+//! the source of truth lives behind libsecret.
+
+use std::path::PathBuf;
 
 use crate::domain::{
     ports::{BackendClient, Cancel},
     sync::{ListFilter, RemoteItem},
 };
+use crate::services::secrets;
 
 use super::rpc::{self, BackendListFilter, BackendRemoteItem};
 
-#[derive(Clone, Copy)]
-pub struct LibrcloneClient;
-
-impl LibrcloneClient {
-    pub fn new() -> Self {
-        Self
-    }
+#[derive(Clone)]
+pub struct LibrcloneClient {
+    rclone_config_path: PathBuf,
 }
 
-impl Default for LibrcloneClient {
-    fn default() -> Self {
-        Self::new()
+impl LibrcloneClient {
+    /// `rclone_config_path` is the path librclone writes its config
+    /// to. After every mutation we read the file back from this path
+    /// and sync the contents to the keyring.
+    pub fn new(rclone_config_path: PathBuf) -> Self {
+        Self { rclone_config_path }
+    }
+
+    /// Push the current on-disk rclone config into the keyring. Logged
+    /// on failure but not propagated — the user-visible operation has
+    /// already succeeded; failing the whole call because the keyring
+    /// is unhappy would just leave them with a broken UI.
+    fn sync_to_keyring(&self) {
+        let body = match std::fs::read_to_string(&self.rclone_config_path) {
+            Ok(body) => body,
+            Err(err) => {
+                eprintln!(
+                    "celeste: rclone config keyring sync skipped — couldn't read {}: {err}",
+                    self.rclone_config_path.display(),
+                );
+                return;
+            }
+        };
+        if let Err(err) = secrets::store(secrets::RCLONE_ACCOUNT, &body) {
+            eprintln!("celeste: rclone config keyring sync failed: {err}");
+        }
     }
 }
 
@@ -97,11 +125,19 @@ impl BackendClient for LibrcloneClient {
     }
 
     fn delete_config(&self, remote: &str) -> Result<(), String> {
-        rpc::sync::delete_config(remote).map_err(|err| err.error)
+        let result = rpc::sync::delete_config(remote).map_err(|err| err.error);
+        if result.is_ok() {
+            self.sync_to_keyring();
+        }
+        result
     }
 
     fn create_config(&self, payload_json: String) -> Result<(), String> {
-        celeste_go::rpc("config/create", payload_json).map(|_| ())
+        let result = celeste_go::rpc("config/create", payload_json).map(|_| ());
+        if result.is_ok() {
+            self.sync_to_keyring();
+        }
+        result
     }
 
     fn remote_type(&self, remote: &str) -> Result<Option<String>, String> {
