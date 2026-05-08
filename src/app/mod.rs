@@ -368,7 +368,7 @@ pub(crate) fn local_paths_overlap(a: &str, b: &str) -> bool {
 
 /// Bridge the domain `ProviderKind` (persisted on `Remote`) to the
 /// add-remote screen's own enum. Returns `None` for providers the
-/// add-remote UI doesn't currently expose, so re-auth falls back to
+/// add-remote UI doesn't currently expose, so reauth falls back to
 /// the picker rather than locking onto a wrong backend.
 pub(crate) fn map_domain_provider_to_add_remote(
     p: ProviderKind,

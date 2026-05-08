@@ -2,7 +2,7 @@
 //!
 //! `RunState` is the single enum for all levels. `RemoteState` owns per-dir
 //! states and the auth-failure bookkeeping (transitively pausing siblings
-//! when one dir needs re-authentication). `AppState` is the top-level holder,
+//! when one dir needs reauthentication). `AppState` is the top-level holder,
 //! providing the coordinator-facing API used by `CelesteApp`.
 
 use std::collections::HashMap;
@@ -36,9 +36,9 @@ pub enum RunState {
     /// Between scheduled passes or fresh before first sync.
     Waiting,
     /// Explicitly disabled by the user, OR transitively paused while a
-    /// sibling dir on the same remote is waiting for re-authentication.
+    /// sibling dir on the same remote is waiting for reauthentication.
     Paused,
-    /// This dir surfaced an auth failure; user must re-authenticate the
+    /// This dir surfaced an auth failure; user must reauthenticate the
     /// parent remote before syncing can resume.
     AuthNeeded,
     /// A pass just completed with no errors.
@@ -89,7 +89,7 @@ pub struct DirState {
 /// Per-remote state: owns per-dir run-states and the auth-failure bookkeeping.
 ///
 /// When any dir raises `AuthNeeded`, `RemoteState` snapshots every sibling's
-/// state and transitions them to `Paused`. On successful re-authentication,
+/// state and transitions them to `Paused`. On successful reauthentication,
 /// `reauth_complete` restores siblings from the snapshot and returns the
 /// formerly-failing dir to `Waiting`.
 #[derive(Clone, Debug)]
@@ -176,7 +176,7 @@ impl RemoteState {
             .state = RunState::AuthNeeded;
     }
 
-    /// Re-authentication succeeded. Restore siblings from the pause
+    /// Reauthentication succeeded. Restore siblings from the pause
     /// snapshot; return all `AuthNeeded` dirs to `Waiting`; clear snapshot.
     pub fn reauth_complete(&mut self) {
         let snapshot = self.pause_snapshot.take();
@@ -274,7 +274,7 @@ impl AppState {
         }
     }
 
-    /// Re-authentication for `remote_id` succeeded: restore all dirs.
+    /// Reauthentication for `remote_id` succeeded: restore all dirs.
     pub fn reauth_complete(&mut self, remote_id: RemoteId) {
         if let Some(rs) = self.remotes.get_mut(&remote_id) {
             rs.reauth_complete();

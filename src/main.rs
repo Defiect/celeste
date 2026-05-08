@@ -91,7 +91,7 @@ fn main() {
 /// the UID in a [`NativeProtonClient`], and register it on the
 /// router keyed by remote name. When the resume fails, register a
 /// [`DisabledProtonClient`] instead so the sync engine surfaces a
-/// clear "Re-authenticate" message rather than falling through to
+/// clear "Reauthenticate" message rather than falling through to
 /// rclone (which would error with an opaque config-lookup failure).
 fn resume_native_sessions(repo: &dyn Repository, router: &ClientRouter) {
     use crate::infrastructure::proton::client::DisabledProtonClient;
@@ -146,7 +146,7 @@ fn resume_native_sessions(repo: &dyn Repository, router: &ClientRouter) {
 /// is just there to nudge users who've minimised Celeste to the tray.
 fn notify_reauth_needed(remote_name: &str) {
     let _ = notify_rust::Notification::new()
-        .summary("Celeste: re-authentication needed")
+        .summary("Celeste: reauthentication needed")
         .body(&format!(
             "Sync is paused for '{remote_name}'. Open Celeste and click Reauthenticate to log in again.",
         ))

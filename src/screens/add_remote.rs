@@ -146,7 +146,7 @@ pub struct Draft {
     /// WebDAV validation is in flight). Disables the Submit button
     /// and swaps the header for a "please wait" hint.
     pub busy: bool,
-    /// When `Some`, the dialog is a re-authentication flow for an
+    /// When `Some`, the dialog is a reauthentication flow for an
     /// existing remote (not a new one). The name and provider are
     /// locked, submit reuses the existing DB row + session path
     /// instead of inserting a new one.
@@ -158,10 +158,10 @@ fn field_label(l: &'static str) -> Element<'static, Msg> {
 }
 
 pub fn view(draft: &Draft) -> Element<'_, Msg> {
-    let heading = text(if draft.reauth { "Re-authenticate remote" } else { "Add remote" })
+    let heading = text(if draft.reauth { "Reauthenticate remote" } else { "Add remote" })
         .size(22);
 
-    // In re-auth mode the name is fixed (it keys the DB row + session
+    // In reauth mode the name is fixed (it keys the DB row + session
     // file), so show it as plain text rather than an editable input.
     let name_row: Element<'_, Msg> = if draft.reauth {
         row![field_label("Name"), text(&draft.name).size(13)]
@@ -253,8 +253,8 @@ pub fn view(draft: &Draft) -> Element<'_, Msg> {
                 text(
                     "Note: if you have 2FA enabled, Proton's refresh token \
                      eventually expires. When that happens the session can't \
-                     re-auth automatically (the 2FA code is one-time-use) \
-                     and you'll need to re-authenticate with a \
+                     reauth automatically (the 2FA code is one-time-use) \
+                     and you'll need to reauthenticate with a \
                      fresh code."
                 )
                 .size(12),
@@ -333,7 +333,7 @@ pub fn view(draft: &Draft) -> Element<'_, Msg> {
     }
 
     let submit_label = if draft.reauth {
-        "Re-authenticate"
+        "Reauthenticate"
     } else {
         match draft.provider {
             Some(p) if p.is_oauth() => "Connect",

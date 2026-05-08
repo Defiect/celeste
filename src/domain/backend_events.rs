@@ -26,7 +26,7 @@ pub enum Operation {
 /// engine and state machine consume these instead of raw error strings.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BackendEvent {
-    /// The session/token is expired or revoked — user must re-authenticate.
+    /// The session/token is expired or revoked — user must reauthenticate.
     AuthExpired,
     /// The backend is throttling requests. The pass should be flagged as
     /// degraded; the scheduler will back off on the next cycle.

@@ -152,7 +152,7 @@ impl CelesteApp {
                     let is_reauth = draft.reauth;
                     draft.busy = true;
                     if is_reauth {
-                        // Re-auth: keep the existing DB row, just swap
+                        // Reauth: keep the existing DB row, just swap
                         // the router's disabled stub for a live
                         // session. Look up the existing id so
                         // AddRemoteResult can reuse the normal refresh
@@ -180,7 +180,7 @@ impl CelesteApp {
                                 match (res, existing_id) {
                                     (Ok(()), Some(id)) => Ok(id),
                                     (Ok(()), None) => {
-                                        Err("Remote not found after re-auth.".to_owned())
+                                        Err("Remote not found after reauth.".to_owned())
                                     }
                                     (Err(e), _) => Err(e),
                                 }
@@ -214,7 +214,7 @@ impl CelesteApp {
                     let is_reauth = draft.reauth;
                     draft.busy = true;
                     if is_reauth {
-                        // Re-auth: keep the existing DB row, just
+                        // Reauth: keep the existing DB row, just
                         // refresh the rclone config under the same
                         // name so the live token gets replaced.
                         // Inserting a new row would create a
@@ -246,7 +246,7 @@ impl CelesteApp {
                                 match (res, existing_id) {
                                     (Ok(()), Some(id)) => Ok(id),
                                     (Ok(()), None) => Err(
-                                        "Remote not found after re-auth.".to_owned(),
+                                        "Remote not found after reauth.".to_owned(),
                                     ),
                                     (Err(e), _) => Err(e),
                                 }
@@ -404,7 +404,7 @@ impl CelesteApp {
     }
 
     /// Handle [`remote_page::Msg::Reauthenticate`] — open the Add
-    /// Remote dialog pre-filled for re-auth (name + provider locked,
+    /// Remote dialog pre-filled for reauth (name + provider locked,
     /// the user enters fresh credentials).
     pub(in crate::app) fn handle_reauthenticate(
         &mut self,

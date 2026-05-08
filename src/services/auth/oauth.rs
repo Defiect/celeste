@@ -58,12 +58,12 @@ pub fn add_oauth_remote(
         .map_err(|e| e.to_string())
 }
 
-/// Re-authenticate an existing OAuth-backed remote (Dropbox / Google
+/// Reauthenticate an existing OAuth-backed remote (Dropbox / Google
 /// Drive / pCloud). Re-runs `rclone authorize` for fresh tokens, then
 /// replaces the rclone config entry under the same name so the new
 /// token takes effect. Leaves the DB row untouched — same id, same
 /// name, same sync_dirs — so the user's configuration survives the
-/// re-auth unchanged.
+/// reauth unchanged.
 pub fn reauth_oauth_remote(
     name: &str,
     provider: OAuthProvider,

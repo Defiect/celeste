@@ -1,4 +1,4 @@
-//! Native ProtonDrive remote provisioning and re-authentication.
+//! Native ProtonDrive remote provisioning and reauthentication.
 
 use std::{path::{Path, PathBuf}, sync::Arc};
 
@@ -62,12 +62,12 @@ pub fn add_proton_drive_remote(
     Ok(id)
 }
 
-/// Re-authenticate an existing Proton Drive remote whose session blob
+/// Reauthenticate an existing Proton Drive remote whose session blob
 /// has expired (2FA refresh exhausted) or gone missing. Logs in with
 /// fresh credentials, overwrites the session file, and swaps the
 /// router's disabled stub for a live [`NativeProtonClient`]. Leaves
 /// the DB row untouched — same name, same sync_dirs, same exclusions —
-/// so the user's configuration survives the re-auth unchanged.
+/// so the user's configuration survives the reauth unchanged.
 pub fn reauth_proton_drive_remote(
     name: &str,
     username: &str,

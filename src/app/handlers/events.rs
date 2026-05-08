@@ -53,7 +53,7 @@ impl CelesteApp {
                 };
                 // Auth-failure heuristic: HTTP 401 and the matching
                 // rclone phrasing both indicate the session is dead and
-                // only re-auth fixes it. Promote the sync_dir to
+                // only reauth fixes it. Promote the sync_dir to
                 // AuthNeeded, pause its siblings, and auto-pause the
                 // policy so the scheduler stops hammering an endpoint
                 // that can only return 401 until the user signs in

@@ -113,10 +113,10 @@ pub fn view<'a>(
     .spacing(ROW_SPACING)
     .align_y(Alignment::Center);
 
-    // ── Re-auth banner (native-proton session missing / expired) ───────────
+    // ── Reauth banner (native-proton session missing / expired) ───────────
     let reauth_banner: Option<Element<'a, Msg>> = if needs_reauth {
         let msg = "This remote's session isn't loaded. Sync is paused \
-                   until you re-authenticate. Your sync directories, \
+                   until you reauthenticate. Your sync directories, \
                    exclusions, and schedule will be preserved.";
         // Wrap the message in a Fill-width container so a long blurb
         // wraps inside the available slack instead of pushing the
@@ -162,7 +162,7 @@ pub fn view<'a>(
         let total_excl = auto_excl.len() + custom_excl_count;
         let excl_label = format!("Excluded ({})", total_excl);
 
-        // Re-auth needed: show AuthNeeded icon on every card so the
+        // Reauth needed: show AuthNeeded icon on every card so the
         // user can see at a glance that no dir can progress.
         let icon_state = if needs_reauth {
             Some(RunState::AuthNeeded)

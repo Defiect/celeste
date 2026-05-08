@@ -281,7 +281,7 @@ impl BackendClient for NativeProtonClient {
 /// Placeholder adapter for native-proton remotes whose session couldn't
 /// be resumed at startup (blob missing, refresh token expired, etc.).
 /// Registered on the [`ClientRouter`] so the sync engine's calls fail
-/// with a clear re-auth instruction instead of falling through to the
+/// with a clear reauth instruction instead of falling through to the
 /// default rclone client (which then errors with a cryptic
 /// "didn't find section in config file" because native-proton remotes
 /// never get written to rclone's config).
