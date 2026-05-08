@@ -254,15 +254,15 @@ pub fn view(draft: &Draft) -> Element<'_, Msg> {
                     "Note: if you have 2FA enabled, Proton's refresh token \
                      eventually expires. When that happens the session can't \
                      re-auth automatically (the 2FA code is one-time-use) \
-                     and you'll need to delete and re-add the remote with a \
+                     and you'll need to re-authenticate with a \
                      fresh code."
                 )
                 .size(12),
             );
             body = body.push(
                 row![
-                    field_label("Username"),
-                    text_input("username", &draft.user)
+                    field_label("E-Mail"),
+                    text_input("example@proton.me", &draft.user)
                         .on_input(Msg::UserChanged)
                         .padding(6),
                 ]
