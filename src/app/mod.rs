@@ -14,7 +14,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use iced::{stream, Element, Subscription, Task, Theme};
+use iced::{stream, window, Element, Subscription, Task, Theme};
 use tokio::sync::mpsc;
 
 use crate::{
@@ -62,11 +62,16 @@ pub enum Message {
     /// A tray action from the user (menu click or left-click on the
     /// icon).
     TrayClick(TrayAction),
-    /// User-initiated quit — tray "Quit Celeste" or the window-manager
-    /// close button. Handled by an immediate `std::process::exit` so we
-    /// don't wait for in-flight FFI calls (notably librclone listings,
-    /// which expose no cancellation handle) to return.
+    /// User-initiated quit — only the tray "Quit Celeste" entry. Handled
+    /// by an immediate `std::process::exit` so we don't wait for
+    /// in-flight FFI calls (notably librclone listings, which expose no
+    /// cancellation handle) to return.
     Quit,
+    /// A window was destroyed (X button, Alt-F4, or our own
+    /// `iced::window::close`). Lets us clear the cached window id so
+    /// the next "Open Celeste" creates a fresh window instead of
+    /// targeting the dead one.
+    WindowClosed(window::Id),
 }
 
 /// Aggregate outcome across every sync_dir of one remote's pass. The
@@ -146,6 +151,12 @@ pub struct CelesteApp {
     /// handshake has landed; remains `None` if the session has no
     /// StatusNotifier host.
     tray_tx: Option<mpsc::Sender<TrayStatus>>,
+    /// Id of the live main window, or `None` when hidden-to-tray. We
+    /// run as an `iced::daemon`: the runtime stays alive with no
+    /// windows, and the tray's "Open Celeste" entry opens (or focuses)
+    /// the window on demand. Tracked here so `Hide` knows what to
+    /// close and `Open` can tell "no window" from "minimised".
+    window_id: Option<window::Id>,
 }
 
 impl CelesteApp {
@@ -177,6 +188,7 @@ impl CelesteApp {
             cancel_flags: HashMap::new(),
             stderr_capture: stderr_capture::handle(),
             tray_tx: None,
+            window_id: None,
         };
         let load = Task::perform(
             async move { repo.list_remotes().await.unwrap_or_default() },
@@ -185,11 +197,11 @@ impl CelesteApp {
         (state, load)
     }
 
-    fn title(&self) -> String {
+    fn title(&self, _id: window::Id) -> String {
         "Celeste".to_string()
     }
 
-    fn theme(&self) -> Theme {
+    fn theme(&self, _id: window::Id) -> Theme {
         theme::celeste_theme()
     }
 
@@ -216,15 +228,14 @@ impl CelesteApp {
             tray::TraySignal::Ready(tx) => Message::TrayReady(tx),
             tray::TraySignal::Action(action) => Message::TrayClick(action),
         });
-        // Catch the window-manager close (X button, Alt-F4, etc.) and
-        // route it to the same instant-exit path as the tray Quit
-        // entry. Without this iced would try to drive its normal
-        // shutdown, which blocks while the librclone FFI call is still
-        // outstanding.
-        let window_close = iced::event::listen_with(|event, _status, _id| match event {
-            iced::Event::Window(iced::window::Event::CloseRequested) => Some(Message::Quit),
-            _ => None,
-        });
+        // Notice when the window is destroyed (X button, Alt-F4, or
+        // our own `Hide` action) so we can drop the cached id. The
+        // daemon keeps running with no window — the next "Open
+        // Celeste" allocates a fresh one. We don't intercept
+        // `CloseRequested`: iced's default `exit_on_close_request`
+        // already destroys the window for us, and daemon mode doesn't
+        // exit on the last-window destruction.
+        let window_close = window::close_events().map(Message::WindowClosed);
         Subscription::batch([events, ticker, tray, window_close])
     }
 
@@ -296,12 +307,13 @@ impl CelesteApp {
             Message::TrayReady(tx) => self.handle_tray_ready(tx),
             Message::TrayClick(action) => self.handle_tray_click(action),
             Message::Quit => self.handle_quit(),
+            Message::WindowClosed(id) => self.handle_window_closed(id),
         };
         self.push_tray_status();
         cmd
     }
 
-    fn view(&self) -> Element<'_, Message> {
+    fn view(&self, _id: window::Id) -> Element<'_, Message> {
         if let Some(draft) = self.add_remote_draft.as_ref() {
             return add_remote::view(draft).map(Message::AddRemote);
         }
@@ -399,20 +411,23 @@ pub(crate) fn map_domain_provider_to_add_remote(
     }
 }
 
-/// Launch the Iced application. Blocks until the window closes.
+/// Launch the Iced daemon. Blocks until `Message::Quit` calls
+/// `std::process::exit`.
+///
+/// We use [`iced::daemon`] (not `iced::application`) so the runtime
+/// stays alive even when no window is open — the user closes the
+/// window, the X11/Wayland surface is fully destroyed, the taskbar
+/// entry disappears, and the tray icon remains as the sole UI surface
+/// (matching Signal / Telegram / WhatsApp behaviour). The tray's "Open
+/// Celeste" entry then opens a fresh window via [`window::open`].
+///
+/// Boot opens no window: Celeste typically autostarts at login, where a
+/// pop-up would steal focus. The user surfaces it through the tray.
 pub fn run(
     repo: Arc<dyn Repository>,
     rclone: Arc<ClientRouter>,
     config_dir: PathBuf,
 ) -> iced::Result {
-    // Start hidden — the tray icon brings the window up on demand, so a
-    // login-time launch doesn't steal focus. `Mode::Hidden` works
-    // reliably only before the surface is first mapped; subsequent hide
-    // requests go through `minimize(true)` below.
-    let window_settings = iced::window::Settings {
-        visible: false,
-        ..iced::window::Settings::default()
-    };
     // Bias iced's default glyph lookup to the sans-serif family so
     // cosmic-text's fallback layer resolves against the fonts we just
     // loaded instead of a bare built-in. Without this the ⚠ and
@@ -422,7 +437,7 @@ pub fn run(
         ..iced::Font::DEFAULT
     };
 
-    let mut builder = iced::application(
+    let mut builder = iced::daemon(
         move || CelesteApp::new(repo.clone(), rclone.clone(), config_dir.clone()),
         CelesteApp::update,
         CelesteApp::view,
@@ -430,19 +445,20 @@ pub fn run(
     .title(CelesteApp::title)
     .theme(CelesteApp::theme)
     .subscription(CelesteApp::subscription)
-    .window(window_settings)
-    .default_font(default_font)
-    // We handle CloseRequested ourselves — see `Message::Quit`. Letting
-    // iced drive the default close path would wait for the active
-    // librclone FFI call to return, which can take minutes for a
-    // mid-listing remote.
-    .exit_on_close_request(false);
+    .default_font(default_font);
 
     for font in fallback_fonts() {
         builder = builder.font(font);
     }
 
     builder.run()
+}
+
+/// Settings for the main Celeste window. Defaults are fine — the
+/// helper just keeps the call sites (boot path + tray "Open" handler)
+/// from drifting if we ever need a custom icon or size.
+pub(crate) fn main_window_settings() -> window::Settings {
+    window::Settings::default()
 }
 
 /// Discover fallback fonts via fontconfig at startup and hand them to
