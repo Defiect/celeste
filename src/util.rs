@@ -58,6 +58,24 @@ pub fn get_legacy_config_dir() -> PathBuf {
     base
 }
 
+/// `$XDG_RUNTIME_DIR/celeste`, or `None` when the variable is unset.
+///
+/// `$XDG_RUNTIME_DIR` is a per-session tmpfs (RAM-backed, wiped on
+/// logout / reboot). It's where the on-disk `rclone.conf` lives at
+/// runtime so the OAuth tokens librclone needs to read never reach
+/// rotational storage; the keyring holds the durable copy and the
+/// runtime file is regenerated each session.
+pub fn get_runtime_dir() -> Option<PathBuf> {
+    match std::env::var_os("XDG_RUNTIME_DIR") {
+        Some(path) if !path.is_empty() => {
+            let mut base = PathBuf::from(path);
+            base.push("celeste");
+            Some(base)
+        }
+        _ => None,
+    }
+}
+
 /// Trim at most one leading and one trailing slash.
 pub fn strip_slashes(string: &str) -> String {
     let stripped_prefix = string.strip_prefix('/').unwrap_or(string);

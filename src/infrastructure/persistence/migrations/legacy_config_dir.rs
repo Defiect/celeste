@@ -17,8 +17,9 @@ use crate::util;
 ///
 /// 1. `data.sqlite` → `<data_dir>/data.sqlite` (file move).
 /// 2. `proton-session-*.json` → keyring entry per remote, file deleted.
-/// 3. `rclone.conf` → keyring entry, file deleted (after we've copied
-///    its text into `<data_dir>/rclone.conf` for librclone to use).
+/// 3. `rclone.conf` → keyring entry, file deleted. Hydration to the
+///    runtime path happens in `main.rs` after this returns; we don't
+///    write any tokens to the data dir here.
 ///
 /// Best-effort: any individual failure is logged and skipped — the
 /// most important guarantee is that the user keeps their data even if
@@ -31,7 +32,7 @@ pub fn run(data_dir: &Path) {
 
     migrate_sqlite_db(&legacy, data_dir);
     migrate_proton_sessions(&legacy);
-    migrate_rclone_config(&legacy, data_dir);
+    migrate_rclone_config(&legacy);
 }
 
 fn migrate_sqlite_db(legacy: &Path, data_dir: &Path) {
@@ -91,9 +92,8 @@ fn migrate_proton_sessions(legacy: &Path) {
     }
 }
 
-fn migrate_rclone_config(legacy: &Path, data_dir: &Path) {
+fn migrate_rclone_config(legacy: &Path) {
     let legacy_rclone = legacy.join("rclone.conf");
-    let new_rclone = data_dir.join("rclone.conf");
     if !legacy_rclone.exists() {
         return;
     }
@@ -107,14 +107,6 @@ fn migrate_rclone_config(legacy: &Path, data_dir: &Path) {
             return;
         }
     };
-    if !new_rclone.exists() {
-        if let Err(err) = std::fs::write(&new_rclone, &body) {
-            eprintln!(
-                "celeste: couldn't copy rclone.conf to {}: {err}",
-                new_rclone.display(),
-            );
-        }
-    }
     match secrets::store(secrets::RCLONE_ACCOUNT, &body) {
         Ok(()) => {
             let _ = std::fs::remove_file(&legacy_rclone);

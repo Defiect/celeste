@@ -42,18 +42,32 @@ fn main() {
     // lose rate-limit detection for the run.
     let _stderr = stderr_capture::install();
 
-    // SQLite DB and rclone config now live under
-    // ${XDG_DATA_HOME:-~/.local/share}/celeste. The rclone config text
-    // itself is mirrored into the OS keyring after every mutation, so
-    // the on-disk file is a regenerable cache: at startup we hydrate it
-    // from the keyring (or from a legacy ~/.config/celeste/ install).
+    // SQLite DB lives under ${XDG_DATA_HOME:-~/.local/share}/celeste.
+    // The rclone config file (which holds OAuth tokens librclone writes
+    // and reads as plaintext) lives in $XDG_RUNTIME_DIR — a per-session
+    // tmpfs that's RAM-backed and wiped on logout — so the durable
+    // copy is the keyring entry, not anything on rotational storage.
+    // When XDG_RUNTIME_DIR isn't set we fall back to the data dir with
+    // a warning; that's the only path where tokens can hit disk.
     let data_dir = util::get_data_dir();
     std::fs::create_dir_all(&data_dir).expect("failed to create data dir");
 
     legacy_config_dir::run(&data_dir);
+    fold_stale_rclone_into_keyring(&data_dir);
 
-    let mut rclone_config = data_dir.clone();
-    rclone_config.push("rclone.conf");
+    let rclone_config = match util::get_runtime_dir() {
+        Some(dir) => {
+            std::fs::create_dir_all(&dir).expect("failed to create runtime dir");
+            dir.join("rclone.conf")
+        }
+        None => {
+            eprintln!(
+                "celeste: $XDG_RUNTIME_DIR is unset; rclone tokens will land on disk at {}",
+                data_dir.display(),
+            );
+            data_dir.join("rclone.conf")
+        }
+    };
     hydrate_rclone_config(&rclone_config);
 
     celeste_go::initialize();
@@ -96,10 +110,47 @@ fn main() {
     iced_run(repo, router).expect("iced app exited with error");
 }
 
-/// Make sure `<data_dir>/rclone.conf` matches what's in the keyring.
+/// Sweep an `<data_dir>/rclone.conf` left behind by a prior version
+/// (which kept the rclone config in the data dir) into the keyring,
+/// then delete it. The keyring is canonical; the file is the leak.
+fn fold_stale_rclone_into_keyring(data_dir: &std::path::Path) {
+    let stale = data_dir.join("rclone.conf");
+    if !stale.exists() {
+        return;
+    }
+    match std::fs::read_to_string(&stale) {
+        Ok(body) => {
+            if !body.is_empty() {
+                if let Err(err) = secrets::store(secrets::RCLONE_ACCOUNT, &body) {
+                    eprintln!(
+                        "celeste: keyring sync of stale rclone.conf failed: {err}; leaving file in place",
+                    );
+                    return;
+                }
+            }
+            if let Err(err) = std::fs::remove_file(&stale) {
+                eprintln!(
+                    "celeste: couldn't delete stale rclone.conf at {}: {err}",
+                    stale.display(),
+                );
+            } else {
+                eprintln!(
+                    "celeste: cleared stale rclone.conf from {}",
+                    data_dir.display(),
+                );
+            }
+        }
+        Err(err) => eprintln!(
+            "celeste: couldn't read stale rclone.conf at {}: {err}",
+            stale.display(),
+        ),
+    }
+}
+
+/// Make sure the runtime `rclone.conf` matches what's in the keyring.
 /// Treats the keyring as the source of truth: if it has an entry, the
-/// on-disk file is overwritten; if not, the file is left as-is (could
-/// be empty, could be a freshly-migrated copy from `migrate_legacy_…`).
+/// on-disk file is overwritten; if not, an empty stub is created so
+/// librclone has something to open.
 fn hydrate_rclone_config(rclone_config: &std::path::Path) {
     match secrets::load(secrets::RCLONE_ACCOUNT) {
         Ok(Some(body)) => {
