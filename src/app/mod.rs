@@ -13,7 +13,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use iced::{stream, window, Element, Subscription, Task, Theme};
+use iced::{stream, theme as iced_theme, window, Element, Subscription, Task, Theme};
 use tokio::sync::mpsc;
 
 use crate::{
@@ -27,7 +27,7 @@ use crate::{
     infrastructure::{
         client_router::ClientRouter,
         stderr_capture::{self, CaptureHandle},
-        tray::{self, TrayAction, TrayStatus},
+        tray::{self, TrayAction, TrayUpdate},
     },
     screens::{add_remote, main_page, remote_page, settings},
     theme,
@@ -56,11 +56,16 @@ pub enum Message {
     SyncEventReceived(SyncEvent),
     Tick,
     /// Delivered once when the ksni service is live — carries the
-    /// sender the app uses to push fresh [`TrayStatus`] snapshots.
-    TrayReady(mpsc::Sender<TrayStatus>),
+    /// sender the app uses to push status / theme updates back into
+    /// the tray task.
+    TrayReady(mpsc::Sender<TrayUpdate>),
     /// A tray action from the user (menu click or left-click on the
     /// icon).
     TrayClick(TrayAction),
+    /// The iced runtime detected (or was just told about) a system
+    /// colour-scheme change. Forwarded to the tray so its rasterised
+    /// glyphs flip tone with the panel.
+    SystemThemeChanged(iced_theme::Mode),
     /// User-initiated quit — only the tray "Quit Celeste" entry. Handled
     /// by an immediate `std::process::exit` so we don't wait for
     /// in-flight FFI calls (notably librclone listings, which expose no
@@ -146,7 +151,11 @@ pub struct CelesteApp {
     /// Sender into the ksni subscription task. `Some` once the tray
     /// handshake has landed; remains `None` if the session has no
     /// StatusNotifier host.
-    tray_tx: Option<mpsc::Sender<TrayStatus>>,
+    tray_tx: Option<mpsc::Sender<TrayUpdate>>,
+    /// Last system colour-scheme value reported by iced. Cached so
+    /// the [`Message::TrayReady`] handshake can seed the tray with
+    /// the current value before the next change fires.
+    system_theme: iced_theme::Mode,
     /// Id of the live main window, or `None` when hidden-to-tray. We
     /// run as an `iced::daemon`: the runtime stays alive with no
     /// windows, and the tray's "Open Celeste" entry opens (or focuses)
@@ -182,13 +191,17 @@ impl CelesteApp {
             cancel_flags: HashMap::new(),
             stderr_capture: stderr_capture::handle(),
             tray_tx: None,
+            system_theme: iced_theme::Mode::None,
             window_id: None,
         };
         let load = Task::perform(
             async move { repo.list_remotes().await.unwrap_or_default() },
             Message::RemotesLoaded,
         );
-        (state, load)
+        // Seed the cached system theme with whatever iced already knows;
+        // the subscription below picks up subsequent changes.
+        let initial_theme = iced::system::theme().map(Message::SystemThemeChanged);
+        (state, Task::batch([load, initial_theme]))
     }
 
     fn title(&self, _id: window::Id) -> String {
@@ -230,7 +243,11 @@ impl CelesteApp {
         // already destroys the window for us, and daemon mode doesn't
         // exit on the last-window destruction.
         let window_close = window::close_events().map(Message::WindowClosed);
-        Subscription::batch([events, ticker, tray, window_close])
+        // Iced reads the freedesktop `org.freedesktop.appearance.color-scheme`
+        // portal via `mundy` and emits a `Mode` whenever it changes. Forward
+        // those into the tray so the rasterised glyphs follow the panel.
+        let system_theme = iced::system::theme_changes().map(Message::SystemThemeChanged);
+        Subscription::batch([events, ticker, tray, window_close, system_theme])
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
@@ -300,6 +317,7 @@ impl CelesteApp {
             // Tray --------------------------------------------------
             Message::TrayReady(tx) => self.handle_tray_ready(tx),
             Message::TrayClick(action) => self.handle_tray_click(action),
+            Message::SystemThemeChanged(mode) => self.handle_system_theme_changed(mode),
             Message::Quit => self.handle_quit(),
             Message::WindowClosed(id) => self.handle_window_closed(id),
         };
@@ -363,7 +381,16 @@ impl CelesteApp {
                 &self.syncing,
                 &self.last_sync_at,
             );
-            let _ = tx.try_send(status);
+            let _ = tx.try_send(TrayUpdate::Status(status));
+        }
+    }
+
+    /// Push the cached system colour-scheme into the tray. Used both
+    /// on the [`Message::TrayReady`] handshake (to seed the initial
+    /// tone) and on every subsequent `SystemThemeChanged`.
+    pub(in crate::app) fn push_tray_theme(&self) {
+        if let Some(tx) = self.tray_tx.as_ref() {
+            let _ = tx.try_send(TrayUpdate::Theme(self.system_theme));
         }
     }
 }

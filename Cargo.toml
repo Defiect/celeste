@@ -27,9 +27,6 @@ icondata = { version = "0.7", default-features = false, features = [
     "box-icons",
     "tabler-icons",
 ] }
-# Detects the system colour scheme so the tray can rasterise its
-# icons in a tone that contrasts with the panel background.
-dark-light = "1.1"
 ksni = "0.3.4"
 libc = "0.2"
 # Rasterise tray SVGs to ARGB32 at startup so KDE's symbolic-icon

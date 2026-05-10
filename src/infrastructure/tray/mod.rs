@@ -5,9 +5,11 @@
 //!
 //! The app never talks to `ksni` directly — it batches
 //! [`subscription`] into its own subscription list, hands the returned
-//! `Sender<TrayStatus>` to itself on receipt of [`TraySignal::Ready`],
-//! and pushes a fresh [`TrayStatus`] whenever its aggregate sync state
-//! changes.
+//! `Sender<TrayUpdate>` to itself on receipt of [`TraySignal::Ready`],
+//! and pushes [`TrayUpdate::Status`] whenever its aggregate sync state
+//! changes plus [`TrayUpdate::Theme`] whenever the iced runtime
+//! reports a fresh `system::theme()` (which iced derives from the
+//! freedesktop colour-scheme portal via `mundy`).
 //!
 //! If the running desktop exposes no StatusNotifier host (plain GNOME
 //! without an extension, a session missing a D-Bus broker, …) the
@@ -22,7 +24,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use iced::{stream, Subscription};
+use iced::{stream, theme, Subscription};
 use ksni::{
     menu::{StandardItem, TextDirection},
     Icon, MenuItem, ToolTip, TrayMethods,
@@ -34,7 +36,7 @@ use crate::domain::{
     run_state::AppState,
 };
 
-use self::icons::{ColorScheme, IconSet};
+use self::icons::IconSet;
 
 /// One user-visible action surfaced from the tray. The app maps each
 /// of these to a window-lifecycle command.
@@ -71,12 +73,23 @@ pub enum TrayStatus {
     Done { last_sync_ago: Option<Duration> },
 }
 
+/// What the app pushes back into the tray task: either a refreshed
+/// aggregate sync status, or a colour-scheme change picked up from
+/// the iced runtime. Two senders would have done the job too, but a
+/// single typed channel keeps the handshake (one [`TraySignal::Ready`])
+/// and the back-pressure semantics straightforward.
+#[derive(Debug)]
+pub enum TrayUpdate {
+    Status(TrayStatus),
+    Theme(theme::Mode),
+}
+
 /// Everything the tray subscription emits into the Iced runtime.
 #[derive(Debug)]
 pub enum TraySignal {
     /// Delivered once at startup. The attached sender is how the app
-    /// pushes fresh [`TrayStatus`] snapshots back to the tray.
-    Ready(mpsc::Sender<TrayStatus>),
+    /// pushes fresh [`TrayUpdate`]s back to the tray.
+    Ready(mpsc::Sender<TrayUpdate>),
     /// A tray action the user triggered.
     Action(TrayAction),
 }
@@ -89,28 +102,36 @@ pub fn subscription() -> Subscription<TraySignal> {
             use iced::futures::SinkExt;
 
             let (click_tx, mut click_rx) = mpsc::channel::<TrayAction>(32);
-            let (status_tx, mut status_rx) = mpsc::channel::<TrayStatus>(32);
+            let (update_tx, mut update_rx) = mpsc::channel::<TrayUpdate>(32);
 
             let tray = CelesteTray {
                 status: TrayStatus::Loading,
                 click_tx,
                 icons: IconSet::load(),
-                scheme: ColorScheme::detect(),
+                // Seed with `None` so the first push from the app
+                // (which fires immediately on `TrayReady`) decides
+                // the actual tone. If the runtime never reports a
+                // theme, the `None` fallback in `ThemedIcon::pick`
+                // takes over.
+                theme: theme::Mode::None,
             };
 
             match tray.spawn().await {
                 Ok(handle) => {
-                    // Handshake: give the app the status sender so it
-                    // can start pushing state updates.
-                    let _ = output.send(TraySignal::Ready(status_tx)).await;
+                    // Handshake: give the app the update sender so it
+                    // can start pushing state and theme.
+                    let _ = output.send(TraySignal::Ready(update_tx)).await;
 
                     loop {
                         tokio::select! {
                             Some(action) = click_rx.recv() => {
                                 let _ = output.send(TraySignal::Action(action)).await;
                             }
-                            Some(new_status) = status_rx.recv() => {
-                                let _ = handle.update(|t: &mut CelesteTray| t.status = new_status).await;
+                            Some(update) = update_rx.recv() => {
+                                let _ = handle.update(|t: &mut CelesteTray| match update {
+                                    TrayUpdate::Status(s) => t.status = s,
+                                    TrayUpdate::Theme(m) => t.theme = m,
+                                }).await;
                             }
                             else => break,
                         }
@@ -123,8 +144,8 @@ pub fn subscription() -> Subscription<TraySignal> {
                     // Deliver Ready anyway so the app's try_send path
                     // stays wired to *something*; drain the receiver
                     // forever so the bounded channel can't backpressure.
-                    let _ = output.send(TraySignal::Ready(status_tx)).await;
-                    while status_rx.recv().await.is_some() {}
+                    let _ = output.send(TraySignal::Ready(update_tx)).await;
+                    while update_rx.recv().await.is_some() {}
                 }
             }
 
@@ -136,14 +157,14 @@ pub fn subscription() -> Subscription<TraySignal> {
 /// The tray state held inside the ksni service task. Menu callbacks
 /// receive `&mut Self`, so the click sender lives here. `icons` is
 /// rasterised once at startup — clone-on-read keeps `ksni::Tray`
-/// methods `&self`. `scheme` is captured once at startup so the
-/// rendered glyph contrasts with the panel; users restarting the
-/// app pick up a theme switch automatically.
+/// methods `&self`. `theme` is whatever the iced runtime last
+/// reported via `system::theme_changes`; the app pushes the initial
+/// value on the [`TraySignal::Ready`] handshake.
 struct CelesteTray {
     status: TrayStatus,
     click_tx: mpsc::Sender<TrayAction>,
     icons: IconSet,
-    scheme: ColorScheme,
+    theme: theme::Mode,
 }
 
 impl CelesteTray {
@@ -158,7 +179,7 @@ impl CelesteTray {
             TrayStatus::Warning => &self.icons.warning,
             TrayStatus::Done { .. } => &self.icons.synced,
         };
-        icon.pick(self.scheme)
+        icon.pick(self.theme)
     }
 }
 

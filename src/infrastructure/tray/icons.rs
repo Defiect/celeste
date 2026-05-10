@@ -5,13 +5,16 @@
 //! solid black square.
 //!
 //! Icons come from `icondata` (raw inner SVG path data plus a viewBox)
-//! and are wrapped in a real `<svg>` document with a flat `fill` so
+//! and are wrapped in a real `<svg>` document with a flat paint so
 //! `resvg` produces a single-tone glyph. We pre-rasterise both a
-//! light- and a dark-tinted variant per state and pick the one that
-//! contrasts with the panel based on the detected system colour
-//! scheme — KDE/GNOME tray hosts do not pass theme info through for
-//! `icon_pixmap`, so detection is on us.
+//! light- and a dark-tinted variant per state; the parent module
+//! picks the one that contrasts with the panel based on the
+//! `iced::theme::Mode` iced reports for the running session.
+//! Detection lives there because iced already uses `mundy` to read
+//! the freedesktop colour-scheme portal — we just inherit its
+//! answer instead of running a second, less-reliable detector.
 
+use iced::theme;
 use ksni::Icon;
 use resvg::{tiny_skia, usvg};
 
@@ -23,26 +26,6 @@ const LIGHT_TONE: &str = "#e6e6e6";
 const DARK_TONE: &str = "#2c2c2c";
 
 const SIZES: &[u32] = &[16, 22, 24, 32, 48, 64];
-
-/// Whether the surrounding panel is dark (so we want a light icon)
-/// or light (so we want a dark icon).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum ColorScheme {
-    Dark,
-    Light,
-}
-
-impl ColorScheme {
-    /// Best-effort one-shot detection. Falls back to `Dark` because
-    /// the major Linux desktops default to dark panels and a light
-    /// icon on a dark panel is the safer mis-render.
-    pub fn detect() -> Self {
-        match dark_light::detect() {
-            dark_light::Mode::Light => Self::Light,
-            dark_light::Mode::Dark | dark_light::Mode::Default => Self::Dark,
-        }
-    }
-}
 
 /// Two-tone rasterisation for one icon: a light version (for dark
 /// panels) and a dark version (for light panels), each pre-sized to
@@ -60,11 +43,15 @@ impl ThemedIcon {
         }
     }
 
-    /// Hand back the colour variant that contrasts with `scheme`.
-    pub fn pick(&self, scheme: ColorScheme) -> Vec<Icon> {
-        match scheme {
-            ColorScheme::Dark => self.light.clone(),
-            ColorScheme::Light => self.dark.clone(),
+    /// Hand back the colour variant that contrasts with the system
+    /// theme iced reports. `Mode::None` (the freedesktop portal had
+    /// no preference set) falls back to the dark glyph — assuming a
+    /// light panel is the safer of the two unknown cases, since
+    /// rendering white-on-white is visually catastrophic.
+    pub fn pick(&self, mode: theme::Mode) -> Vec<Icon> {
+        match mode {
+            theme::Mode::Dark => self.light.clone(),
+            theme::Mode::Light | theme::Mode::None => self.dark.clone(),
         }
     }
 }

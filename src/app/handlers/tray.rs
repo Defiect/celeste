@@ -1,25 +1,42 @@
-//! Tray-related message handlers: lifecycle handshake and click actions.
+//! Tray-related message handlers: lifecycle handshake, theme
+//! propagation, and click actions.
 
 use std::sync::atomic::Ordering;
 
-use iced::{window, Task};
+use iced::{theme as iced_theme, window, Task};
 use tokio::sync::mpsc;
 
-use crate::infrastructure::tray::{TrayAction, TrayStatus};
+use crate::infrastructure::tray::{TrayAction, TrayUpdate};
 
 use super::super::{main_window_settings, CelesteApp, Message};
 
 impl CelesteApp {
-    /// Handle [`Message::TrayReady`] — store the sender and push an
-    /// initial status snapshot so the icon reflects reality immediately.
+    /// Handle [`Message::TrayReady`] — store the sender, push the
+    /// cached colour-scheme so the rasteriser flips tone immediately,
+    /// and push an initial status snapshot so the icon reflects
+    /// reality without waiting for the next state change.
     pub(in crate::app) fn handle_tray_ready(
         &mut self,
-        tx: mpsc::Sender<TrayStatus>,
+        tx: mpsc::Sender<TrayUpdate>,
     ) -> Task<Message> {
         self.tray_tx = Some(tx);
-        // First paint so the icon reflects reality immediately rather
-        // than staying on "Loading" until the next state change.
+        self.push_tray_theme();
         self.push_tray_status();
+        Task::none()
+    }
+
+    /// Handle [`Message::SystemThemeChanged`] — cache the new value
+    /// and forward it to the tray so the next paint uses the matching
+    /// glyph tone.
+    pub(in crate::app) fn handle_system_theme_changed(
+        &mut self,
+        mode: iced_theme::Mode,
+    ) -> Task<Message> {
+        if self.system_theme == mode {
+            return Task::none();
+        }
+        self.system_theme = mode;
+        self.push_tray_theme();
         Task::none()
     }
 
