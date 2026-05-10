@@ -19,14 +19,17 @@ iced = { version = "0.14", features = ["tokio", "lazy", "svg"] }
 # and the rclone config file. Sync API + pure-Rust crypto so we don't
 # pull zbus/tokio or OpenSSL into the dependency graph.
 keyring = { version = "3.6", default-features = false, features = ["sync-secret-service", "crypto-rust"] }
-# Status-icon SVGs for the per-sync-dir cards. Only the three icon
-# packs we actually pull from are enabled so we don't compile the
-# rest of the icondata corpus.
+# Status-icon SVGs for the per-sync-dir cards and the system-tray
+# pixmaps. Only the icon packs we actually pull from are enabled so
+# we don't compile the rest of the icondata corpus.
 icondata = { version = "0.7", default-features = false, features = [
     "ant-design-icons",
     "box-icons",
-    "material-design-icons",
+    "tabler-icons",
 ] }
+# Detects the system colour scheme so the tray can rasterise its
+# icons in a tone that contrasts with the panel background.
+dark-light = "1.1"
 ksni = "0.3.4"
 libc = "0.2"
 # Rasterise tray SVGs to ARGB32 at startup so KDE's symbolic-icon

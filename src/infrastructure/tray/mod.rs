@@ -34,7 +34,7 @@ use crate::domain::{
     run_state::AppState,
 };
 
-use self::icons::IconSet;
+use self::icons::{ColorScheme, IconSet};
 
 /// One user-visible action surfaced from the tray. The app maps each
 /// of these to a window-lifecycle command.
@@ -59,6 +59,9 @@ pub enum TrayStatus {
     Disconnected,
     /// Every remote is disabled.
     Paused,
+    /// At least one remote needs the user to reauthenticate before
+    /// syncing can resume.
+    AuthNeeded,
     /// At least one remote is actively syncing.
     Syncing { count: usize },
     /// At least one remote has hit provider rate-limiting and is in a
@@ -92,6 +95,7 @@ pub fn subscription() -> Subscription<TraySignal> {
                 status: TrayStatus::Loading,
                 click_tx,
                 icons: IconSet::load(),
+                scheme: ColorScheme::detect(),
             };
 
             match tray.spawn().await {
@@ -132,23 +136,29 @@ pub fn subscription() -> Subscription<TraySignal> {
 /// The tray state held inside the ksni service task. Menu callbacks
 /// receive `&mut Self`, so the click sender lives here. `icons` is
 /// rasterised once at startup — clone-on-read keeps `ksni::Tray`
-/// methods `&self`.
+/// methods `&self`. `scheme` is captured once at startup so the
+/// rendered glyph contrasts with the panel; users restarting the
+/// app pick up a theme switch automatically.
 struct CelesteTray {
     status: TrayStatus,
     click_tx: mpsc::Sender<TrayAction>,
     icons: IconSet,
+    scheme: ColorScheme,
 }
 
 impl CelesteTray {
+    /// Pick the icon that matches the current status. `Loading`
+    /// reuses the syncing glyph (mid-transition feel); `Disconnected`
+    /// reuses the paused glyph (no remote to talk to).
     fn pixmap_for_current_status(&self) -> Vec<Icon> {
-        match &self.status {
-            TrayStatus::Loading => self.icons.loading.clone(),
-            TrayStatus::Disconnected => self.icons.disconnected.clone(),
-            TrayStatus::Paused => self.icons.paused.clone(),
-            TrayStatus::Syncing { .. } => self.icons.syncing.clone(),
-            TrayStatus::Warning => self.icons.warning.clone(),
-            TrayStatus::Done { .. } => self.icons.done.clone(),
-        }
+        let icon = match &self.status {
+            TrayStatus::Loading | TrayStatus::Syncing { .. } => &self.icons.syncing,
+            TrayStatus::Disconnected | TrayStatus::Paused => &self.icons.paused,
+            TrayStatus::AuthNeeded => &self.icons.auth_needed,
+            TrayStatus::Warning => &self.icons.warning,
+            TrayStatus::Done { .. } => &self.icons.synced,
+        };
+        icon.pick(self.scheme)
     }
 }
 
@@ -230,6 +240,7 @@ fn description_for(status: &TrayStatus) -> String {
         TrayStatus::Loading => "Starting up…".to_owned(),
         TrayStatus::Disconnected => "No remotes configured".to_owned(),
         TrayStatus::Paused => "All remotes are disabled".to_owned(),
+        TrayStatus::AuthNeeded => "Reauthentication required".to_owned(),
         TrayStatus::Syncing { count } => {
             if *count == 1 {
                 "Syncing 1 remote…".to_owned()
@@ -267,6 +278,13 @@ pub fn compute_status(
 ) -> TrayStatus {
     if remotes.is_empty() {
         return TrayStatus::Disconnected;
+    }
+    // Reauth blocks syncing on the affected remote and pauses its
+    // siblings, so it dominates every other state except an empty
+    // remote list — surface it before syncing/warning/paused so the
+    // user sees the blocker immediately.
+    if remotes.iter().any(|r| state.needs_reauth(r.id)) {
+        return TrayStatus::AuthNeeded;
     }
     if !syncing.is_empty() {
         return TrayStatus::Syncing { count: syncing.len() };

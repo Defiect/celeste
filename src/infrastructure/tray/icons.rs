@@ -1,53 +1,105 @@
-//! Rasterise the tray SVGs at startup so `ksni::Tray::icon_pixmap`
+//! Rasterise the tray status icons at startup so `ksni::Tray::icon_pixmap`
 //! can serve theme-independent ARGB32 bytes straight to the
 //! StatusNotifier host. Bypasses KDE's symbolic-icon recolour
-//! pipeline, which otherwise collapses the Inkscape-era masked SVGs
-//! into a solid black square.
+//! pipeline, which otherwise collapses our coloured glyphs into a
+//! solid black square.
 //!
-//! Rendering happens exactly once, via `resvg` in pure-Rust mode (no
-//! fontdb / text support — these icons are shape-only). Output
-//! sizes match the typical StatusNotifier consumption range; the host
-//! picks the closest.
+//! Icons come from `icondata` (raw inner SVG path data plus a viewBox)
+//! and are wrapped in a real `<svg>` document with a flat `fill` so
+//! `resvg` produces a single-tone glyph. We pre-rasterise both a
+//! light- and a dark-tinted variant per state and pick the one that
+//! contrasts with the panel based on the detected system colour
+//! scheme — KDE/GNOME tray hosts do not pass theme info through for
+//! `icon_pixmap`, so detection is on us.
 
 use ksni::Icon;
 use resvg::{tiny_skia, usvg};
 
-/// One pre-rasterised set per tray state. Cloning a `Vec<Icon>`
+/// Tone used for icons placed against dark panels (the icon itself
+/// is light).
+const LIGHT_TONE: &str = "#e6e6e6";
+/// Tone used for icons placed against light panels (the icon itself
+/// is dark).
+const DARK_TONE: &str = "#2c2c2c";
+
+const SIZES: &[u32] = &[16, 22, 24, 32, 48, 64];
+
+/// Whether the surrounding panel is dark (so we want a light icon)
+/// or light (so we want a dark icon).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ColorScheme {
+    Dark,
+    Light,
+}
+
+impl ColorScheme {
+    /// Best-effort one-shot detection. Falls back to `Dark` because
+    /// the major Linux desktops default to dark panels and a light
+    /// icon on a dark panel is the safer mis-render.
+    pub fn detect() -> Self {
+        match dark_light::detect() {
+            dark_light::Mode::Light => Self::Light,
+            dark_light::Mode::Dark | dark_light::Mode::Default => Self::Dark,
+        }
+    }
+}
+
+/// Two-tone rasterisation for one icon: a light version (for dark
+/// panels) and a dark version (for light panels), each pre-sized to
+/// every advertised pixmap dimension.
+pub(super) struct ThemedIcon {
+    light: Vec<Icon>,
+    dark: Vec<Icon>,
+}
+
+impl ThemedIcon {
+    fn from(icon: icondata::Icon) -> Self {
+        Self {
+            light: rasterise_icon(icon, LIGHT_TONE),
+            dark: rasterise_icon(icon, DARK_TONE),
+        }
+    }
+
+    /// Hand back the colour variant that contrasts with `scheme`.
+    pub fn pick(&self, scheme: ColorScheme) -> Vec<Icon> {
+        match scheme {
+            ColorScheme::Dark => self.light.clone(),
+            ColorScheme::Light => self.dark.clone(),
+        }
+    }
+}
+
+/// One pre-rasterised icon per tray state. Cloning a `Vec<Icon>`
 /// requires cloning the pixel buffers, so we keep the set alive for
 /// the lifetime of the tray service and hand out `.clone()`s on
 /// demand.
 pub(super) struct IconSet {
-    pub loading: Vec<Icon>,
-    pub disconnected: Vec<Icon>,
-    pub paused: Vec<Icon>,
-    pub syncing: Vec<Icon>,
-    pub warning: Vec<Icon>,
-    pub done: Vec<Icon>,
-}
-
-const SIZES: &[u32] = &[16, 22, 24, 32, 48, 64];
-
-macro_rules! embed {
-    ($name:literal) => {
-        include_bytes!(concat!(
-            "../../../assets/context/com.hunterwittenborn.Celeste.CelesteTray",
-            $name,
-            "-symbolic.svg"
-        ))
-    };
+    pub synced: ThemedIcon,
+    pub auth_needed: ThemedIcon,
+    pub syncing: ThemedIcon,
+    pub warning: ThemedIcon,
+    pub paused: ThemedIcon,
 }
 
 impl IconSet {
     pub fn load() -> Self {
         Self {
-            loading: rasterise(embed!("Loading")),
-            disconnected: rasterise(embed!("Disconnected")),
-            paused: rasterise(embed!("Paused")),
-            syncing: rasterise(embed!("Syncing")),
-            warning: rasterise(embed!("Warning")),
-            done: rasterise(embed!("Done")),
+            synced: ThemedIcon::from(icondata::TbCloudCheckOutline),
+            auth_needed: ThemedIcon::from(icondata::TbCloudLockOutline),
+            syncing: ThemedIcon::from(icondata::AiSyncOutlined),
+            warning: ThemedIcon::from(icondata::TbCloudExclamationOutline),
+            paused: ThemedIcon::from(icondata::TbCloudPauseOutline),
         }
     }
+}
+
+fn rasterise_icon(icon: icondata::Icon, color: &str) -> Vec<Icon> {
+    let view_box = icon.view_box.unwrap_or("0 0 24 24");
+    let data = icon.data;
+    let svg_doc = format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="{view_box}" fill="{color}" stroke="{color}">{data}</svg>"##,
+    );
+    rasterise(svg_doc.as_bytes())
 }
 
 fn rasterise(svg_bytes: &[u8]) -> Vec<Icon> {
@@ -104,46 +156,42 @@ mod tests {
     use super::*;
 
     /// Every tray state must produce non-empty pixmap data at every
-    /// advertised size, with at least one non-transparent pixel. Guards
-    /// against a resvg / usvg upgrade silently turning the Inkscape-era
-    /// masked SVGs into blank canvases.
+    /// advertised size, with at least one non-transparent pixel, in
+    /// both colour variants. Guards against an icondata or resvg/usvg
+    /// upgrade silently turning these glyphs into blank canvases.
     #[test]
     fn every_state_rasterises_to_visible_pixels() {
         let set = IconSet::load();
-        let buckets: [(&str, &[Icon]); 6] = [
-            ("loading", &set.loading),
-            ("disconnected", &set.disconnected),
-            ("paused", &set.paused),
+        let buckets: [(&str, &ThemedIcon); 5] = [
+            ("synced", &set.synced),
+            ("auth_needed", &set.auth_needed),
             ("syncing", &set.syncing),
             ("warning", &set.warning),
-            ("done", &set.done),
+            ("paused", &set.paused),
         ];
-        for (name, icons) in buckets {
-            assert_eq!(
-                icons.len(),
-                SIZES.len(),
-                "{name} rasterised fewer sizes than expected"
-            );
-            for icon in icons {
+        for (name, themed) in buckets {
+            for (variant, icons) in [("light", &themed.light), ("dark", &themed.dark)] {
                 assert_eq!(
-                    icon.data.len(),
-                    (icon.width as usize) * (icon.height as usize) * 4,
-                    "{name} @ {}x{} has unexpected buffer length",
-                    icon.width,
-                    icon.height,
+                    icons.len(),
+                    SIZES.len(),
+                    "{name}/{variant} rasterised fewer sizes than expected"
                 );
-                // At least one pixel must have non-zero alpha —
-                // otherwise the tray host will render nothing.
-                let any_opaque = icon
-                    .data
-                    .chunks_exact(4)
-                    .any(|px| px[0] != 0);
-                assert!(
-                    any_opaque,
-                    "{name} @ {}x{} rasterised to a fully-transparent pixmap",
-                    icon.width,
-                    icon.height,
-                );
+                for icon in icons {
+                    assert_eq!(
+                        icon.data.len(),
+                        (icon.width as usize) * (icon.height as usize) * 4,
+                        "{name}/{variant} @ {}x{} has unexpected buffer length",
+                        icon.width,
+                        icon.height,
+                    );
+                    let any_opaque = icon.data.chunks_exact(4).any(|px| px[0] != 0);
+                    assert!(
+                        any_opaque,
+                        "{name}/{variant} @ {}x{} rasterised to a fully-transparent pixmap",
+                        icon.width,
+                        icon.height,
+                    );
+                }
             }
         }
     }

@@ -19,9 +19,9 @@ pub fn status_icon<'a, Msg: 'a>(state: Option<RunState>, size: f32) -> Element<'
     match state {
         None | Some(RunState::Waiting) => placeholder(),
         Some(RunState::Paused) => icon_svg(icondata::AiPauseCircleOutlined, "#6b7280", size),
-        Some(RunState::AuthNeeded) => icon_svg(icondata::BiKeyRegular, "#f97316", size),
-        Some(RunState::Syncing(_)) => icon_svg(icondata::MdiSync, "#3b82f6", size),
-        Some(RunState::Synced) => icon_svg(icondata::AiCheckCircleTwotone, "#22c55e", size),
+        Some(RunState::AuthNeeded) => icon_svg(icondata::AiLockOutlined, "#f97316", size),
+        Some(RunState::Syncing(_)) => icon_svg(icondata::AiSyncOutlined, "#3b82f6", size),
+        Some(RunState::Synced) => icon_svg(icondata::AiCheckCircleOutlined, "#22c55e", size),
         Some(RunState::Warning) => icon_svg(icondata::AiWarningOutlined, "#eab308", size),
         Some(RunState::Error) => icon_svg(icondata::BiErrorAltRegular, "#ef4444", size),
     }
@@ -30,13 +30,10 @@ pub fn status_icon<'a, Msg: 'a>(state: Option<RunState>, size: f32) -> Element<'
 /// Wrap an [`icondata::Icon`] (raw inner SVG path data plus a viewBox) in a
 /// real `<svg>` document and hand it to iced's SVG widget. The outer `fill`
 /// cascades into any `<path>` that doesn't set its own, which gives us a
-/// one-call recolour for the monochrome icons we use. Twotone icons hardcode
-/// their secondary fill to `#E6E6E6`; we strip it to `none` so the disc reads
-/// as transparent against the surrounding background instead of a solid white
-/// blob.
+/// one-call recolour for the monochrome icons we use.
 fn icon_svg<'a, Msg: 'a>(icon: icondata::Icon, color: &str, size: f32) -> Element<'a, Msg> {
     let view_box = icon.view_box.unwrap_or("0 0 24 24");
-    let data = icon.data.replace("#E6E6E6", "none");
+    let data = icon.data;
     let svg_doc = format!(
         r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="{view_box}" fill="{color}">{data}</svg>"##,
     );
