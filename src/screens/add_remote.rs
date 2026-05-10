@@ -283,7 +283,7 @@ pub fn view(draft: &Draft) -> Element<'_, Msg> {
             body = body.push(
                 row![
                     field_label("2FA code"),
-                    text_input("(optional)", &draft.totp)
+                    text_input("(if enabled)", &draft.totp)
                         .on_input(Msg::TotpChanged)
                         .padding(6),
                 ]
