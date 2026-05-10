@@ -3,6 +3,9 @@
 //! Proton returns structured error codes in the form `Code=NNNN`. The
 //! canonical codes we handle:
 //!   - `Code=401`   — auth / session expired
+//!   - `Code=10013` — invalid refresh token (server force-revoked the
+//!                    session; only the user re-entering credentials can
+//!                    recover it)
 //!   - `Code=2500`  — already exists (mkdir idempotence, also "already exists"
 //!                    substring from the Go bridge)
 //!   - `Code=429`   — rate limited (Proton reports this directly, unlike
@@ -17,10 +20,17 @@ impl EventTranslator for ProtonTranslator {
         let lower = msg.to_ascii_lowercase();
 
         if msg.contains("Code=401")
+            || msg.contains("Code=10013")
             || lower.contains("unauthenticated")
             || lower.contains("unauthorized")
             || lower.contains("invalid access token")
+            || lower.contains("invalid refresh token")
             || lower.contains("session expired")
+            // go-proton-api wraps a server-driven session revocation as
+            // "failed to refresh auth, de-auth: …". The "de-auth" marker
+            // is unique to that path; matching it covers future Code=
+            // values the API may add for the same condition.
+            || lower.contains("de-auth")
         {
             return BackendEvent::AuthExpired;
         }
