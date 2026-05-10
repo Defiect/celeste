@@ -7,8 +7,8 @@
 //!   the token, we pass it to config/create)
 
 use iced::{
-    widget::{button, column, container, pick_list, row, text::Shaping, text_input, Space},
     Element, Length,
+    widget::{Space, button, column, container, pick_list, row, text::Shaping, text_input},
 };
 
 use crate::{
@@ -57,10 +57,7 @@ pub enum ProviderKind {
 impl ProviderKind {
     /// Providers visible in the Add Remote UI today. Order matches the
     /// picker: Proton first (most recently tested), Google next.
-    pub const ALL: [ProviderKind; 2] = [
-        ProviderKind::ProtonDrive,
-        ProviderKind::GDrive,
-    ];
+    pub const ALL: [ProviderKind; 2] = [ProviderKind::ProtonDrive, ProviderKind::GDrive];
 
     pub fn webdav_vendor(self) -> Option<WebDavVendor> {
         match self {
@@ -91,7 +88,6 @@ impl ProviderKind {
     pub fn is_proton_drive(self) -> bool {
         matches!(self, ProviderKind::ProtonDrive)
     }
-
 }
 
 /// Pick-list wrapper over `ProviderKind`. Kept as a distinct type so
@@ -158,8 +154,12 @@ fn field_label(l: &'static str) -> Element<'static, Msg> {
 }
 
 pub fn view(draft: &Draft) -> Element<'_, Msg> {
-    let heading = text(if draft.reauth { "Reauthenticate remote" } else { "Add remote" })
-        .size(22);
+    let heading = text(if draft.reauth {
+        "Reauthenticate remote"
+    } else {
+        "Add remote"
+    })
+    .size(22);
 
     // In reauth mode the name is fixed (it keys the DB row + session
     // file), so show it as plain text rather than an editable input.
@@ -255,7 +255,7 @@ pub fn view(draft: &Draft) -> Element<'_, Msg> {
                      eventually expires. When that happens the session can't \
                      reauth automatically (the 2FA code is one-time-use) \
                      and you'll need to reauthenticate with a \
-                     fresh code."
+                     fresh code.",
                 )
                 .size(12),
             );
@@ -322,10 +322,12 @@ pub fn view(draft: &Draft) -> Element<'_, Msg> {
     }
 
     if draft.busy {
-        body = body.push(
-            text("Waiting for authorization — complete the flow in your browser…")
-                .size(13),
-        );
+        body = body.push(text("Waiting for authorization…").size(13));
+        if let Some(p) = &draft.provider {
+            if p.is_oauth() {
+                body = body.push(text("Complete the flow in your browser…").size(13));
+            }
+        }
     }
 
     if let Some(err) = &draft.error {
@@ -358,9 +360,8 @@ pub fn view(draft: &Draft) -> Element<'_, Msg> {
         }
     };
 
-    body = body.push(
-        row![Space::new().width(Length::Fill), cancel_btn, submit_btn].spacing(ROW_SPACING),
-    );
+    body = body
+        .push(row![Space::new().width(Length::Fill), cancel_btn, submit_btn].spacing(ROW_SPACING));
 
     container(body).padding(PAGE_PADDING).into()
 }
