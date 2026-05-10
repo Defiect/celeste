@@ -2,12 +2,18 @@
 //!
 //! Kept minimal for now — expand as the Iced screens land.
 
-use iced::Theme;
+use iced::{theme, Theme};
 
-/// The default theme. Dark to match the GNOME/libadwaita default the GTK
-/// version runs under.
-pub fn celeste_theme() -> Theme {
-    Theme::Dark
+/// Pick the iced [`Theme`] that mirrors the system colour-scheme iced
+/// reports (via `system::theme_changes`, ultimately the freedesktop
+/// `org.freedesktop.appearance.color-scheme` portal). `Mode::None`
+/// falls back to `Dark` to keep parity with the GNOME/libadwaita
+/// default the GTK build inherited from upstream.
+pub fn celeste_theme(mode: theme::Mode) -> Theme {
+    match mode {
+        theme::Mode::Light => Theme::Light,
+        theme::Mode::Dark | theme::Mode::None => Theme::Dark,
+    }
 }
 
 /// Standard outer padding for pages.

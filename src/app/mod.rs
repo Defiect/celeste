@@ -209,7 +209,7 @@ impl CelesteApp {
     }
 
     fn theme(&self, _id: window::Id) -> Theme {
-        theme::celeste_theme()
+        theme::celeste_theme(self.system_theme)
     }
 
     fn subscription(&self) -> Subscription<Message> {
