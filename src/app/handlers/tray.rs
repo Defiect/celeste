@@ -28,11 +28,24 @@ impl CelesteApp {
     /// Handle [`Message::SystemThemeChanged`] — cache the new value
     /// and forward it to the tray so the next paint uses the matching
     /// glyph tone.
+    ///
+    /// Iced's runtime races two paths: `iced::system::theme()`
+    /// (one-shot `GetTheme`) returns whatever value mundy seeded into
+    /// the cache during its 200 ms `once_blocking` startup query, while
+    /// the `theme_changes()` subscription streams the freedesktop
+    /// portal's broadcasts. On Wayland sessions where the portal is a
+    /// hair slow, those two arrive in either order, and a stale
+    /// `Mode::None` from the one-shot can land *after* a real `Light`
+    /// or `Dark` from the subscription. Treat `None` as "no fresh
+    /// information" so the most recent concrete value sticks.
     pub(in crate::app) fn handle_system_theme_changed(
         &mut self,
         mode: iced_theme::Mode,
     ) -> Task<Message> {
-        if self.system_theme == mode {
+        if mode == self.system_theme {
+            return Task::none();
+        }
+        if mode == iced_theme::Mode::None {
             return Task::none();
         }
         self.system_theme = mode;
