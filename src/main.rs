@@ -1,4 +1,5 @@
 pub mod app;
+pub mod branding;
 pub mod domain;
 pub mod infrastructure;
 pub mod screens;
@@ -250,44 +251,10 @@ fn notify_reauth_needed(remote_name: &str) {
             "Sync is paused for '{remote_name}'. Open Celeste and click Reauthenticate to log in again.",
         ))
         .appname("Celeste");
-    if let Some(icon) = celeste_icon_path() {
+    if let Some(icon) = branding::icon_file_path() {
         notification.icon(icon);
     }
     let _ = notification.show();
-}
-
-/// SVG bundled with the binary so notifications and the iced window
-/// can render the brand icon without depending on an XDG-themed copy
-/// being installed (Flatpak / `cargo run` from a fresh clone).
-const CELESTE_ICON_SVG: &[u8] = include_bytes!("../assets/celeste-icon.svg");
-
-/// Materialise the embedded SVG to `$XDG_CACHE_HOME/celeste/celeste-icon.svg`
-/// the first time it's asked for, then hand back the absolute path.
-/// notify-rust accepts either a freedesktop icon name or an absolute
-/// path; the path form sidesteps icon-theme lookup entirely so the
-/// brand icon shows up even on minimal sessions where the desktop
-/// file hasn't been installed.
-fn celeste_icon_path() -> Option<&'static str> {
-    use std::sync::OnceLock;
-    static CACHED: OnceLock<Option<String>> = OnceLock::new();
-    CACHED
-        .get_or_init(|| {
-            let cache_root = std::env::var_os("XDG_CACHE_HOME")
-                .map(std::path::PathBuf::from)
-                .or_else(|| {
-                    std::env::var_os("HOME")
-                        .map(|h| std::path::PathBuf::from(h).join(".cache"))
-                })?;
-            let dir = cache_root.join("celeste");
-            std::fs::create_dir_all(&dir).ok()?;
-            let path = dir.join("celeste-icon.svg");
-            // Re-write on every cold start: the embedded bytes are
-            // the source of truth, and a stale copy after an upgrade
-            // would otherwise stick around forever.
-            std::fs::write(&path, CELESTE_ICON_SVG).ok()?;
-            path.into_os_string().into_string().ok()
-        })
-        .as_deref()
 }
 
 fn show_legacy_config_popup(data_dir: &std::path::Path) {

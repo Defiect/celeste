@@ -474,11 +474,17 @@ pub fn run(
     builder.run()
 }
 
-/// Settings for the main Celeste window. Defaults are fine — the
-/// helper just keeps the call sites (boot path + tray "Open" handler)
-/// from drifting if we ever need a custom icon or size.
+/// Settings for the main Celeste window. Plants the brand icon on
+/// every freshly-opened surface (boot path and tray "Open Celeste")
+/// so the compositor's titlebar / Wayland xdg-toplevel and the
+/// taskbar entry both pick up the bundled `assets/celeste-icon.svg`
+/// — sidesteps relying on a freedesktop hicolor install that may
+/// not exist outside the packaged build.
 pub(crate) fn main_window_settings() -> window::Settings {
-    window::Settings::default()
+    window::Settings {
+        icon: crate::branding::window_icon(),
+        ..window::Settings::default()
+    }
 }
 
 /// Discover fallback fonts via fontconfig at startup and hand them to
