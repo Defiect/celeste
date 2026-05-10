@@ -44,16 +44,20 @@ pub fn view<'a>(
         for remote in remotes {
             let roll_up = state.remotes.get(&remote.id).map(|rs| rs.roll_up());
             let label = format!("{}  ({})", remote.name, status_label(roll_up, remote.policy.enabled));
+            // Icon sits next to the button (not inside it) so the
+            // status badge keeps its surrounding background instead of
+            // inheriting the button's hover/press tint, and so the
+            // icon's bounding box doesn't grow the button's clickable
+            // area.
             let row_widget = row![
                 status_icon(roll_up, SIDEBAR_ICON_SIZE),
-                text(label),
+                button(text(label))
+                    .width(Length::Fill)
+                    .on_press(Msg::Selected(remote.id)),
             ]
             .spacing(ROW_SPACING / 2.0)
             .align_y(Alignment::Center);
-            let btn = button(row_widget)
-                .width(Length::Fill)
-                .on_press(Msg::Selected(remote.id));
-            col = col.push(btn);
+            col = col.push(row_widget);
         }
         scrollable(col).width(Length::Fixed(240.0))
     };
