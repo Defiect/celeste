@@ -101,7 +101,7 @@ jobs:
         run: |
           $tag = "${{ inputs.tag }}"
           if ([string]::IsNullOrWhiteSpace($tag)) {
-            $tag = "windows-${{ github.run_number }}"
+            $tag = "windows-${{ github.run_id }}"
           }
 
           $name = "${{ inputs.release_name }}"
