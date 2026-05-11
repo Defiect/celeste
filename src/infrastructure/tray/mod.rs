@@ -17,6 +17,7 @@
 //! so the app's `TrayReady`-gated push path is a no-op instead of a
 //! back-pressure source.
 
+#[cfg(target_os = "linux")]
 mod icons;
 
 use std::{
@@ -24,11 +25,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use iced::{stream, theme, Subscription};
-use ksni::{
-    menu::{StandardItem, TextDirection},
-    Icon, MenuItem, ToolTip, TrayMethods,
-};
+use iced::{theme, Subscription};
 use tokio::sync::mpsc;
 
 use crate::domain::{
@@ -36,6 +33,13 @@ use crate::domain::{
     run_state::AppState,
 };
 
+#[cfg(target_os = "linux")]
+use ksni::{
+    menu::{StandardItem, TextDirection},
+    Icon, MenuItem, ToolTip, TrayMethods,
+};
+
+#[cfg(target_os = "linux")]
 use self::icons::IconSet;
 
 /// One user-visible action surfaced from the tray. The app maps each
@@ -97,6 +101,21 @@ pub enum TraySignal {
 /// Build the Iced subscription that owns the ksni service. Batch this
 /// alongside the app's existing subscriptions.
 pub fn subscription() -> Subscription<TraySignal> {
+    #[cfg(target_os = "linux")]
+    {
+        linux_subscription()
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        Subscription::none()
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_subscription() -> Subscription<TraySignal> {
+    use iced::stream;
+
     Subscription::run(|| {
         stream::channel(32, async move |mut output| {
             use iced::futures::SinkExt;
@@ -160,6 +179,7 @@ pub fn subscription() -> Subscription<TraySignal> {
 /// methods `&self`. `theme` is whatever the iced runtime last
 /// reported via `system::theme_changes`; the app pushes the initial
 /// value on the [`TraySignal::Ready`] handshake.
+#[cfg(target_os = "linux")]
 struct CelesteTray {
     status: TrayStatus,
     click_tx: mpsc::Sender<TrayAction>,
@@ -167,6 +187,7 @@ struct CelesteTray {
     theme: theme::Mode,
 }
 
+#[cfg(target_os = "linux")]
 impl CelesteTray {
     /// Pick the icon that matches the current status. `Loading`
     /// reuses the syncing glyph (mid-transition feel); `Disconnected`
@@ -183,6 +204,7 @@ impl CelesteTray {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl ksni::Tray for CelesteTray {
     fn id(&self) -> String {
         "com.hunterwittenborn.Celeste".to_owned()
@@ -256,6 +278,7 @@ impl ksni::Tray for CelesteTray {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn description_for(status: &TrayStatus) -> String {
     match status {
         TrayStatus::Loading => "Starting up…".to_owned(),
@@ -277,6 +300,7 @@ fn description_for(status: &TrayStatus) -> String {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn format_ago(age: Duration) -> String {
     let secs = age.as_secs();
     if secs < 60 {
