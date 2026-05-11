@@ -1,6 +1,6 @@
 module celeste/native-go
 
-go 1.24.0
+go 1.26.1
 
 // Path B: import go-proton-api directly (latest upstream, via submodule).
 // Proton-API-Bridge was a reference-only submodule during Phases 1–6 and
