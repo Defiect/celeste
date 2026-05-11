@@ -18,11 +18,15 @@
 
 use std::{
     collections::VecDeque,
+    sync::{Arc, Mutex, OnceLock},
+    time::Instant,
+};
+
+#[cfg(unix)]
+use std::{
     io::{BufRead, BufReader, Write},
     os::fd::{FromRawFd, IntoRawFd, OwnedFd},
-    sync::{Arc, Mutex, OnceLock},
     thread,
-    time::Instant,
 };
 
 /// Upper bound on the stderr ring — a few thousand lines is plenty for
@@ -69,38 +73,51 @@ pub fn install() -> CaptureHandle {
     if let Some(existing) = GLOBAL.get() {
         return existing.clone();
     }
-    let handle = match install_inner() {
+    let handle = install_platform();
+    let _ = GLOBAL.set(handle.clone());
+    handle
+}
+
+#[cfg(unix)]
+fn install_platform() -> CaptureHandle {
+    match install_inner() {
         Ok(h) => h,
         Err(err) => {
             // Falling back to an empty buffer keeps the rest of the app
             // working; we just lose rate-limit detection for this run.
             eprintln!("stderr_capture: install failed: {err} — rate-limit detection disabled.");
-            CaptureHandle {
-                inner: Arc::new(Mutex::new(VecDeque::new())),
-            }
+            empty_handle()
         }
-    };
-    let _ = GLOBAL.set(handle.clone());
-    handle
+    }
+}
+
+#[cfg(not(unix))]
+fn install_platform() -> CaptureHandle {
+    empty_handle()
 }
 
 /// Retrieve the handle installed by [`install`]. Returns an empty-buffer
 /// handle if install was never called (unit tests).
 pub fn handle() -> CaptureHandle {
-    GLOBAL
-        .get()
-        .cloned()
-        .unwrap_or_else(|| CaptureHandle {
-            inner: Arc::new(Mutex::new(VecDeque::new())),
-        })
+    GLOBAL.get().cloned().unwrap_or_else(empty_handle)
 }
 
+fn empty_handle() -> CaptureHandle {
+    CaptureHandle {
+        inner: Arc::new(Mutex::new(VecDeque::new())),
+    }
+}
+
+#[cfg(unix)]
 fn install_inner() -> Result<CaptureHandle, String> {
     // Duplicate the current stderr so the reader thread can still write
     // through to the user's terminal.
     let saved = unsafe { libc::dup(libc::STDERR_FILENO) };
     if saved < 0 {
-        return Err(format!("dup(stderr) failed: {}", std::io::Error::last_os_error()));
+        return Err(format!(
+            "dup(stderr) failed: {}",
+            std::io::Error::last_os_error()
+        ));
     }
     let saved_stderr = unsafe { OwnedFd::from_raw_fd(saved) };
 
@@ -108,7 +125,10 @@ fn install_inner() -> Result<CaptureHandle, String> {
     let mut fds = [0i32; 2];
     let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
     if rc != 0 {
-        return Err(format!("pipe() failed: {}", std::io::Error::last_os_error()));
+        return Err(format!(
+            "pipe() failed: {}",
+            std::io::Error::last_os_error()
+        ));
     }
     let read_fd = unsafe { OwnedFd::from_raw_fd(fds[0]) };
     let write_fd = unsafe { OwnedFd::from_raw_fd(fds[1]) };
@@ -133,11 +153,8 @@ fn install_inner() -> Result<CaptureHandle, String> {
     Ok(CaptureHandle { inner: ring })
 }
 
-fn reader_loop(
-    read_fd: OwnedFd,
-    saved_stderr: OwnedFd,
-    ring: Arc<Mutex<VecDeque<CapturedLine>>>,
-) {
+#[cfg(unix)]
+fn reader_loop(read_fd: OwnedFd, saved_stderr: OwnedFd, ring: Arc<Mutex<VecDeque<CapturedLine>>>) {
     let file = std::fs::File::from(read_fd);
     let mut reader = BufReader::new(file);
     let mut sink = std::fs::File::from(saved_stderr);

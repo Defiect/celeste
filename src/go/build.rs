@@ -38,11 +38,15 @@ fn main() {
     let lib_path = out_dir.join("libceleste_go.a");
     let header_path = out_dir.join("libceleste_go.h");
 
-    let status = Command::new("go")
+    let mut go_build = Command::new("go");
+    go_build
         .current_dir(&manifest_dir)
         .args(["build", "-buildmode=c-archive", "-o"])
         .arg(&lib_path)
-        .arg(".")
+        .arg(".");
+    configure_go_target(&mut go_build, &target_triple);
+
+    let status = go_build
         .status()
         .expect("`go build` failed. Is `go` installed and latest version?");
     assert!(status.success(), "go build failed");
@@ -105,4 +109,19 @@ fn main() {
     bindings
         .write_to_file(out_dir.join("bindings.rs"))
         .expect("failed to write bindings.rs");
+}
+
+fn configure_go_target(cmd: &mut Command, target_triple: &str) {
+    if target_triple == "x86_64-pc-windows-gnu" {
+        cmd.env("GOOS", "windows")
+            .env("GOARCH", "amd64")
+            .env("CGO_ENABLED", "1")
+            .env("CC", target_env_or("CC", "x86_64-w64-mingw32-gcc"))
+            .env("CXX", target_env_or("CXX", "x86_64-w64-mingw32-g++"))
+            .env("AR", target_env_or("AR", "x86_64-w64-mingw32-ar"));
+    }
+}
+
+fn target_env_or(name: &str, fallback: &str) -> String {
+    env::var(format!("{name}_x86_64_pc_windows_gnu")).unwrap_or_else(|_| fallback.to_owned())
 }

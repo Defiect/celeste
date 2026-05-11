@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       runner:
-        description: 'JSON for runs-on (e.g. ["windows-latest"] or ["self-hosted","win11"])'
+        description: 'JSON for runs-on (e.g. ["ubuntu-24.04"] or ["windows-latest"])'
         required: false
-        default: '["windows-latest"]'
+        default: '["ubuntu-24.04"]'
         type: string
       tag:
         description: "Release tag to create (leave empty to auto-generate)"
@@ -40,20 +40,48 @@ jobs:
       RUST_BACKTRACE: 1
       RUST_TARGET: x86_64-pc-windows-gnu
       DIST_EXE: celeste-windows-x86_64.exe
+      CC_x86_64_pc_windows_gnu: x86_64-w64-mingw32-gcc
+      CXX_x86_64_pc_windows_gnu: x86_64-w64-mingw32-g++
+      AR_x86_64_pc_windows_gnu: x86_64-w64-mingw32-ar
+      CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER: x86_64-w64-mingw32-gcc
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           submodules: recursive
 
+      - name: Validate runner
+        shell: pwsh
+        run: |
+          if ($env:RUNNER_ARCH -ne "X64") {
+            throw "This workflow builds $env:RUST_TARGET and requires an X64 runner. Current RUNNER_ARCH=$env:RUNNER_ARCH."
+          }
+          if ($env:RUNNER_OS -ne "Windows" -and $env:RUNNER_OS -ne "Linux") {
+            throw "This workflow supports Windows and Linux runners. Current RUNNER_OS=$env:RUNNER_OS."
+          }
+
       - name: Setup MSYS2 (mingw64)
+        if: runner.os == 'Windows'
         uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
+          path-type: inherit
           update: true
           install: >-
             mingw-w64-x86_64-gcc
             mingw-w64-x86_64-pkgconf
+
+      - name: Install Linux cross toolchain
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            binutils-mingw-w64-x86-64 \
+            gcc-mingw-w64-x86-64 \
+            g++-mingw-w64-x86-64 \
+            pkg-config
 
       - name: Setup LLVM (for bindgen)
         uses: KyleMayes/install-llvm-action@v2
@@ -78,15 +106,21 @@ jobs:
         with:
           shared-key: ${{ env.RUST_TARGET }}
 
-      - name: Build (release)
-        run: cargo build --release --locked --target "${RUST_TARGET}"
+      - name: Build on Windows
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        run: cargo build --release --locked --target "$RUST_TARGET"
+
+      - name: Build on Linux
+        if: runner.os == 'Linux'
+        shell: bash
+        run: cargo build --release --locked --target "$RUST_TARGET"
 
       - name: Package
-        shell: bash
+        shell: pwsh
         run: |
-          set -euo pipefail
-          mkdir -p dist
-          cp "target/${RUST_TARGET}/release/celeste.exe" "dist/${DIST_EXE}"
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item "target/$env:RUST_TARGET/release/celeste.exe" "dist/$env:DIST_EXE"
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
