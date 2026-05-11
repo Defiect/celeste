@@ -15,10 +15,11 @@ file-lock = "2.1.11"
 futures = "0.3.32"
 glob = "0.3.3"
 iced = { version = "0.14", features = ["tokio", "lazy", "svg"] }
-# OS keyring (libsecret / Secret-Service) for the Proton session blobs
-# and the rclone config file. Sync API + pure-Rust crypto so we don't
-# pull zbus/tokio or OpenSSL into the dependency graph.
-keyring = { version = "3.6", default-features = false, features = ["sync-secret-service", "crypto-rust"] }
+# OS keyring (libsecret / Secret-Service, Windows Credential Manager,
+# macOS Keychain) for the Proton session blobs and the rclone config
+# file. Sync API + pure-Rust crypto so we don't pull zbus/tokio or
+# OpenSSL into the dependency graph.
+keyring = { version = "3.6", default-features = false, features = ["sync-secret-service", "windows-native", "apple-native", "crypto-rust"] }
 # Status-icon SVGs for the per-sync-dir cards and the system-tray
 # pixmaps. Only the icon packs we actually pull from are enabled so
 # we don't compile the rest of the icondata corpus.
@@ -27,7 +28,6 @@ icondata = { version = "0.7", default-features = false, features = [
     "box-icons",
     "tabler-icons",
 ] }
-ksni = "0.3.4"
 libc = "0.2"
 # Rasterise tray SVGs to ARGB32 at startup so KDE's symbolic-icon
 # recolour pipeline never touches them — it collapses the
@@ -37,7 +37,6 @@ resvg = { version = "0.47", default-features = false }
 # plus the native ProtonDrive entry points. See `src/go/` for the Go
 # side. Aliased as `celeste_go` to reflect the dual-backend nature.
 celeste_go = { package = "celeste-native-sys", path = "src/go" }
-notify-rust = "4"
 sea-orm = { version = "0.10.7", features = ["sqlx-sqlite", "runtime-async-std-rustls", "macros"] }
 sea-orm-migration = "0.10.7"
 serde = { version = "1.0.228", features = ["derive"] }
@@ -45,3 +44,7 @@ serde_json = "1.0.149"
 time = { version = "0.3.47", features = ["serde-well-known"] }
 tokio = { version = "1.52.1", features = ["macros", "rt-multi-thread", "sync"] }
 tr = "0.1.11"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ksni = "0.3.4"
+notify-rust = "4"

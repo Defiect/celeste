@@ -1,0 +1,123 @@
+name: Windows portable release
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: 'JSON for runs-on (e.g. ["windows-latest"] or ["self-hosted","win11"])'
+        required: false
+        default: '["windows-latest"]'
+        type: string
+      tag:
+        description: "Release tag to create (leave empty to auto-generate)"
+        required: false
+        default: ""
+        type: string
+      release_name:
+        description: "Release name (leave empty to use tag)"
+        required: false
+        default: ""
+        type: string
+      draft:
+        description: "Create as a draft release"
+        required: false
+        default: false
+        type: boolean
+      prerelease:
+        description: "Mark as a prerelease"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: ${{ fromJSON(inputs.runner) }}
+    env:
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: 1
+      RUST_TARGET: x86_64-pc-windows-gnu
+      DIST_EXE: celeste-windows-x86_64.exe
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup MSYS2 (mingw64)
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-pkgconf
+
+      - name: Setup LLVM (for bindgen)
+        uses: KyleMayes/install-llvm-action@v2
+        with:
+          version: "18.1.8"
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24.x"
+          cache: true
+          cache-dependency-path: src/go/go.sum
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          target: ${{ env.RUST_TARGET }}
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ env.RUST_TARGET }}
+
+      - name: Build (release)
+        run: cargo build --release --locked --target "${RUST_TARGET}"
+
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp "target/${RUST_TARGET}/release/celeste.exe" "dist/${DIST_EXE}"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.DIST_EXE }}
+          path: dist/${{ env.DIST_EXE }}
+          if-no-files-found: error
+
+      - name: Compute release metadata
+        id: rel
+        shell: pwsh
+        run: |
+          $tag = "${{ inputs.tag }}"
+          if ([string]::IsNullOrWhiteSpace($tag)) {
+            $tag = "windows-${{ github.run_number }}"
+          }
+
+          $name = "${{ inputs.release_name }}"
+          if ([string]::IsNullOrWhiteSpace($name)) {
+            $name = $tag
+          }
+
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          "name=$name" >> $env:GITHUB_OUTPUT
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.rel.outputs.tag }}
+          name: ${{ steps.rel.outputs.name }}
+          draft: ${{ inputs.draft }}
+          prerelease: ${{ inputs.prerelease }}
+          generate_release_notes: true
+          files: dist/${{ env.DIST_EXE }}

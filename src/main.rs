@@ -244,16 +244,26 @@ fn resume_native_sessions(repo: &dyn Repository, router: &ClientRouter) {
 /// banner + button are the authoritative recovery surface; the toast
 /// is just there to nudge users who've minimised Celeste to the tray.
 fn notify_reauth_needed(remote_name: &str) {
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = remote_name;
+        return;
+    }
+
+    #[cfg(target_os = "linux")]
     let mut notification = notify_rust::Notification::new();
+    #[cfg(target_os = "linux")]
     notification
         .summary("Celeste: reauthentication needed")
         .body(&format!(
             "Sync is paused for '{remote_name}'. Open Celeste and click Reauthenticate to log in again.",
         ))
         .appname("Celeste");
+    #[cfg(target_os = "linux")]
     if let Some(icon) = branding::icon_file_path() {
         notification.icon(icon);
     }
+    #[cfg(target_os = "linux")]
     let _ = notification.show();
 }
 
